@@ -34,6 +34,11 @@ tradingbot status
 tradingbot balance
 tradingbot data-list
 tradingbot symbols
+
+# Multi-symbol backtest (uses all symbols from config/default.yaml)
+tradingbot backtest --strategy sma_cross
+# Single symbol override
+tradingbot backtest --strategy sma_cross --symbol BTC/KRW
 ```
 
 ## Architecture
@@ -41,26 +46,31 @@ tradingbot symbols
 ### Anti-Lookahead Design (Core Principle)
 The backtest engine iterates candle-by-candle, only passing confirmed (closed) candles to strategy methods. The strategy can never access the current incomplete candle or future data. This is enforced structurally in `backtest/engine.py` — not by convention.
 
-### Key Flow: Backtest Loop
+### Key Flow: Backtest Loop (Multi-Symbol)
 ```
-For candle i (i >= 1):
-  visible_df = candles[0..i-1]     ← strategy sees ONLY past candles
-  fill_candle = candle[i]           ← used for execution
+Build unified timeline from all symbols' timestamps
 
-  1. Check stop losses against fill_candle's OHLC
-  2. Fill pending orders at fill_candle
-  3. strategy.indicators(visible_df)
-  4. strategy.should_exit(visible_df) for open positions
-  5. strategy.should_entry(visible_df) — blocked if stop loss fired this candle
-  6. Risk manager validates signals
-  7. Approved signals → fill at fill_candle's open + slippage
-  8. Update peak equity & record equity snapshot
+For each timestamp ts:
+  For each symbol with data at ts:
+    idx = position of ts in symbol's data
+    visible_df = symbol_candles[0..idx-1]  ← strategy sees ONLY past candles
+    fill_candle = symbol_candles[idx]       ← used for execution
+
+    1. Check stop losses against fill_candle's OHLC (per symbol)
+    2. Fill pending orders for this symbol only
+    3. strategy.indicators(visible_df)
+    4. strategy.should_exit(visible_df) for open positions
+    5. strategy.should_entry(visible_df) — blocked if stop loss fired this candle
+    6. Risk manager validates signals (max_open_positions across portfolio)
+    7. Approved signals → fill at fill_candle's open + slippage
+
+  Update last_known_prices & record portfolio equity snapshot
 ```
 
 ### Module Responsibilities
 - `core/models.py` — Frozen dataclasses: Candle, Signal, Order, Trade, Position, PortfolioState
 - `strategy/base.py` — Abstract `Strategy` class with `indicators()`, `should_entry()`, `should_exit()`
-- `backtest/engine.py` — Core backtest loop (most critical file)
+- `backtest/engine.py` — Core backtest loop, multi-symbol support (most critical file)
 - `backtest/simulator.py` — Order fill simulation with slippage and fees (Upbit: 0.05%)
 - `backtest/report.py` — Performance metrics: Sharpe, Sortino, max drawdown, win rate, profit factor
 - `risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss

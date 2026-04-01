@@ -1,5 +1,6 @@
 """Core backtesting engine.
 
+Supports single-symbol and multi-symbol backtesting.
 Iterates through historical candles chronologically. The strategy sees
 candles [0..i-1] (all confirmed), then orders fill at candle i's open.
 This eliminates lookahead bias: the decision is made before the fill bar.
@@ -29,29 +30,15 @@ from tradingbot.strategy.base import Strategy
 
 logger = structlog.get_logger()
 
-# Map timeframe strings to number of periods per year for annualization
-PERIODS_PER_YEAR: dict[str, float] = {
-    "1m": 525_960,
-    "3m": 175_320,
-    "5m": 105_192,
-    "15m": 35_064,
-    "30m": 17_532,
-    "1h": 8_766,
-    "4h": 2_191.5,
-    "1d": 365.25,
-    "1w": 52.18,
-}
-
 
 class BacktestEngine:
-    """Event-loop style backtesting engine.
+    """Event-loop style backtesting engine supporting multiple symbols.
 
-    For each candle i (i >= 1):
-        1. Build visible_df = candles[0..i-1]  (strategy sees only past)
-        2. Compute indicators on visible_df
-        3. Strategy generates signals based on visible_df
-        4. Use candle i for: stop loss checks, order fills, equity snapshot
-    This ensures the strategy never sees the candle it trades on.
+    For each timestamp across all symbols:
+        1. Build visible_df per symbol = candles[0..i-1]
+        2. Check stop losses and fill pending orders
+        3. Compute indicators, check exits, check entries
+        4. Record portfolio equity snapshot
     """
 
     def __init__(
@@ -70,120 +57,178 @@ class BacktestEngine:
         self.pending_orders: list[Order] = []
         self.completed_trades: list[Trade] = []
         self.equity_snapshots: list[tuple[datetime, float]] = []
-        # Track entry orders per symbol for correct trade pairing (Bug #4 fix)
         self._entry_orders: dict[str, Order] = {}
+        self._last_known_prices: dict[str, float] = {}
 
     def run(self, data: dict[str, pd.DataFrame]) -> BacktestReport:
-        """Run backtest on historical data."""
+        """Run backtest on historical data.
+
+        Args:
+            data: Dict mapping symbol to OHLCV DataFrame. Supports single
+                  or multiple symbols.
+        """
         initial_balance = self.cash
         self.risk_manager.peak_equity = initial_balance
 
-        symbol = self.strategy.symbols[0]
-        if symbol not in data:
-            raise ValueError(f"No data provided for symbol {symbol}")
+        symbols = self.strategy.symbols
+        available_symbols = [s for s in symbols if s in data]
+        if not available_symbols:
+            raise ValueError(f"No data provided for symbols: {symbols}")
 
-        df_full = data[symbol].copy()
+        # Prepare per-symbol data
+        symbol_data: dict[str, pd.DataFrame] = {}
+        for sym in available_symbols:
+            df = data[sym].copy()
+            # Deduplicate timestamps to prevent get_loc returning slice
+            df = df[~df.index.duplicated(keep="last")]
+            df = df.sort_index()
+            if self.config.backtest.start_date:
+                start = pd.Timestamp(self.config.backtest.start_date, tz="UTC")
+                df = df[df.index >= start]
+            if self.config.backtest.end_date:
+                end = pd.Timestamp(self.config.backtest.end_date, tz="UTC")
+                df = df[df.index <= end]
+            if not df.empty:
+                symbol_data[sym] = df
 
-        # Apply date filters
-        if self.config.backtest.start_date:
-            start = pd.Timestamp(self.config.backtest.start_date, tz="UTC")
-            df_full = df_full[df_full.index >= start]
-        if self.config.backtest.end_date:
-            end = pd.Timestamp(self.config.backtest.end_date, tz="UTC")
-            df_full = df_full[df_full.index <= end]
-
-        if df_full.empty:
+        if not symbol_data:
             logger.warning("no_data_in_range")
             return self._build_report(initial_balance)
 
-        # Detect data gaps and warn
+        # Detect gaps per symbol
         from tradingbot.data.storage import detect_gaps
-        gaps = detect_gaps(df_full, self.strategy.timeframe)
-        if gaps:
-            logger.warning(
-                "data_gaps_in_backtest",
-                gaps=len(gaps),
-                timeframe=self.strategy.timeframe,
-            )
+        for sym, df in symbol_data.items():
+            gaps = detect_gaps(df, self.strategy.timeframe)
+            if gaps:
+                logger.warning("data_gaps_in_backtest", symbol=sym, gaps=len(gaps))
+
+        # Build unified timeline from all symbols
+        all_timestamps = sorted(
+            set().union(*(df.index for df in symbol_data.values()))
+        )
 
         logger.info(
             "backtest_start",
-            symbol=symbol,
-            candles=len(df_full),
-            start=str(df_full.index[0]),
-            end=str(df_full.index[-1]),
+            symbols=list(symbol_data.keys()),
+            total_timestamps=len(all_timestamps),
+            start=str(all_timestamps[0]),
+            end=str(all_timestamps[-1]),
         )
 
-        # Snapshot original columns to detect indicator leakage into df_full
-        original_columns = set(df_full.columns)
+        # Track per-symbol candle index (how many candles have been seen)
+        symbol_indices: dict[str, int] = {sym: 0 for sym in symbol_data}
+        # Original columns per symbol for anti-lookahead assertion
+        original_columns: dict[str, set] = {
+            sym: set(df.columns) for sym, df in symbol_data.items()
+        }
 
-        # Main loop: strategy sees [0..i-1], fills happen on candle i
-        for i in range(1, len(df_full)):
-            # CRITICAL: .copy() isolates visible_df so indicator mutations
-            # do not leak back into df_full. Removing .copy() breaks anti-lookahead.
-            visible_df = df_full.iloc[:i].copy()
+        # Main loop: iterate through unified timeline
+        for ts in all_timestamps:
+            stop_loss_fired_symbols: set[str] = set()
 
-            # Candle i is used for fills and stop loss checks
-            fill_row = df_full.iloc[i]
-            fill_candle = Candle(
-                timestamp=df_full.index[i].to_pydatetime(),
-                open=float(fill_row["open"]),
-                high=float(fill_row["high"]),
-                low=float(fill_row["low"]),
-                close=float(fill_row["close"]),
-                volume=float(fill_row["volume"]),
-            )
+            # Phase 1: Update indices and process fills/stop losses per symbol
+            for sym in list(symbol_data.keys()):
+                df = symbol_data[sym]
+                if ts not in df.index:
+                    continue
 
-            # Step 1: Check stop losses on fill candle
-            stop_loss_fired = self._check_stop_losses(symbol, fill_candle)
+                # Find the position of this timestamp in the symbol's data
+                idx = df.index.get_loc(ts)
+                symbol_indices[sym] = idx
 
-            # Step 2: Fill pending orders
-            self._process_pending_orders(fill_candle)
+                if idx == 0:
+                    continue  # Need at least 1 prior candle
 
-            # Step 3: Compute indicators on visible (past-only) data
-            visible_df = self.strategy.indicators(visible_df)
-
-            # Verify indicator columns did not leak into df_full
-            assert set(df_full.columns) == original_columns, (
-                "Anti-lookahead violation: indicator columns leaked into source data"
-            )
-
-            # Step 4: Check exits for open positions
-            if symbol in self.positions:
-                exit_signal = self.strategy.should_exit(
-                    visible_df, symbol, self.positions[symbol]
+                fill_row = df.iloc[idx]
+                fill_candle = Candle(
+                    timestamp=ts.to_pydatetime(),
+                    open=float(fill_row["open"]),
+                    high=float(fill_row["high"]),
+                    low=float(fill_row["low"]),
+                    close=float(fill_row["close"]),
+                    volume=float(fill_row["volume"]),
                 )
-                if exit_signal:
-                    self._handle_signal(exit_signal, fill_candle)
 
-            # Step 5: Check entries (Bug #5: no entry on stop-loss candle)
-            if symbol not in self.positions and not stop_loss_fired:
-                entry_signal = self.strategy.should_entry(visible_df, symbol)
-                if entry_signal:
-                    self._handle_signal(entry_signal, fill_candle)
+                # Stop losses
+                if self._check_stop_losses(sym, fill_candle):
+                    stop_loss_fired_symbols.add(sym)
 
-            # Step 6: Record equity & update peak (Bug #9 fix)
-            prices = {symbol: float(fill_row["close"])}
-            equity = self._calculate_equity(prices)
+                # Pending orders — only process orders for this symbol's candle
+                self._process_pending_orders(fill_candle, sym)
+
+            # Phase 2: Strategy evaluation per symbol
+            for sym in list(symbol_data.keys()):
+                df = symbol_data[sym]
+                if ts not in df.index:
+                    continue
+
+                idx = symbol_indices[sym]
+                if idx == 0:
+                    continue
+
+                # Visible data: candles [0..idx-1] (anti-lookahead)
+                visible_df = df.iloc[:idx].copy()
+                visible_df = self.strategy.indicators(visible_df)
+
+                # Verify no leakage
+                assert set(df.columns) == original_columns[sym], (
+                    f"Anti-lookahead violation on {sym}: indicator columns leaked"
+                )
+
+                fill_row = df.iloc[idx]
+                fill_candle = Candle(
+                    timestamp=ts.to_pydatetime(),
+                    open=float(fill_row["open"]),
+                    high=float(fill_row["high"]),
+                    low=float(fill_row["low"]),
+                    close=float(fill_row["close"]),
+                    volume=float(fill_row["volume"]),
+                )
+
+                # Check exits
+                if sym in self.positions:
+                    exit_signal = self.strategy.should_exit(
+                        visible_df, sym, self.positions[sym]
+                    )
+                    if exit_signal:
+                        self._handle_signal(exit_signal, fill_candle)
+
+                # Check entries (no entry if stop loss fired or already positioned)
+                if sym not in self.positions and sym not in stop_loss_fired_symbols:
+                    entry_signal = self.strategy.should_entry(visible_df, sym)
+                    if entry_signal:
+                        self._handle_signal(entry_signal, fill_candle)
+
+            # Phase 3: Update last known prices and record portfolio equity
+            for sym in symbol_data:
+                df = symbol_data[sym]
+                if ts in df.index:
+                    self._last_known_prices[sym] = float(df.loc[ts, "close"])
+
+            equity = self._calculate_equity(self._last_known_prices)
             self.risk_manager.update_peak_equity(equity)
-            self.equity_snapshots.append((fill_candle.timestamp, equity))
+            self.equity_snapshots.append((ts.to_pydatetime(), equity))
 
-        # Close any remaining positions at last close
-        if symbol in self.positions:
-            last_row = df_full.iloc[-1]
+        # Force close remaining positions
+        for sym in list(self.positions.keys()):
+            df = symbol_data.get(sym)
+            if df is None or df.empty:
+                continue
+            last_row = df.iloc[-1]
             last_candle = Candle(
-                timestamp=df_full.index[-1].to_pydatetime(),
+                timestamp=df.index[-1].to_pydatetime(),
                 open=float(last_row["open"]),
                 high=float(last_row["high"]),
                 low=float(last_row["low"]),
                 close=float(last_row["close"]),
                 volume=float(last_row["volume"]),
             )
-            self._force_close_position(symbol, last_candle)
+            self._force_close_position(sym, last_candle)
 
         report = self._build_report(initial_balance)
         logger.info(
             "backtest_complete",
+            symbols=len(symbol_data),
             trades=report.total_trades,
             total_return=f"{report.total_return:.2%}",
             sharpe=f"{report.sharpe_ratio:.2f}",
@@ -191,15 +236,13 @@ class BacktestEngine:
         return report
 
     def _handle_signal(self, signal: Signal, fill_candle: Candle) -> None:
-        """Process a signal: validate with risk manager, then execute.
-
-        Uses fill_candle.open for all price-dependent calculations (equity,
-        position sizing, stop loss) because at the moment of fill, only the
-        open price is known — not the close.
-        """
-        # Use open price for valuation — close is not yet known at fill time
+        """Process a signal: validate with risk manager, then execute."""
         fill_price_estimate = fill_candle.open
+        # Build prices dict with all current positions + signal symbol
         prices = {signal.symbol: fill_price_estimate}
+        for pos in self.positions.values():
+            if pos.symbol not in prices:
+                prices[pos.symbol] = pos.entry_price  # fallback to entry price
 
         portfolio = PortfolioState(
             timestamp=signal.timestamp,
@@ -211,20 +254,18 @@ class BacktestEngine:
             return
 
         if signal.signal_type == SignalType.LONG_ENTRY:
-            # Simulate fill first to get actual execution price
             order = Order(
                 id=str(uuid.uuid4())[:8],
                 symbol=signal.symbol,
                 side=OrderSide.BUY,
                 order_type=OrderType.MARKET,
-                quantity=0,  # placeholder, sized below
+                quantity=0,
                 created_at=signal.timestamp,
             )
             fill = self.simulator.simulate_fill(order, fill_candle)
             if not fill.filled:
                 return
 
-            # Size position and anchor stop loss to actual fill price
             equity = self._calculate_equity(prices)
             stop_loss = self.risk_manager.calculate_stop_loss(fill.fill_price)
             quantity = self.risk_manager.calculate_position_size(
@@ -234,7 +275,6 @@ class BacktestEngine:
                 return
 
             order.quantity = quantity
-            # Recalculate fee for actual quantity
             fee = fill.fill_price * quantity * self.config.backtest.fee_rate
             self._execute_buy(order, fill.fill_price, fee, fill_candle.timestamp, stop_loss)
 
@@ -254,17 +294,11 @@ class BacktestEngine:
                     self._execute_sell(order, fill.fill_price, fill.fee, fill_candle.timestamp)
 
     def _execute_buy(
-        self,
-        order: Order,
-        fill_price: float,
-        fee: float,
-        timestamp: datetime,
-        stop_loss: float,
+        self, order: Order, fill_price: float, fee: float,
+        timestamp: datetime, stop_loss: float,
     ) -> None:
-        """Execute a buy order."""
         cost = fill_price * order.quantity + fee
         if cost > self.cash:
-            # Not enough cash — reduce quantity and recalculate fee (Bug #3 fix)
             max_quantity = self.cash / (fill_price * (1 + self.config.backtest.fee_rate))
             order.quantity = max_quantity
             fee = fill_price * order.quantity * self.config.backtest.fee_rate
@@ -273,7 +307,7 @@ class BacktestEngine:
         if order.quantity <= 0:
             return
 
-        self.cash = max(0.0, self.cash - cost)  # guard floating-point epsilon
+        self.cash = max(0.0, self.cash - cost)
         order.status = OrderStatus.FILLED
         order.filled_at = timestamp
         order.filled_price = fill_price
@@ -287,14 +321,11 @@ class BacktestEngine:
             entry_time=timestamp,
             stop_loss=stop_loss,
         )
-
-        # Store entry order keyed by symbol (Bug #4 fix)
         self._entry_orders[order.symbol] = order
 
     def _execute_sell(
         self, order: Order, fill_price: float, fee: float, timestamp: datetime
     ) -> None:
-        """Execute a sell order and record the trade."""
         if order.symbol not in self.positions:
             return
 
@@ -306,7 +337,6 @@ class BacktestEngine:
         order.filled_price = fill_price
         order.fee = fee
 
-        # Pair with the correct entry order (Bug #4 fix)
         entry_order = self._entry_orders.pop(order.symbol, None)
         if entry_order is not None:
             trade = Trade(
@@ -319,14 +349,11 @@ class BacktestEngine:
         del self.positions[order.symbol]
 
     def _check_stop_losses(self, symbol: str, candle: Candle) -> bool:
-        """Check and execute stop losses. Returns True if stop loss fired."""
         if symbol not in self.positions:
             return False
-
         pos = self.positions[symbol]
         if pos.stop_loss is None:
             return False
-
         result = self.simulator.check_stop_loss(pos.stop_loss, candle, pos.size)
         if result is not None and result.filled:
             order = Order(
@@ -342,10 +369,13 @@ class BacktestEngine:
             return True
         return False
 
-    def _process_pending_orders(self, candle: Candle) -> None:
-        """Process any pending limit orders."""
+    def _process_pending_orders(self, candle: Candle, symbol: str | None = None) -> None:
+        """Process pending orders. If symbol is given, only process that symbol's orders."""
         remaining = []
         for order in self.pending_orders:
+            if symbol is not None and order.symbol != symbol:
+                remaining.append(order)
+                continue
             fill = self.simulator.simulate_fill(order, candle)
             if fill.filled:
                 if order.side == OrderSide.BUY:
@@ -362,7 +392,6 @@ class BacktestEngine:
         self.pending_orders = remaining
 
     def _force_close_position(self, symbol: str, candle: Candle) -> None:
-        """Force close a position at the end of backtest."""
         if symbol not in self.positions:
             return
         pos = self.positions[symbol]
@@ -379,7 +408,6 @@ class BacktestEngine:
             self._execute_sell(order, fill.fill_price, fill.fee, candle.timestamp)
 
     def _calculate_equity(self, prices: dict[str, float]) -> float:
-        """Calculate total equity (cash + position values)."""
         position_value = sum(
             prices.get(p.symbol, p.entry_price) * p.size
             for p in self.positions.values()
@@ -387,7 +415,6 @@ class BacktestEngine:
         return self.cash + position_value
 
     def _build_report(self, initial_balance: float) -> BacktestReport:
-        """Build the final backtest report."""
         if self.equity_snapshots:
             equity_curve = pd.Series(
                 [e for _, e in self.equity_snapshots],
@@ -397,11 +424,7 @@ class BacktestEngine:
         else:
             equity_curve = pd.Series(dtype=float, name="equity")
 
-        # After force-close, all positions are liquidated → cash is the true balance.
-        # Using equity snapshot would be wrong because force-close fills at open+slippage,
-        # while the snapshot was computed at close price. (Bug F6 fix)
         final_balance = self.cash
-
         timeframe = self.strategy.timeframe
         return BacktestReport(
             trades=self.completed_trades,

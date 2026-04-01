@@ -119,14 +119,14 @@ def _load_strategies() -> None:
 @app.command()
 def backtest(
     strategy_name: str = typer.Option("sma_cross", "--strategy", "-S", help="Strategy name"),
-    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Trading pair"),
+    symbol: str = typer.Option(None, "--symbol", "-s", help="Trading pair (omit for all config symbols)"),
     timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe"),
     start: str = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
     end: str = typer.Option(None, "--end", help="End date (YYYY-MM-DD)"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
 ) -> None:
-    """Run a backtest on historical data."""
+    """Run a backtest on historical data. Supports single or multiple symbols."""
     setup_logging()
     _load_strategies()
 
@@ -138,8 +138,15 @@ def backtest(
     from tradingbot.backtest.engine import BacktestEngine
     from tradingbot.data.storage import load_candles
 
+    # Determine symbols: CLI override or config default
+    if symbol:
+        symbols = [symbol]
+    else:
+        base_config = load_config(Path("config"))
+        symbols = base_config.trading.symbols
+
     config = load_config(Path("config"), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+        "trading": {"symbols": symbols, "timeframe": timeframe, "initial_balance": balance},
         "backtest": {
             "start_date": start,
             "end_date": end,
@@ -148,16 +155,26 @@ def backtest(
 
     strategy_cls = STRATEGY_MAP[strategy_name]
     strategy = strategy_cls()
-    strategy.symbols = [symbol]
+    strategy.symbols = symbols
     strategy.timeframe = timeframe
 
-    console.print(f"[bold]Running backtest: {strategy_name} on {symbol} {timeframe}[/bold]")
+    # Load data for all symbols
+    data: dict = {}
+    for sym in symbols:
+        try:
+            data[sym] = load_candles(sym, timeframe, Path(data_dir))
+            console.print(f"  {sym}: {len(data[sym])} candles")
+        except FileNotFoundError:
+            console.print(f"  [yellow]{sym}: no data (skipped)[/yellow]")
 
-    df = load_candles(symbol, timeframe, Path(data_dir))
-    console.print(f"  Data: {len(df)} candles ({df.index.min()} ~ {df.index.max()})")
+    if not data:
+        console.print("[red]No data available for any symbol.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Running backtest: {strategy_name} on {len(data)} symbol(s) {timeframe}[/bold]")
 
     engine = BacktestEngine(strategy=strategy, config=config)
-    report = engine.run({symbol: df})
+    report = engine.run(data)
     report.print_summary()
 
 

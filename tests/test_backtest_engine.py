@@ -123,8 +123,10 @@ class TestBacktestEngine:
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
 
-        # Should have n-1 entries (skip first candle)
-        assert len(report.equity_curve) == len(df) - 1
+        # Equity curve has one entry per timestamp in the unified timeline.
+        # First timestamp (idx=0) is included since it appears in the timeline
+        # even though the strategy can't act on it (no prior candle).
+        assert len(report.equity_curve) == len(df)
 
     def test_no_data_returns_empty_report(self):
         """Empty data should return a report with no trades."""

@@ -19,11 +19,12 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase | 상태 | 내용 |
 |-------|------|------|
 | Phase 1 | ✅ 완료 | 데이터 레이어 (다운로드, 저장, 지표) |
-| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 12건 (43 tests passing) |
-| Phase 3 | ⏳ 대기 | 전략 최적화 & 검증 |
-| Phase 4 | ⏳ 대기 | 페이퍼 트레이딩 |
-| Phase 5 | ⏳ 대기 | 실매매 |
-| Phase 6 | ⏳ 대기 | 고도화 |
+| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (41건 총 수정, 97 tests) |
+| Phase 3 | ✅ 완료 | 전략 최적화 + Walk-Forward 검증 + 추가 전략 4종 |
+| Phase 4 | ✅ 완료 | 페이퍼 트레이딩 (거래소 추상화, 모의 체결, 텔레그램) |
+| Phase 5 | ✅ 완료 | 실매매 (주문 관리, 안전 장치, 일일 손실 한도) |
+| Phase 6-1 | ✅ 완료 | 멀티 심볼 동시 매매 (백테스트 + 라이브 엔진) |
+| Phase 6-2~8 | ⏳ 대기 | WebSocket, 대시보드, Bybit, Docker, ML/AI 등 |
 
 ---
 
@@ -442,11 +443,270 @@ trading-bot/
 └── notebooks/                         # Jupyter 리서치
 ```
 
-## 인지된 한계 (Low Priority)
+## Phase 6: 고도화 ⏳
 
-| # | 설명 | 대응 시점 |
-|---|------|-----------|
-| Bug #7 | Trade.pnl이 entry_order.quantity 사용 (현재는 정확하지만 fragile) | 부분 체결 구현 시 |
-| Bug #11 | Anti-lookahead가 .copy()에 의존 (제거하면 위험) | 성능 최적화 시 주의 |
-| Bug #13 | 캔들 데이터 갭 미감지 | Phase 3 데이터 검증 |
-| F7 | Sharpe(ddof=1) vs Sortino(ddof=0) 미세 불일치 | 둘 다 개별적으로 올바름 |
+### 6-1. 멀티 심볼 동시 트레이딩 ✅
+
+**목표**: 여러 종목을 하나의 엔진에서 동시에 매매하는 포트폴리오 기반 트레이딩.
+
+**현재 상태**: 엔진이 단일 심볼만 처리 (`strategy.symbols[0]`). 설정에는 8종목이 정의되어 있지만 개별 실행만 가능.
+
+**구현 항목**:
+
+1. **백테스트 엔진 멀티 심볼 확장** (`backtest/engine.py`)
+   - `data` dict에 여러 심볼의 DataFrame 전달
+   - 모든 심볼의 캔들을 시간순으로 통합 순회
+   - 심볼별 독립 포지션 관리 (기존 `self.positions` dict 활용)
+   - 포트폴리오 전체 equity 기반 리스크 관리
+   - `max_open_positions` 제한이 포트폴리오 전체에 적용
+
+2. **전략 인터페이스 확장** (`strategy/base.py`)
+   - `should_entry(df, symbol)` / `should_exit(df, symbol, position)` 인터페이스 유지
+   - 멀티 심볼 전략: 각 심볼별로 순회 호출 (기존 인터페이스 호환)
+   - 교차 심볼 전략 (선택적): `should_entry_portfolio(dfs: dict, positions: dict)` 추가
+
+3. **라이브 엔진 멀티 심볼** (`live/engine.py`)
+   - 심볼별 독립 폴링 → asyncio.gather로 병렬 캔들 페치
+   - 심볼별 마지막 확정 캔들 타임스탬프 추적 (`_last_candle_ts` → `dict[str, datetime]`)
+   - 포지션/잔고를 포트폴리오 전체로 관리
+
+4. **CLI 확장**
+   - `tradingbot backtest --strategy sma_cross` → 설정의 모든 심볼에 대해 실행
+   - `--symbol BTC/KRW` 옵션은 단일 심볼 오버라이드로 유지
+   - `tradingbot paper` / `tradingbot live` → 멀티 심볼 동시 실행
+
+5. **포트폴리오 리포트** (`backtest/report.py`)
+   - 심볼별 성과 분해 (어떤 종목이 수익/손실 기여)
+   - 포트폴리오 전체 Sharpe, 드로다운, 상관관계 분석
+
+**대상 종목** (default.yaml 기준):
+- 대형: BTC/KRW, ETH/KRW, XRP/KRW, SOL/KRW
+- 중형: DOGE/KRW, ADA/KRW, AVAX/KRW, LINK/KRW
+
+**검증 방법**:
+- 멀티 심볼 백테스트: 8종목 동시 실행, 포지션 겹침 없이 `max_open_positions` 준수 확인
+- 단일 심볼 백테스트와 결과 비교 (개별 심볼 성과 합 ≈ 포트폴리오 성과)
+- 라이브 엔진: 8종목 동시 폴링, 각 심볼 독립 시그널 확인
+
+---
+
+### 6-2. WebSocket 실시간 데이터
+
+**목표**: 폴링 대신 WebSocket으로 실시간 가격/캔들 수신, 지연 최소화.
+
+**구현 항목**:
+
+1. **WebSocket 클라이언트** (`src/tradingbot/exchange/ws_client.py`)
+   - Upbit WebSocket API 연동 (wss://api.upbit.com/websocket/v1)
+   - 실시간 체결가(trade), 현재가(ticker), 캔들(candle) 스트림
+   - 자동 재연결 (연결 끊김 시 지수 백오프)
+   - 하트비트/핑퐁 처리
+
+2. **데이터 파이프라인**
+   - WebSocket → 내부 이벤트 큐 (asyncio.Queue)
+   - 캔들 완성 감지: 실시간 체결 데이터로 캔들 빌드 또는 캔들 스트림 구독
+   - REST API 폴백: WebSocket 연결 실패 시 기존 폴링으로 자동 전환
+
+3. **라이브 엔진 통합**
+   - `LiveEngine`이 WebSocket 클라이언트를 선택적으로 사용
+   - WebSocket 모드: 이벤트 드리븐 (캔들 완성 이벤트 → 전략 실행)
+   - 폴링 모드: 기존 로직 유지 (폴백)
+
+**의존성**: `websockets` 패키지 추가
+
+**검증 방법**:
+- WebSocket 연결 → 실시간 BTC/KRW 체결 데이터 수신 확인
+- 의도적 연결 끊기 → 자동 재연결 확인
+- WebSocket vs 폴링 모드 시그널 비교 (동일 시점에 동일 시그널)
+
+---
+
+### 6-3. 웹 대시보드
+
+**목표**: 실시간 성과 모니터링 웹 UI.
+
+**구현 항목**:
+
+1. **Streamlit 대시보드** (`src/tradingbot/dashboard/app.py`)
+   - 실시간 equity curve 차트 (state.json에서 로드)
+   - 현재 오픈 포지션 테이블 (심볼, 진입가, 현재가, 미실현 손익)
+   - 거래 히스토리 (최근 N개 거래, PnL 색상 표시)
+   - 일일/주간/월간 성과 요약
+   - 전략 파라미터 표시
+
+2. **백테스트 결과 시각화**
+   - Equity curve 인터랙티브 차트 (plotly)
+   - 드로다운 구간 하이라이트
+   - 거래 마커 (진입/청산 포인트를 캔들 차트에 표시)
+   - 파라미터 최적화 히트맵
+
+3. **CLI 통합**
+   - `tradingbot dashboard` → Streamlit 서버 시작
+   - `tradingbot dashboard --backtest-report report.json` → 백테스트 결과 시각화
+
+**의존성**: `streamlit`, `plotly` 추가
+
+---
+
+### 6-4. Bybit 거래소 추가
+
+**목표**: 두 번째 거래소 지원으로 거래소 다변화.
+
+**구현 항목**:
+
+1. **Bybit 설정** (`config/default.yaml`)
+   - `exchange.name: bybit` 옵션
+   - USDT 마켓 지원 (BTC/USDT, ETH/USDT 등)
+   - Bybit 수수료: 0.1% maker/taker
+
+2. **CcxtExchange 호환성 확인**
+   - CCXT가 Bybit 지원하므로 기존 `CcxtExchange` 클래스 그대로 사용
+   - Bybit 특화 레이트 리밋 조정
+   - Bybit API 키 환경변수 추가 (`BYBIT_ACCESS_KEY`, `BYBIT_SECRET_KEY`)
+
+3. **교차 거래소 전략** (선택적)
+   - 동일 전략을 Upbit과 Bybit에서 동시 실행
+   - 거래소 간 가격 차이 모니터링
+
+**검증 방법**:
+- Bybit USDT 마켓 데이터 다운로드 + 백테스트
+- Upbit vs Bybit 동일 전략 성과 비교
+
+---
+
+### 6-5. 선물/마진 트레이딩
+
+**목표**: 숏 포지션 + 레버리지 지원.
+
+**구현 항목**:
+
+1. **도메인 모델 확장**
+   - `PositionSide`에 `SHORT` 추가 (이미 구조적으로 준비됨)
+   - `Position`에 `leverage` 필드 추가
+   - `Trade.pnl` 숏 포지션 계산 로직 추가
+
+2. **전략 인터페이스 확장**
+   - `SignalType`에 `SHORT_ENTRY`, `SHORT_EXIT` 추가
+   - 기존 LONG 전략과 동일 인터페이스로 SHORT 전략 작성 가능
+
+3. **리스크 매니저 확장**
+   - 레버리지별 마진 요구량 계산
+   - 청산 가격 계산 및 경고
+   - 펀딩비 시뮬레이션 (백테스트)
+
+4. **거래소 연동**
+   - Bybit 선물 마켓 지원 (Upbit은 선물 미지원)
+   - 레버리지 설정 API
+
+**주의사항**: 레버리지 거래는 손실이 증폭되므로, 충분한 백테스트 + 페이퍼 트레이딩 후 진행.
+
+---
+
+### 6-6. ML/AI 전략
+
+**목표**: FreqAI 스타일의 머신러닝 기반 시그널 생성.
+
+**구현 항목**:
+
+1. **ML 피처 엔진** (`src/tradingbot/ml/features.py`)
+   - 기술적 지표 + 가격 패턴을 피처로 변환
+   - 라벨링: 미래 N시간 수익률 기반 (상승/하락/횡보)
+   - Walk-forward 방식 피처 생성 (미래 데이터 누수 방지)
+
+2. **모델 학습** (`src/tradingbot/ml/trainer.py`)
+   - scikit-learn: RandomForest, GradientBoosting
+   - XGBoost/LightGBM: 빠른 학습, 피처 중요도 분석
+   - Walk-forward 교차 검증 (시계열 분할)
+
+3. **ML 전략** (`src/tradingbot/strategy/examples/ml_strategy.py`)
+   - 학습된 모델로 방향 예측 → 확률 기반 시그널 생성
+   - 기존 Strategy 인터페이스 준수
+   - 모델 주기적 재학습 (라이브 모드)
+
+4. **오버피팅 방지**
+   - 순수 OOS (out-of-sample) 평가 필수
+   - Walk-forward validation으로 일반화 성능 검증
+   - 피처 중요도 분석으로 노이즈 피처 제거
+
+**의존성**: `scikit-learn`, `xgboost` 또는 `lightgbm`
+
+---
+
+### 6-7. Docker 배포
+
+**목표**: 안정적인 24/7 운영을 위한 컨테이너화.
+
+**구현 항목**:
+
+1. **Dockerfile**
+   ```dockerfile
+   FROM python:3.11-slim
+   WORKDIR /app
+   COPY pyproject.toml .
+   RUN pip install .
+   COPY src/ src/
+   COPY config/ config/
+   CMD ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
+   ```
+
+2. **docker-compose.yml**
+   ```yaml
+   services:
+     bot:
+       build: .
+       env_file: .env
+       volumes:
+         - ./data:/app/data
+         - ./state.json:/app/state.json
+       restart: unless-stopped
+       healthcheck:
+         test: ["CMD", "python", "-c", "import tradingbot"]
+         interval: 30s
+         timeout: 10s
+         retries: 3
+   ```
+
+3. **운영 기능**
+   - Health check 엔드포인트
+   - 로그 파일 로테이션 (structlog → JSON file output)
+   - 자동 재시작 (crash recovery)
+   - 상태 모니터링 (state.json 마운트)
+
+---
+
+### 6-8. 백테스트 성능 최적화
+
+**목표**: 대량 파라미터 최적화 시 속도 개선.
+
+**구현 항목**:
+
+1. **인디케이터 캐싱**
+   - 동일 데이터에 대한 인디케이터 재계산 방지
+   - 파라미터가 다른 경우만 재계산
+
+2. **Numba JIT 가속** (선택적)
+   - 핵심 루프 (백테스트 엔진, 시뮬레이터)에 `@njit` 적용
+   - 현재 `.copy()` 기반 anti-lookahead를 배열 인덱싱으로 대체
+
+3. **병렬 최적화 개선**
+   - `ProcessPoolExecutor` → `multiprocessing.Pool` (메모리 효율)
+   - 대규모 그리드: 결과를 디스크에 스트리밍 저장 (메모리 제한 방지)
+
+---
+
+## Phase 6 우선순위
+
+| 순위 | 항목 | 이유 |
+|------|------|------|
+| 1 | 6-1. 멀티 심볼 | 8종목 동시 운영의 핵심. 현재 가장 필요 |
+| 2 | 6-7. Docker 배포 | 24/7 안정 운영 필수 |
+| 3 | 6-2. WebSocket | 지연 최소화, 실시간성 향상 |
+| 4 | 6-3. 웹 대시보드 | 모니터링 편의성 |
+| 5 | 6-4. Bybit | 거래소 다변화 |
+| 6 | 6-8. 성능 최적화 | 대규모 최적화 시 필요 |
+| 7 | 6-6. ML/AI | 고급 전략, 충분한 데이터 확보 후 |
+| 8 | 6-5. 선물/마진 | 리스크 높음, 마지막 단계 |
+
+## 인지된 한계 — 모두 해결됨
+
+Phase 1~5에서 발견된 37건의 버그가 모두 수정되었으며, 이전에 LOW로 분류되었던 4건(Bug #7, #11, #13, F7)도 해결 완료. 현재 미해결 이슈 0건.
