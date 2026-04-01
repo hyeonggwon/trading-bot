@@ -7,6 +7,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 ## 주요 기능
 
 - **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생
+- **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **4가지 내장 전략** — SMA 크로스오버, RSI 역추세, MACD 모멘텀, 볼린저 밴드 브레이크아웃
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
@@ -25,7 +26,12 @@ pip install -e ".[dev]"
 ### 1. 데이터 다운로드
 
 ```bash
-# BTC/KRW 1시간봉 다운로드
+# 전체 대상 종목 일괄 다운로드
+for sym in BTC/KRW ETH/KRW XRP/KRW SOL/KRW DOGE/KRW ADA/KRW AVAX/KRW LINK/KRW; do
+  tradingbot download --symbol $sym --timeframe 1h --since 2024-01-01
+done
+
+# 또는 개별 다운로드
 tradingbot download --symbol BTC/KRW --timeframe 1h --since 2024-01-01
 
 # 다운로드한 데이터 확인
@@ -38,7 +44,10 @@ tradingbot symbols
 ### 2. 백테스트
 
 ```bash
-# SMA 크로스오버 전략 백테스트
+# 멀티 심볼 백테스트 (config의 전체 심볼 사용)
+tradingbot backtest --strategy sma_cross
+
+# 단일 심볼 지정
 tradingbot backtest --strategy sma_cross --symbol BTC/KRW
 
 # 기간/잔고 지정
@@ -46,9 +55,9 @@ tradingbot backtest --strategy sma_cross --symbol BTC/KRW \
   --start 2024-06-01 --end 2024-12-31 --balance 5000000
 
 # 다른 전략들
-tradingbot backtest --strategy rsi_mean_reversion --symbol BTC/KRW
-tradingbot backtest --strategy macd_momentum --symbol BTC/KRW
-tradingbot backtest --strategy bollinger_breakout --symbol BTC/KRW
+tradingbot backtest --strategy rsi_mean_reversion
+tradingbot backtest --strategy macd_momentum
+tradingbot backtest --strategy bollinger_breakout
 ```
 
 ### 3. 전략 최적화
@@ -184,13 +193,22 @@ exchange:
 
 trading:
   symbols:
+    # 대형
     - BTC/KRW
+    - ETH/KRW
+    - XRP/KRW
+    - SOL/KRW
+    # 중형
+    - DOGE/KRW
+    - ADA/KRW
+    - AVAX/KRW
+    - LINK/KRW
   timeframe: "1h"
   initial_balance: 1000000
 
 risk:
   max_position_size_pct: 0.1      # 포지션당 최대 10%
-  max_open_positions: 3
+  max_open_positions: 5           # 8종목 중 최대 5개 동시
   max_drawdown_pct: 0.20           # 20% 드로다운 서킷브레이커
   default_stop_loss_pct: 0.02      # 2% 손절
   risk_per_trade_pct: 0.01         # 거래당 1% 리스크
@@ -241,4 +259,4 @@ src/tradingbot/
 | 설정 | pydantic + pyyaml |
 | 데이터 | pyarrow (Parquet) |
 | CLI | typer + rich |
-| 테스트 | pytest (89개) |
+| 테스트 | pytest (97개) |

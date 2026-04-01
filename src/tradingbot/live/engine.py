@@ -69,12 +69,13 @@ class LiveEngine:
         self.trade_validator = trade_validator
 
         self._running = False
-        self._last_candle_ts: datetime | None = None
+        # Per-symbol last confirmed candle timestamp
+        self._last_candle_ts: dict[str, datetime] = {}
 
     async def run(self) -> None:
-        """Start the trading loop."""
+        """Start the trading loop. Supports multiple symbols."""
         self._running = True
-        symbol = self.strategy.symbols[0]
+        symbols = self.strategy.symbols
         timeframe = self.strategy.timeframe
         poll_seconds = TIMEFRAME_SECONDS.get(timeframe, 3600)
 
@@ -85,7 +86,7 @@ class LiveEngine:
 
         logger.info(
             "live_engine_start",
-            symbol=symbol,
+            symbols=symbols,
             timeframe=timeframe,
             poll_interval=f"{poll_seconds}s",
             mode="paper" if hasattr(self.exchange, '_feed') else "live",
@@ -96,18 +97,25 @@ class LiveEngine:
         if self.state.positions:
             logger.info("restored_positions", count=len(self.state.positions))
 
-        # Initial data fetch for indicator warmup
+        # Initial warmup per symbol (parallel)
         warmup_candles = 200
-        df = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=warmup_candles)
-        if len(df) >= 2:
-            # Track last confirmed candle (exclude the possibly incomplete last one)
-            self._last_candle_ts = df.index[-2].to_pydatetime()
-            logger.info("warmup_complete", candles=len(df), last_confirmed=str(self._last_candle_ts))
+        warmup_tasks = [
+            self.exchange.fetch_ohlcv(sym, timeframe, limit=warmup_candles)
+            for sym in symbols
+        ]
+        warmup_results = await asyncio.gather(*warmup_tasks, return_exceptions=True)
+        for sym, result in zip(symbols, warmup_results):
+            if isinstance(result, Exception):
+                logger.warning("warmup_failed", symbol=sym, error=str(result))
+                continue
+            if len(result) >= 2:
+                self._last_candle_ts[sym] = result.index[-2].to_pydatetime()
+                logger.info("warmup_complete", symbol=sym, candles=len(result))
 
         # Main loop
         while self._running:
             try:
-                await self._tick(symbol, timeframe)
+                await self._tick_all(symbols, timeframe)
             except Exception as e:
                 logger.error("tick_error", error=str(e), type=type(e).__name__)
                 if self.notifier and hasattr(self.notifier, 'send_error'):
@@ -126,42 +134,66 @@ class LiveEngine:
         await self.exchange.close()
         logger.info("live_engine_stopped")
 
-    async def _tick(self, symbol: str, timeframe: str) -> None:
-        """Single iteration of the trading loop."""
-        # Fetch latest candles
-        df = await self.exchange.fetch_ohlcv(symbol, timeframe, limit=200)
-        if df.empty:
+    async def _tick_all(self, symbols: list[str], timeframe: str) -> None:
+        """Single iteration — fetch candles and tickers in parallel, then process."""
+        # Fetch candles and tickers for all symbols in parallel
+        ohlcv_tasks = [self.exchange.fetch_ohlcv(sym, timeframe, limit=200) for sym in symbols]
+        ticker_tasks = [self.exchange.fetch_ticker(sym) for sym in symbols]
+
+        ohlcv_results = await asyncio.gather(*ohlcv_tasks, return_exceptions=True)
+        ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
+
+        # Update equity once
+        equity = await self._calculate_equity()
+        self.risk_manager.update_peak_equity(equity)
+
+        # Map tickers for easy access
+        tickers = {
+            sym: res for sym, res in zip(symbols, ticker_results)
+            if not isinstance(res, Exception)
+        }
+
+        # Process each symbol
+        for sym, result in zip(symbols, ohlcv_results):
+            if isinstance(result, Exception):
+                logger.warning("fetch_error", symbol=sym, error=str(result))
+                continue
+            await self._tick_symbol(sym, result, tickers.get(sym))
+
+        # Persist state after processing all symbols
+        self.state.save()
+
+    async def _tick_symbol(
+        self, symbol: str, df: pd.DataFrame, ticker: dict | None = None
+    ) -> None:
+        """Process a single symbol's candle data."""
+        if df.empty or len(df) < 2:
             return
 
-        # Use all candles except the last (which may be incomplete)
-        if len(df) < 2:
-            return
         confirmed_df = df.iloc[:-1].copy()
-
-        # Track the last CONFIRMED candle timestamp, not the incomplete one
         confirmed_ts = confirmed_df.index[-1].to_pydatetime()
-        if self._last_candle_ts is not None and confirmed_ts <= self._last_candle_ts:
-            return  # No new confirmed candle yet
 
-        self._last_candle_ts = confirmed_ts
+        # Check if we've already processed this candle for this symbol
+        last_ts = self._last_candle_ts.get(symbol)
+        if last_ts is not None and confirmed_ts <= last_ts:
+            return
+
+        self._last_candle_ts[symbol] = confirmed_ts
 
         logger.debug(
             "new_candle",
             symbol=symbol,
-            timestamp=str(confirmed_df.index[-1]),
+            timestamp=str(confirmed_ts),
             close=f"{confirmed_df['close'].iloc[-1]:,.0f}",
         )
 
         # Compute indicators
         confirmed_df = self.strategy.indicators(confirmed_df)
 
-        # Fetch current price for equity/risk calculations
-        ticker = await self.exchange.fetch_ticker(symbol)
-        current_price = ticker["last"]
-
-        # Update risk manager peak equity
-        equity = await self._calculate_equity()
-        self.risk_manager.update_peak_equity(equity)
+        # Use pre-fetched ticker or fallback to incomplete candle close
+        # (incomplete candle close is the best real-time estimate when ticker unavailable)
+        ticker_price = ticker.get("last") if ticker else None
+        current_price = float(ticker_price) if ticker_price else float(df["close"].iloc[-1])
 
         # Check exit signals for open positions
         position = self.state.positions.get(symbol)
@@ -170,14 +202,11 @@ class LiveEngine:
             if exit_signal:
                 await self._handle_exit(exit_signal, symbol, position)
 
-        # Check entry signals (only if no position)
+        # Check entry signals (only if no position in this symbol)
         if symbol not in self.state.positions:
             entry_signal = self.strategy.should_entry(confirmed_df, symbol)
             if entry_signal:
                 await self._handle_entry(entry_signal, symbol, current_price)
-
-        # Persist state
-        self.state.save()
 
     async def _handle_entry(
         self, signal_obj: Signal, symbol: str, current_price: float
