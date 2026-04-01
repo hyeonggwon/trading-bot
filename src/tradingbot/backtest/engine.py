@@ -242,7 +242,7 @@ class BacktestEngine:
         prices = {signal.symbol: fill_price_estimate}
         for pos in self.positions.values():
             if pos.symbol not in prices:
-                prices[pos.symbol] = pos.entry_price  # fallback to entry price
+                prices[pos.symbol] = self._last_known_prices.get(pos.symbol, pos.entry_price)
 
         portfolio = PortfolioState(
             timestamp=signal.timestamp,

@@ -135,29 +135,37 @@ class LiveEngine:
         logger.info("live_engine_stopped")
 
     async def _tick_all(self, symbols: list[str], timeframe: str) -> None:
-        """Single iteration — fetch and process all symbols in parallel."""
-        # Fetch candles for all symbols in parallel
-        fetch_tasks = [
-            self.exchange.fetch_ohlcv(sym, timeframe, limit=200)
-            for sym in symbols
-        ]
-        results = await asyncio.gather(*fetch_tasks, return_exceptions=True)
+        """Single iteration — fetch candles and tickers in parallel, then process."""
+        # Fetch candles and tickers for all symbols in parallel
+        ohlcv_tasks = [self.exchange.fetch_ohlcv(sym, timeframe, limit=200) for sym in symbols]
+        ticker_tasks = [self.exchange.fetch_ticker(sym) for sym in symbols]
+
+        ohlcv_results = await asyncio.gather(*ohlcv_tasks, return_exceptions=True)
+        ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
 
         # Update equity once
         equity = await self._calculate_equity()
         self.risk_manager.update_peak_equity(equity)
 
+        # Map tickers for easy access
+        tickers = {
+            sym: res for sym, res in zip(symbols, ticker_results)
+            if not isinstance(res, Exception)
+        }
+
         # Process each symbol
-        for sym, result in zip(symbols, results):
+        for sym, result in zip(symbols, ohlcv_results):
             if isinstance(result, Exception):
                 logger.warning("fetch_error", symbol=sym, error=str(result))
                 continue
-            await self._tick_symbol(sym, result)
+            await self._tick_symbol(sym, result, tickers.get(sym))
 
         # Persist state after processing all symbols
         self.state.save()
 
-    async def _tick_symbol(self, symbol: str, df: pd.DataFrame) -> None:
+    async def _tick_symbol(
+        self, symbol: str, df: pd.DataFrame, ticker: dict | None = None
+    ) -> None:
         """Process a single symbol's candle data."""
         if df.empty or len(df) < 2:
             return
@@ -182,9 +190,10 @@ class LiveEngine:
         # Compute indicators
         confirmed_df = self.strategy.indicators(confirmed_df)
 
-        # Fetch current price
-        ticker = await self.exchange.fetch_ticker(symbol)
-        current_price = ticker["last"]
+        # Use pre-fetched ticker or fallback to incomplete candle close
+        # (incomplete candle close is the best real-time estimate when ticker unavailable)
+        ticker_price = ticker.get("last") if ticker else None
+        current_price = float(ticker_price) if ticker_price else float(df["close"].iloc[-1])
 
         # Check exit signals for open positions
         position = self.state.positions.get(symbol)
