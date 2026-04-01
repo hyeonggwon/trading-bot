@@ -1,0 +1,29 @@
+exchange:
+  name: upbit
+  rate_limit_per_sec: 10
+
+trading:
+  symbols:
+    # 대형
+    - BTC/KRW
+    - ETH/KRW
+    - XRP/KRW
+    - SOL/KRW
+    # 중형
+    - DOGE/KRW
+    - ADA/KRW
+    - AVAX/KRW
+    - LINK/KRW
+  timeframe: "1h"
+  initial_balance: 1000000  # 100만 KRW
+
+risk:
+  max_position_size_pct: 0.1     # 포지션당 최대 10%
+  max_open_positions: 5          # 8종목 중 최대 5개 동시 포지션
+  max_drawdown_pct: 0.20          # 20% 드로다운 서킷브레이커
+  default_stop_loss_pct: 0.02     # 2% 손절
+  risk_per_trade_pct: 0.01        # 거래당 1% 리스크
+
+backtest:
+  fee_rate: 0.0005                # Upbit 0.05%
+  slippage_pct: 0.001             # 0.1% 슬리피지
