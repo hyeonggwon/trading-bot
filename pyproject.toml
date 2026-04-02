@@ -20,6 +20,7 @@ dependencies = [
     "structlog>=23.0",
     "python-dotenv>=1.0",
     "rich>=13.0",
+    "websockets>=13.0",
 ]
 
 [project.optional-dependencies]

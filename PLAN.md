@@ -19,14 +19,15 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase | 상태 | 내용 |
 |-------|------|------|
 | Phase 1 | ✅ 완료 | 데이터 레이어 (다운로드, 저장, 지표) |
-| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (56건 총 수정, 97 tests) |
+| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (60+건 총 수정, 107 tests) |
 | Phase 3 | ✅ 완료 | 전략 최적화 + Walk-Forward 검증 + 추가 전략 4종 |
 | Phase 4 | ✅ 완료 | 페이퍼 트레이딩 (거래소 추상화, 모의 체결, 텔레그램) |
 | Phase 5 | ✅ 완료 | 실매매 (주문 관리, 안전 장치, 일일 손실 한도) |
 | Phase 6-1 | ✅ 완료 | 멀티 심볼 동시 매매 (백테스트 + 라이브 엔진) |
 | Phase 6-7 | ✅ 완료 | Docker 배포 (Dockerfile, compose, healthcheck, 로그 관리) |
 | Phase 6-3 | ✅ 완료 | 웹 대시보드 (Streamlit, Live Monitor + Backtest Viewer) |
-| Phase 6-2,4~6,8 | ⏳ 대기 | WebSocket, Bybit, ML/AI, 선물/마진, 성능 최적화 |
+| Phase 6-2 | ✅ 완료 | WebSocket 실시간 데이터 (Upbit ticker, 자동 재연결, 폴링 폴백) |
+| Phase 6-4~6,8 | ⏳ 대기 | Bybit, ML/AI, 선물/마진, 성능 최적화 |
 
 ---
 
@@ -492,7 +493,7 @@ trading-bot/
 
 ---
 
-### 6-2. WebSocket 실시간 데이터
+### 6-2. WebSocket 실시간 데이터 ✅
 
 **목표**: 폴링 대신 WebSocket으로 실시간 가격/캔들 수신, 지연 최소화.
 
