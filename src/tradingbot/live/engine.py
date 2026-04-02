@@ -58,6 +58,7 @@ class LiveEngine:
         notifier: object | None = None,
         order_manager: object | None = None,
         trade_validator: object | None = None,
+        ws_client: object | None = None,
     ):
         self.strategy = strategy
         self.exchange = exchange
@@ -67,6 +68,7 @@ class LiveEngine:
         self.notifier = notifier
         self.order_manager = order_manager
         self.trade_validator = trade_validator
+        self.ws_client = ws_client  # UpbitWebSocketClient for real-time prices
 
         self._running = False
         # Per-symbol last confirmed candle timestamp
@@ -84,12 +86,14 @@ class LiveEngine:
         for sig in (signal_module.SIGINT, signal_module.SIGTERM):
             loop.add_signal_handler(sig, self._request_stop)
 
+        ws_mode = self.ws_client is not None
         logger.info(
             "live_engine_start",
             symbols=symbols,
             timeframe=timeframe,
             poll_interval=f"{poll_seconds}s",
             mode="paper" if hasattr(self.exchange, '_feed') else "live",
+            websocket=ws_mode,
         )
 
         # Load persisted state
@@ -112,7 +116,14 @@ class LiveEngine:
                 self._last_candle_ts[sym] = result.index[-2].to_pydatetime()
                 logger.info("warmup_complete", symbol=sym, candles=len(result))
 
-        # Main loop
+        # Start WebSocket in background if available (real-time price updates)
+        ws_task = None
+        if self.ws_client is not None:
+            ws_task = asyncio.create_task(self.ws_client.run())
+            ws_task.add_done_callback(self._on_ws_task_done)
+            logger.info("ws_started", symbols=len(symbols))
+
+        # Main loop (candle polling — WebSocket provides prices, REST provides candles)
         while self._running:
             try:
                 await self._tick_all(symbols, timeframe)
@@ -130,24 +141,38 @@ class LiveEngine:
 
         # Shutdown
         logger.info("live_engine_stopping")
+        if self.ws_client is not None:
+            self.ws_client.stop()
+        if ws_task is not None:
+            ws_task.cancel()
+            try:
+                await ws_task
+            except (asyncio.CancelledError, Exception):
+                pass  # Don't let WS errors block shutdown
         self.state.save()
         await self.exchange.close()
         logger.info("live_engine_stopped")
 
     async def _tick_all(self, symbols: list[str], timeframe: str) -> None:
-        """Single iteration — fetch candles and tickers in parallel, then process."""
-        # Fetch candles and tickers for all symbols in parallel
+        """Single iteration — fetch candles, use WS prices or fetch tickers."""
+        # Fetch candles for all symbols
         ohlcv_tasks = [self.exchange.fetch_ohlcv(sym, timeframe, limit=200) for sym in symbols]
-        ticker_tasks = [self.exchange.fetch_ticker(sym) for sym in symbols]
-
         ohlcv_results = await asyncio.gather(*ohlcv_tasks, return_exceptions=True)
-        ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
 
-        # Map tickers for easy access (reused for equity + symbol processing)
-        tickers = {
-            sym: res for sym, res in zip(symbols, ticker_results)
-            if not isinstance(res, Exception)
-        }
+        # Use WebSocket prices if available, otherwise fetch tickers via REST
+        ws_prices = self.ws_client.last_prices if self.ws_client else {}
+        if ws_prices:
+            tickers = {
+                sym: {"last": price}
+                for sym, price in ws_prices.items()
+            }
+        else:
+            ticker_tasks = [self.exchange.fetch_ticker(sym) for sym in symbols]
+            ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
+            tickers = {
+                sym: res for sym, res in zip(symbols, ticker_results)
+                if not isinstance(res, Exception)
+            }
 
         # Update equity using pre-fetched tickers (avoids redundant API calls)
         equity = await self._calculate_equity(tickers)
@@ -358,6 +383,15 @@ class LiveEngine:
                 except Exception:
                     pass
         return equity
+
+    @staticmethod
+    def _on_ws_task_done(task: asyncio.Task) -> None:
+        """Log unexpected WebSocket task failures."""
+        if task.cancelled():
+            return
+        exc = task.exception()
+        if exc is not None:
+            logger.error("ws_task_failed", error=str(exc), type=type(exc).__name__)
 
     def _request_stop(self) -> None:
         """Handle shutdown signal."""

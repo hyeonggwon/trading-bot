@@ -265,6 +265,7 @@ def paper(
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial paper balance (KRW)"),
     exchange: str = typer.Option("upbit", "--exchange", "-e", help="Exchange for data feed"),
     state_file: str = typer.Option("state.json", "--state-file", help="State persistence file"),
+    use_websocket: bool = typer.Option(False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"),
 ) -> None:
     """Start paper trading with simulated execution."""
     import asyncio
@@ -304,8 +305,15 @@ def paper(
     state = StateManager(Path(state_file))
     notifier = TelegramNotifier(env)
 
+    # WebSocket client for real-time prices (optional)
+    ws = None
+    if use_websocket:
+        from tradingbot.exchange.ws_client import UpbitWebSocketClient
+        ws = UpbitWebSocketClient([symbol])
+
     console.print(f"[bold]Paper trading: {strategy_name} on {symbol} {timeframe}[/bold]")
     console.print(f"  Balance: {balance:,.0f} KRW")
+    console.print(f"  WebSocket: {'enabled' if ws else 'disabled'}")
     console.print(f"  Telegram: {'enabled' if notifier.enabled else 'disabled'}")
     console.print("[yellow]Press Ctrl+C to stop[/yellow]")
 
@@ -315,6 +323,7 @@ def paper(
         config=config,
         state_manager=state,
         notifier=notifier if notifier.enabled else None,
+        ws_client=ws,
     )
     asyncio.run(engine.run())
 
@@ -379,6 +388,7 @@ def live(
     state_file: str = typer.Option("state.json", "--state-file", help="State persistence file"),
     max_order_krw: float = typer.Option(500_000, "--max-order", help="Max order value (KRW)"),
     daily_loss_krw: float = typer.Option(200_000, "--daily-loss-limit", help="Daily loss limit (KRW)"),
+    use_websocket: bool = typer.Option(False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"),
 ) -> None:
     """Start LIVE trading with real money. Use with caution."""
     import asyncio
@@ -427,6 +437,12 @@ def live(
     console.print(f"  Exchange: {exchange_name}")
     console.print(f"  Max order: {max_order_krw:,.0f} KRW")
     console.print(f"  Daily loss limit: {daily_loss_krw:,.0f} KRW")
+    ws = None
+    if use_websocket:
+        from tradingbot.exchange.ws_client import UpbitWebSocketClient
+        ws = UpbitWebSocketClient([symbol])
+
+    console.print(f"  WebSocket: {'enabled' if ws else 'disabled'}")
     console.print(f"  Telegram: {'enabled' if notifier.enabled else 'disabled'}")
     console.print("[yellow]Press Ctrl+C to stop[/yellow]")
 
@@ -438,6 +454,7 @@ def live(
         notifier=notifier if notifier.enabled else None,
         order_manager=order_mgr,
         trade_validator=validator,
+        ws_client=ws,
     )
     asyncio.run(engine.run())
 

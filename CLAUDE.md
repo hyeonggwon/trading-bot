@@ -39,6 +39,7 @@ tradingbot optimize --strategy sma_cross --symbol BTC/KRW --top 10
 tradingbot optimize --strategy sma_cross --param-grid '{"fast_period":[10,20],"slow_period":[40,50]}'
 tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW --train-months 3 --test-months 1
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --balance 1000000
+tradingbot paper --strategy sma_cross --symbol BTC/KRW --websocket  # Real-time prices via WebSocket
 tradingbot live --strategy sma_cross --symbol BTC/KRW --max-order 500000 --daily-loss-limit 200000
 tradingbot status
 tradingbot balance
@@ -97,6 +98,7 @@ For each timestamp ts:
 - `live/order_manager.py` — Order lifecycle (submit, poll, timeout cancel, market re-order)
 - `risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown)
 - `notifications/telegram.py` — Telegram Bot API notifications
+- `exchange/ws_client.py` — Upbit WebSocket client (real-time ticker, auto-reconnect)
 - `dashboard/app.py` — Streamlit web dashboard (Live Monitor + Backtest Viewer)
 - `config.py` — Pydantic settings from YAML + .env override
 - `utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
@@ -123,4 +125,5 @@ Candle data stored as Parquet: `data/{SYMBOL}_{QUOTE}/{timeframe}.parquet`
 - `pydantic` + `pydantic-settings` for config validation
 - `typer` + `rich` for CLI
 - `pyarrow` for Parquet I/O
+- `websockets` for Upbit real-time data (auto-reconnect, interruptible cooldown)
 - `streamlit` + `plotly` for web dashboard (optional: `pip install -e ".[dashboard]"`)

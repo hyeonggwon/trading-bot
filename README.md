@@ -10,8 +10,10 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **4가지 내장 전략** — SMA 크로스오버, RSI 역추세, MACD 모멘텀, 볼린저 밴드 브레이크아웃
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
+- **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
 - **실매매** — Upbit API 연동, 주문 관리, 안전 장치 (일일 손실 한도, 주문 크기 제한)
+- **웹 대시보드** — Streamlit 기반 실시간 모니터링 + 백테스트 시각화
 - **텔레그램 알림** — 시그널, 체결, 에러 실시간 알림
 
 ## 설치
@@ -92,6 +94,9 @@ tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW \
 # 실시간 데이터로 모의 매매 (Ctrl+C로 중지)
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --balance 1000000
 
+# WebSocket 모드 (Upbit 실시간 가격, REST API 호출 최소화)
+tradingbot paper --strategy sma_cross --symbol BTC/KRW --websocket
+
 # 다른 터미널에서 상태 확인
 tradingbot status
 ```
@@ -109,6 +114,10 @@ tradingbot balance
 # 3) 실매매 시작 (소액부터)
 tradingbot live --strategy sma_cross --symbol BTC/KRW \
   --max-order 100000 --daily-loss-limit 50000
+
+# WebSocket 모드로 실매매 (실시간 가격, REST 호출 최소화)
+tradingbot live --strategy sma_cross --symbol BTC/KRW \
+  --max-order 100000 --daily-loss-limit 50000 --websocket
 ```
 
 ## 권장 워크플로우
@@ -312,6 +321,7 @@ trading-bot/
 | 설정 | pydantic + pyyaml |
 | 데이터 | pyarrow (Parquet) |
 | CLI | typer + rich |
+| 실시간 | websockets (Upbit WebSocket) |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (97개) |
+| 테스트 | pytest (107개) |
