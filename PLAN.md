@@ -24,7 +24,8 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase 4 | ✅ 완료 | 페이퍼 트레이딩 (거래소 추상화, 모의 체결, 텔레그램) |
 | Phase 5 | ✅ 완료 | 실매매 (주문 관리, 안전 장치, 일일 손실 한도) |
 | Phase 6-1 | ✅ 완료 | 멀티 심볼 동시 매매 (백테스트 + 라이브 엔진) |
-| Phase 6-2~8 | ⏳ 대기 | WebSocket, 대시보드, Bybit, Docker, ML/AI 등 |
+| Phase 6-7 | ✅ 완료 | Docker 배포 (Dockerfile, compose, healthcheck, 로그 관리) |
+| Phase 6-2~6 | ⏳ 대기 | WebSocket, 대시보드, Bybit, ML/AI, 선물/마진, 성능 최적화 |
 
 ---
 
@@ -632,7 +633,7 @@ trading-bot/
 
 ---
 
-### 6-7. Docker 배포
+### 6-7. Docker 배포 ✅
 
 **목표**: 안정적인 24/7 운영을 위한 컨테이너화.
 

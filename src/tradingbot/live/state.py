@@ -7,6 +7,8 @@ to a JSON file so the bot can survive restarts.
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -40,7 +42,18 @@ class StateManager:
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
 
-        self.state_path.write_text(json.dumps(data, indent=2, default=str))
+        # Atomic write: write to temp file then rename (prevents partial reads)
+        self.state_path.parent.mkdir(parents=True, exist_ok=True)
+        tmp_fd, tmp_path = tempfile.mkstemp(
+            dir=self.state_path.parent, suffix=".tmp"
+        )
+        try:
+            with os.fdopen(tmp_fd, "w") as f:
+                json.dump(data, f, indent=2, default=str)
+            os.replace(tmp_path, self.state_path)
+        except Exception:
+            os.unlink(tmp_path)
+            raise
         self.last_save = datetime.now(timezone.utc)
         logger.debug("state_saved", positions=len(self.positions))
 
