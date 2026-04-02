@@ -23,9 +23,10 @@ MAX_STALE_SECONDS = int(os.environ.get("HEALTHCHECK_MAX_STALE_SECONDS", 10800))
 
 def main() -> int:
     if not STATE_FILE.exists():
-        # No state file yet — bot may still be warming up
-        print("WARN: state file not found, bot may be starting up")
-        return 0
+        # No state file — bot hasn't saved yet. start_period in docker-compose
+        # prevents this from triggering a restart during initial warmup.
+        print("UNHEALTHY: state file not found")
+        return 1
 
     try:
         data = json.loads(STATE_FILE.read_text())

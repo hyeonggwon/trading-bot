@@ -26,13 +26,12 @@ def setup_logging(level: str = "INFO", log_dir: str | None = None) -> None:
     ]
 
     if log_dir:
-        # File output: JSON format with rotation via stdlib integration
+        # Dual output: JSON file + console for docker logs
         _setup_file_logging(log_dir, level)
 
         structlog.configure(
             processors=[
                 *shared_processors,
-                # Route to stdlib for file output
                 structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
             ],
             wrapper_class=structlog.make_filtering_bound_logger(
@@ -42,7 +41,7 @@ def setup_logging(level: str = "INFO", log_dir: str | None = None) -> None:
             logger_factory=structlog.stdlib.LoggerFactory(),
         )
     else:
-        # Console output: human-readable
+        # Console output only: human-readable
         structlog.configure(
             processors=[
                 *shared_processors,
@@ -57,25 +56,41 @@ def setup_logging(level: str = "INFO", log_dir: str | None = None) -> None:
 
 
 def _setup_file_logging(log_dir: str, level: str) -> None:
-    """Set up stdlib logging with daily rotating file handler + JSON formatter."""
+    """Set up stdlib logging with file + console handlers."""
     log_path = Path(log_dir)
     log_path.mkdir(parents=True, exist_ok=True)
 
-    # Use structlog's ProcessorFormatter for clean JSON output
-    formatter = structlog.stdlib.ProcessorFormatter(
+    log_level = getattr(logging, level.upper(), logging.INFO)
+
+    # JSON formatter for file output
+    json_formatter = structlog.stdlib.ProcessorFormatter(
         processor=structlog.processors.JSONRenderer(),
     )
 
-    handler = TimedRotatingFileHandler(
+    # Console formatter for docker logs / terminal
+    console_formatter = structlog.stdlib.ProcessorFormatter(
+        processor=structlog.dev.ConsoleRenderer(),
+    )
+
+    # File handler: daily rotation, 7 days
+    file_handler = TimedRotatingFileHandler(
         filename=log_path / "tradingbot.log",
         when="midnight",
         interval=1,
-        backupCount=7,  # Keep 7 days of logs
+        backupCount=7,
         encoding="utf-8",
     )
-    handler.setLevel(getattr(logging, level.upper(), logging.INFO))
-    handler.setFormatter(formatter)
+    file_handler.setLevel(log_level)
+    file_handler.setFormatter(json_formatter)
 
+    # Console handler: keeps docker logs working
+    console_handler = logging.StreamHandler()
+    console_handler.setLevel(log_level)
+    console_handler.setFormatter(console_formatter)
+
+    # Clear existing handlers to prevent duplicates on re-config
     root_logger = logging.getLogger()
-    root_logger.addHandler(handler)
-    root_logger.setLevel(getattr(logging, level.upper(), logging.INFO))
+    root_logger.handlers = []
+    root_logger.addHandler(file_handler)
+    root_logger.addHandler(console_handler)
+    root_logger.setLevel(log_level)

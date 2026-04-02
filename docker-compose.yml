@@ -3,10 +3,10 @@ services:
     build: .
     env_file: .env
     volumes:
-      - ./data:/app/data
-      - ./logs:/app/logs
-      - ./config:/app/config
+      - bot-data:/app/data
+      - bot-logs:/app/logs
       - bot-state:/app/state
+      - ./config:/app/config:ro
     environment:
       - LOG_DIR=/app/logs
       - STATE_FILE=/app/state/state.json
@@ -16,9 +16,11 @@ services:
       interval: 60s
       timeout: 10s
       retries: 3
-      start_period: 120s
+      start_period: 180s
     # Override CMD for live trading:
     # command: ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
 
 volumes:
+  bot-data:
+  bot-logs:
   bot-state:
