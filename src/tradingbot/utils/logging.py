@@ -35,7 +35,7 @@ def setup_logging(level: str = "INFO", log_dir: str | None = None) -> None:
                 structlog.stdlib.ProcessorFormatter.wrap_for_formatter,
             ],
             wrapper_class=structlog.make_filtering_bound_logger(
-                getattr(structlog, level.upper(), structlog.INFO)  # type: ignore[arg-type]
+                getattr(logging, level.upper(), logging.INFO)
             ),
             context_class=dict,
             logger_factory=structlog.stdlib.LoggerFactory(),
@@ -48,7 +48,7 @@ def setup_logging(level: str = "INFO", log_dir: str | None = None) -> None:
                 structlog.dev.ConsoleRenderer(),
             ],
             wrapper_class=structlog.make_filtering_bound_logger(
-                getattr(structlog, level.upper(), structlog.INFO)  # type: ignore[arg-type]
+                getattr(logging, level.upper(), logging.INFO)
             ),
             context_class=dict,
             logger_factory=structlog.PrintLoggerFactory(),
