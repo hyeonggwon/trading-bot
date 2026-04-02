@@ -710,9 +710,61 @@ trading-bot/
 | 7 | 6-6. ML/AI | 고급 전략, 충분한 데이터 확보 후 |
 | 8 | 6-5. 선물/마진 | 리스크 높음, 마지막 단계 |
 
+## TODO: 실사용 단계
+
+개발은 Phase 6-1/2/3/7까지 완료. 이제 실제 사용하면서 필요에 따라 추가 개발.
+
+### Step 1: 데이터 수집
+```bash
+for sym in BTC/KRW ETH/KRW XRP/KRW SOL/KRW DOGE/KRW ADA/KRW AVAX/KRW LINK/KRW; do
+  tradingbot download --symbol $sym --timeframe 1h --since 2024-01-01
+done
+```
+
+### Step 2: 전략별 백테스트 비교
+```bash
+tradingbot backtest --strategy sma_cross
+tradingbot backtest --strategy rsi_mean_reversion
+tradingbot backtest --strategy macd_momentum
+tradingbot backtest --strategy bollinger_breakout
+```
+→ Sharpe > 1.5, Max Drawdown < 15% 인 전략 선별
+
+### Step 3: 최적화 + Walk-Forward 검증
+```bash
+tradingbot optimize --strategy <best_strategy> --top 10
+tradingbot walk-forward --strategy <best_strategy> --train-months 3 --test-months 1
+```
+→ WF Efficiency > 50%, Overfitting Ratio < 50% 확인
+
+### Step 4: 페이퍼 트레이딩 (1~2주)
+```bash
+tradingbot paper --strategy <best_strategy> --websocket
+tradingbot dashboard  # 대시보드로 모니터링
+```
+
+### Step 5: 소액 실매매 (10만원)
+```bash
+tradingbot live --strategy <best_strategy> --symbol BTC/KRW \
+  --max-order 100000 --daily-loss-limit 50000 --websocket
+```
+→ 페이퍼 vs 실매매 결과 비교, 슬리피지/체결률 분석
+
+### Step 6: 단계적 증액
+→ 안정적이면 금액 증가, 종목 추가
+
+## 추후 개발 (필요 시)
+
+| 항목 | 시점 | 트리거 |
+|------|------|--------|
+| 6-8. 성능 최적화 | 백테스트 속도가 느릴 때 | 대규모 파라미터 그리드 실행 시 |
+| 6-4. Bybit | Upbit에 불만 또는 USDT 마켓 필요 시 | 해외 거래소 접근 필요 |
+| 6-6. ML/AI | 기본 전략 한계 체감 시 | 충분한 데이터(6개월+) 확보 후 |
+| 6-5. 선물/마진 | 현물 경험 충분히 쌓은 후 | 숏/레버리지 전략 필요 시 |
+
 ## 인지된 한계 — 모두 해결됨
 
-Phase 1~6에서 발견된 56건의 버그가 12+ 리뷰 라운드를 거쳐 모두 수정됨. 현재 미해결 이슈 0건.
+Phase 1~6에서 발견된 60+건의 버그가 14+ 리뷰 라운드를 거쳐 모두 수정됨. 현재 미해결 이슈 0건. 107개 테스트 통과.
 
 잔여 설계 한계 (버그 아님, 의도적 설계):
 - 인디케이터 함수가 DataFrame을 in-place 변경 (`.copy()` + assert로 이중 보호, 성능상 의도적)
