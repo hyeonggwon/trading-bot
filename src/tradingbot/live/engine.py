@@ -160,10 +160,11 @@ class LiveEngine:
         ohlcv_results = await asyncio.gather(*ohlcv_tasks, return_exceptions=True)
 
         # Use WebSocket prices if available, otherwise fetch tickers via REST
-        if self.ws_client is not None and self.ws_client.last_prices:
+        ws_prices = self.ws_client.last_prices if self.ws_client else {}
+        if ws_prices:
             tickers = {
                 sym: {"last": price}
-                for sym, price in self.ws_client.last_prices.items()
+                for sym, price in ws_prices.items()
             }
         else:
             ticker_tasks = [self.exchange.fetch_ticker(sym) for sym in symbols]

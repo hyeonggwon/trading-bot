@@ -175,7 +175,7 @@ class UpbitWebSocketClient:
                 {
                     "type": "ticker",
                     "codes": self._codes,
-                    "is_only_realtime": True,
+                    "isOnlyRealtime": True,
                 },
             ])
             await ws.send(subscribe_msg)
@@ -218,7 +218,7 @@ class UpbitWebSocketClient:
             price=price,
             volume=float(data.get("acc_trade_volume_24h", 0)),
             change=data.get("change", ""),
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.fromtimestamp(data.get("timestamp", 0) / 1000, tz=timezone.utc),
         )
 
         for callback in self._callbacks:
