@@ -482,5 +482,35 @@ def balance(
     asyncio.run(_fetch())
 
 
+@app.command()
+def dashboard(
+    state_file: str = typer.Option("state.json", "--state-file", help="State file for live monitor"),
+) -> None:
+    """Launch the web dashboard (Streamlit)."""
+    import subprocess
+    import sys
+
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        console.print("[red]Dashboard requires extra dependencies. Install with:[/red]")
+        console.print('  pip install -e ".[dashboard]"')
+        raise typer.Exit(1)
+
+    dashboard_path = Path(__file__).parent / "dashboard" / "app.py"
+    if not dashboard_path.exists():
+        console.print("[red]Dashboard app not found.[/red]")
+        raise typer.Exit(1)
+
+    console.print("[bold]Launching dashboard...[/bold]")
+    console.print(f"  State file: {state_file}")
+    console.print("[yellow]Open http://localhost:8501 in your browser[/yellow]")
+
+    subprocess.run(
+        [sys.executable, "-m", "streamlit", "run", str(dashboard_path),
+         "--", f"--state-file={state_file}"],
+    )
+
+
 if __name__ == "__main__":
     app()

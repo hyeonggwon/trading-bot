@@ -71,6 +71,8 @@ class LiveEngine:
         self._running = False
         # Per-symbol last confirmed candle timestamp
         self._last_candle_ts: dict[str, datetime] = {}
+        # Track entry fees per symbol for accurate PnL on exit
+        self._entry_fees: dict[str, float] = {}
 
     async def run(self) -> None:
         """Start the trading loop. Supports multiple symbols."""
@@ -143,15 +145,15 @@ class LiveEngine:
         ohlcv_results = await asyncio.gather(*ohlcv_tasks, return_exceptions=True)
         ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
 
-        # Update equity once
-        equity = await self._calculate_equity()
-        self.risk_manager.update_peak_equity(equity)
-
-        # Map tickers for easy access
+        # Map tickers for easy access (reused for equity + symbol processing)
         tickers = {
             sym: res for sym, res in zip(symbols, ticker_results)
             if not isinstance(res, Exception)
         }
+
+        # Update equity using pre-fetched tickers (avoids redundant API calls)
+        equity = await self._calculate_equity(tickers)
+        self.risk_manager.update_peak_equity(equity)
 
         # Process each symbol
         for sym, result in zip(symbols, ohlcv_results):
@@ -212,13 +214,15 @@ class LiveEngine:
         self, signal_obj: Signal, symbol: str, current_price: float
     ) -> None:
         """Process an entry signal."""
+        balance = await self.exchange.get_balance()
+        cash = balance.get("KRW", 0)
         equity = await self._calculate_equity()
 
-        # Validate with risk manager
+        # Validate with risk manager using actual cash balance
         from tradingbot.core.models import PortfolioState
         portfolio = PortfolioState(
             timestamp=datetime.now(timezone.utc),
-            cash=0,  # Not directly applicable for live
+            cash=cash,
             positions=list(self.state.positions.values()),
         )
         prices = {symbol: current_price}
@@ -268,6 +272,8 @@ class LiveEngine:
                 entry_time=datetime.now(timezone.utc),
                 stop_loss=stop_loss,
             )
+            # Track entry fee for accurate PnL on exit
+            self._entry_fees[symbol] = order.fee or 0
             logger.info(
                 "position_opened",
                 symbol=symbol,
@@ -304,8 +310,9 @@ class LiveEngine:
                 self.trade_validator.record_order()
 
             fill_price = order.filled_price or 0
-            fee = order.fee or 0
-            pnl = (fill_price - position.entry_price) * position.size - fee
+            exit_fee = order.fee or 0
+            entry_fee = self._entry_fees.pop(symbol, 0)
+            pnl = (fill_price - position.entry_price) * position.size - entry_fee - exit_fee
 
             # Track PnL for daily loss limit
             if self.trade_validator is not None:
@@ -324,20 +331,29 @@ class LiveEngine:
                     f"SELL {symbol}: price={fill_price:,.0f}, PnL={pnl:,.0f} KRW"
                 )
 
-    async def _calculate_equity(self) -> float:
-        """Calculate total equity from exchange balances."""
+    async def _calculate_equity(self, cached_tickers: dict | None = None) -> float:
+        """Calculate total equity from exchange balances.
+
+        Uses cached_tickers if provided to avoid redundant API calls.
+        """
         balance = await self.exchange.get_balance()
         equity = balance.get("KRW", 0)
         for currency, qty in balance.items():
             if currency == "KRW":
                 continue
-            # Try to get last price for this currency
             symbol = f"{currency}/KRW"
-            try:
-                ticker = await self.exchange.fetch_ticker(symbol)
-                equity += ticker["last"] * qty
-            except Exception:
-                pass
+            # Use cached ticker if available, otherwise fetch
+            ticker = (cached_tickers or {}).get(symbol)
+            if ticker:
+                price = ticker.get("last")
+                if price:
+                    equity += float(price) * qty
+            else:
+                try:
+                    fetched = await self.exchange.fetch_ticker(symbol)
+                    equity += fetched["last"] * qty
+                except Exception:
+                    pass
         return equity
 
     def _request_stop(self) -> None:

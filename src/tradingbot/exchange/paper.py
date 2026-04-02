@@ -155,6 +155,9 @@ class PaperExchange(BaseExchange):
         order.filled_price = fill_price
         order.fee = fee
         self._filled_orders.append(order)
+        # Cap filled orders history to prevent unbounded memory growth
+        if len(self._filled_orders) > 10000:
+            self._filled_orders = self._filled_orders[-5000:]
 
         logger.info(
             "paper_order_filled",

@@ -19,13 +19,14 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase | 상태 | 내용 |
 |-------|------|------|
 | Phase 1 | ✅ 완료 | 데이터 레이어 (다운로드, 저장, 지표) |
-| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (41건 총 수정, 97 tests) |
+| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (56건 총 수정, 97 tests) |
 | Phase 3 | ✅ 완료 | 전략 최적화 + Walk-Forward 검증 + 추가 전략 4종 |
 | Phase 4 | ✅ 완료 | 페이퍼 트레이딩 (거래소 추상화, 모의 체결, 텔레그램) |
 | Phase 5 | ✅ 완료 | 실매매 (주문 관리, 안전 장치, 일일 손실 한도) |
 | Phase 6-1 | ✅ 완료 | 멀티 심볼 동시 매매 (백테스트 + 라이브 엔진) |
 | Phase 6-7 | ✅ 완료 | Docker 배포 (Dockerfile, compose, healthcheck, 로그 관리) |
-| Phase 6-2~6 | ⏳ 대기 | WebSocket, 대시보드, Bybit, ML/AI, 선물/마진, 성능 최적화 |
+| Phase 6-3 | ✅ 완료 | 웹 대시보드 (Streamlit, Live Monitor + Backtest Viewer) |
+| Phase 6-2,4~6,8 | ⏳ 대기 | WebSocket, Bybit, ML/AI, 선물/마진, 성능 최적화 |
 
 ---
 
@@ -522,7 +523,7 @@ trading-bot/
 
 ---
 
-### 6-3. 웹 대시보드
+### 6-3. 웹 대시보드 ✅
 
 **목표**: 실시간 성과 모니터링 웹 UI.
 
@@ -710,4 +711,8 @@ trading-bot/
 
 ## 인지된 한계 — 모두 해결됨
 
-Phase 1~5에서 발견된 37건의 버그가 모두 수정되었으며, 이전에 LOW로 분류되었던 4건(Bug #7, #11, #13, F7)도 해결 완료. 현재 미해결 이슈 0건.
+Phase 1~6에서 발견된 56건의 버그가 12+ 리뷰 라운드를 거쳐 모두 수정됨. 현재 미해결 이슈 0건.
+
+잔여 설계 한계 (버그 아님, 의도적 설계):
+- 인디케이터 함수가 DataFrame을 in-place 변경 (`.copy()` + assert로 이중 보호, 성능상 의도적)
+- Walk-forward 검증은 단일 심볼 기준 윈도우 생성 (심볼별 데이터 기간 차이 시 복잡성 증가, 현재 설계가 합리적)

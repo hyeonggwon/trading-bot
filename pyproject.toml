@@ -35,6 +35,10 @@ research = [
     "matplotlib>=3.7",
     "plotly>=5.0",
 ]
+dashboard = [
+    "streamlit>=1.30",
+    "plotly>=5.0",
+]
 
 [project.scripts]
 tradingbot = "tradingbot.cli:app"
