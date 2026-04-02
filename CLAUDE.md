@@ -54,6 +54,10 @@ tradingbot backtest --strategy sma_cross --symbol BTC/KRW
 # Scan all strategy × symbol × timeframe combinations
 tradingbot scan --top 15
 tradingbot scan --sort-by total_return --top 20
+
+# Combine filters (no-code strategy building)
+tradingbot combine --entry "trend_up:4 + rsi_oversold:30" --exit "rsi_overbought:70" --symbol BTC/KRW
+tradingbot combine-scan --top 15  # Scan 15 predefined filter templates
 ```
 
 ## Architecture
@@ -94,6 +98,8 @@ For each timestamp ts:
 - `data/indicators.py` — Technical indicator wrappers using `ta` library
 - `backtest/optimizer.py` — Grid search parameter optimization with parallel execution
 - `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling)
+- `strategy/filters/` — 9 reusable filters (trend, RSI, MACD, volume, price, BB, EMA)
+- `strategy/combined.py` — CombinedStrategy: AND entry + OR exit from filter combinations
 - `exchange/base.py` — Abstract exchange interface (BaseExchange ABC)
 - `exchange/ccxt_exchange.py` — CCXT async implementation for Upbit (retry + rate limiting)
 - `exchange/paper.py` — Paper trading exchange (simulated fills, portfolio tracking)

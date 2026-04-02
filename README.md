@@ -10,6 +10,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **6가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹
+- **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (9종 필터, AND 진입 / OR 청산)
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
@@ -100,6 +101,42 @@ tradingbot scan --top 15
 # 수익률 기준 정렬
 tradingbot scan --sort-by total_return --top 10
 ```
+
+### 4-2. 필터 조합 (코드 없이 전략 만들기)
+
+여러 필터를 레고처럼 조합하여 커스텀 전략을 만들 수 있습니다:
+
+```bash
+# 추세 상승 + RSI 과매도 진입 → RSI 과매수 청산
+tradingbot combine \
+  --entry "trend_up:4 + rsi_oversold:30" \
+  --exit "rsi_overbought:70" \
+  --symbol BTC/KRW
+
+# 거래량 급등 + 가격 돌파 → EMA 이탈 청산
+tradingbot combine \
+  --entry "volume_spike:2.5 + price_breakout:10" \
+  --exit "ema_above:20" \
+  --symbol BTC/KRW
+
+# 15개 사전정의 조합 자동 스캔
+tradingbot combine-scan --top 10
+```
+
+**사용 가능한 필터:**
+
+| 필터 | 용도 | 예시 |
+|------|------|------|
+| `trend_up` | 상위 TF 상승 추세 | `trend_up:4` (4배 상위 TF) |
+| `rsi_oversold` | RSI 과매도 탈출 | `rsi_oversold:30` |
+| `rsi_overbought` | RSI 과매수 도달 | `rsi_overbought:70` |
+| `volume_spike` | 거래량 급등 | `volume_spike:2.5` (평균 2.5배) |
+| `macd_cross_up` | MACD 양전환 | `macd_cross_up` |
+| `price_breakout` | 최근 고점 돌파 | `price_breakout:10` |
+| `ema_above` | EMA 위 위치 | `ema_above:50` |
+| `bb_upper_break` | 볼린저 상단 돌파 | `bb_upper_break:20` |
+
+진입: 모든 필터 AND 충족 시 매수 / 청산: 하나라도 OR 충족 시 매도
 
 ### 5. 페이퍼 트레이딩
 
@@ -339,4 +376,4 @@ trading-bot/
 | 실시간 | websockets (Upbit WebSocket) |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (107개) |
+| 테스트 | pytest (119개) |

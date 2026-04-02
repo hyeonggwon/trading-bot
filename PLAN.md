@@ -19,7 +19,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase | 상태 | 내용 |
 |-------|------|------|
 | Phase 1 | ✅ 완료 | 데이터 레이어 (다운로드, 저장, 지표) |
-| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (60+건 총 수정, 107 tests) |
+| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (60+건 총 수정, 119 tests) |
 | Phase 3 | ✅ 완료 | 전략 최적화 + Walk-Forward 검증 + 추가 전략 4종 |
 | Phase 4 | ✅ 완료 | 페이퍼 트레이딩 (거래소 추상화, 모의 체결, 텔레그램) |
 | Phase 5 | ✅ 완료 | 실매매 (주문 관리, 안전 장치, 일일 손실 한도) |
@@ -27,7 +27,8 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase 6-7 | ✅ 완료 | Docker 배포 (Dockerfile, compose, healthcheck, 로그 관리) |
 | Phase 6-3 | ✅ 완료 | 웹 대시보드 (Streamlit, Live Monitor + Backtest Viewer) |
 | Phase 6-2 | ✅ 완료 | WebSocket 실시간 데이터 (Upbit ticker, 자동 재연결, 폴링 폴백) |
-| 고급 전략 | ✅ 완료 | multi_tf (멀티TF 추세+RSI), volume_breakout (거래량 급등+돌파), scan CLI |
+| 고급 전략 | ✅ 완료 | multi_tf, volume_breakout, scan CLI |
+| 조합 엔진 | ✅ 완료 | 9종 필터, CombinedStrategy, combine/combine-scan CLI, 15 템플릿 |
 | Phase 6-4~6,8 | ⏳ 대기 | Bybit, ML/AI, 선물/마진, 성능 최적화 |
 
 ---
@@ -755,7 +756,8 @@ tradingbot live --strategy <best_strategy> --symbol BTC/KRW \
 
 | 항목 | 시점 | 트리거 |
 |------|------|--------|
-| **조합 엔진** | scan 결과 분석 후 | CLI로 필터 조합: `--filters "trend_up:4h + volume_spike:2.5x + rsi_oversold:30"` |
+| ~~조합 엔진~~ | ✅ 완료 | combine/combine-scan CLI, 15 템플릿, 9 필터 |
+| **조합 생성기** | combine-scan 결과 부족 시 | `combine-generate` → 자동 조합 생성 → scan 파이프라인 |
 | 6-8. 성능 최적화 | 백테스트 속도가 느릴 때 | 대규모 파라미터 그리드 실행 시 |
 | 6-4. Bybit | Upbit에 불만 또는 USDT 마켓 필요 시 | 해외 거래소 접근 필요 |
 | 6-6. ML/AI | 기본 전략 한계 체감 시 | 충분한 데이터(6개월+) 확보 후 |
