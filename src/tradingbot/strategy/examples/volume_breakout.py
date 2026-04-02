@@ -7,7 +7,7 @@ Logic:
 - Track rolling volume average (20-period)
 - Volume spike: current volume > avg * threshold (e.g., 2.5x)
 - Entry: volume spike + price closes above recent high → breakout confirmed
-- Exit: EMA crossdown or trailing stop via ATR
+- Exit: price closes below EMA (momentum fading)
 
 This captures the "smart money" accumulation pattern where
 large volume precedes significant price movements.

@@ -50,6 +50,10 @@ tradingbot symbols
 tradingbot backtest --strategy sma_cross
 # Single symbol override
 tradingbot backtest --strategy sma_cross --symbol BTC/KRW
+
+# Scan all strategy × symbol × timeframe combinations
+tradingbot scan --top 15
+tradingbot scan --sort-by total_return --top 20
 ```
 
 ## Architecture
@@ -103,11 +107,13 @@ For each timestamp ts:
 - `config.py` — Pydantic settings from YAML + .env override
 - `utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
 
-### Built-in Strategies
+### Built-in Strategies (6종)
 - `sma_cross` — SMA golden/dead cross (fast_period, slow_period)
 - `rsi_mean_reversion` — RSI oversold entry / overbought exit (rsi_period, oversold, overbought)
 - `macd_momentum` — MACD histogram zero-cross (fast, slow, signal)
 - `bollinger_breakout` — Price breaks upper BB / drops below middle BB (period, std)
+- `multi_tf` — Higher TF trend filter (SMA) + base TF entry (RSI), anti-lookahead resample
+- `volume_breakout` — Volume spike (avg × N) + price breakout above recent high
 
 ### Strategy Interface
 Strategies inherit from `Strategy` and implement three methods:

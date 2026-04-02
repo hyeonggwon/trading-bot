@@ -540,7 +540,6 @@ def scan(
         raise typer.Exit(1)
 
     from tradingbot.backtest.engine import BacktestEngine
-    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
     from tradingbot.data.storage import list_available_data
 
     # Discover available data
@@ -579,11 +578,9 @@ def scan(
                     console.print(f"  Progress: {count}/{total}...", end="\r")
 
                 try:
-                    config = AppConfig(
-                        trading=TradingConfig(symbols=[sym], timeframe=tf, initial_balance=balance),
-                        risk=RiskConfig(),
-                        backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
-                    )
+                    config = load_config(Path("config"), overrides={
+                        "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
+                    })
                     strategy_cls = STRATEGY_MAP[strat_name]
                     strategy = strategy_cls()
                     strategy.symbols = [sym]

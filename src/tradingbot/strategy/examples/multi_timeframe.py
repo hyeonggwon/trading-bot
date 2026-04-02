@@ -21,7 +21,7 @@ import pandas as pd
 
 from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
-from tradingbot.data.indicators import add_ema, add_rsi, add_sma
+from tradingbot.data.indicators import add_rsi
 from tradingbot.strategy.base import Strategy, StrategyParams
 
 
@@ -75,6 +75,8 @@ class MultiTimeframeStrategy(Strategy):
         self.rsi_overbought: float = self.params.get("rsi_overbought", 70.0)
 
     def indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        # NOTE: resample runs on each call (O(N²) in backtest loop).
+        # For large datasets, consider caching. See Phase 6-8 performance optimization.
         # Base timeframe: RSI for entry timing
         df = add_rsi(df, period=self.rsi_period)
 
