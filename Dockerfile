@@ -23,4 +23,4 @@ COPY scripts/healthcheck.py /app/scripts/healthcheck.py
 USER botuser
 
 # Default: paper trading with SMA cross on BTC/KRW
-CMD ["tradingbot", "paper", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
+CMD ["tradingbot", "paper", "--strategy", "sma_cross", "--symbol", "BTC/KRW", "--state-file", "/app/state/state.json"]

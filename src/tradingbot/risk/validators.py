@@ -8,7 +8,7 @@ Provides guards against:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 
 import structlog
 
@@ -30,7 +30,7 @@ class TradeValidator:
 
         self._last_order_time: datetime | None = None
         self._daily_pnl: float = 0.0
-        self._daily_reset_date: datetime | None = None
+        self._daily_reset_date: date | None = None
 
     def validate_order_size(self, quantity: float, price: float) -> bool:
         """Check that order value doesn't exceed hard limit."""

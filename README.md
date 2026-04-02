@@ -249,6 +249,21 @@ command: ["tradingbot", "paper", "--strategy", "sma_cross", "--symbol", "BTC/KRW
 command: ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
 ```
 
+## 웹 대시보드
+
+```bash
+# 대시보드 의존성 설치
+pip install -e ".[dashboard]"
+
+# 대시보드 실행
+tradingbot dashboard
+```
+
+브라우저에서 http://localhost:8501 접속. 두 가지 모드:
+
+- **Live Monitor**: state.json 기반 실시간 equity curve, 오픈 포지션, 자동 새로고침
+- **Backtest Viewer**: 전략/심볼 선택 → 백테스트 실행 → equity chart + 드로다운 + 거래 내역
+
 ## 개발
 
 ```bash
@@ -282,6 +297,7 @@ trading-bot/
 │   ├── exchange/       # 거래소 추상화 (Upbit CCXT, 페이퍼)
 │   ├── live/           # 라이브 엔진, 주문 관리, 상태 영속화 (원자적 쓰기)
 │   ├── notifications/  # 텔레그램 알림
+│   ├── dashboard/      # Streamlit 웹 대시보드
 │   └── utils/          # 로깅 (콘솔 + JSON 파일 로테이션), 시간 유틸리티
 └── tests/              # 97개 테스트
 ```
@@ -296,5 +312,6 @@ trading-bot/
 | 설정 | pydantic + pyyaml |
 | 데이터 | pyarrow (Parquet) |
 | CLI | typer + rich |
+| 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
 | 테스트 | pytest (97개) |

@@ -102,18 +102,11 @@ STRATEGY_MAP: dict[str, type] = {}
 
 
 def _load_strategies() -> None:
-    """Lazily load built-in strategies."""
+    """Lazily load built-in strategies from the shared registry."""
     if STRATEGY_MAP:
         return
-    from tradingbot.strategy.examples.bollinger_breakout import BollingerBreakoutStrategy
-    from tradingbot.strategy.examples.macd_momentum import MacdMomentumStrategy
-    from tradingbot.strategy.examples.rsi_mean_reversion import RsiMeanReversionStrategy
-    from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
-
-    STRATEGY_MAP["sma_cross"] = SmaCrossStrategy
-    STRATEGY_MAP["rsi_mean_reversion"] = RsiMeanReversionStrategy
-    STRATEGY_MAP["macd_momentum"] = MacdMomentumStrategy
-    STRATEGY_MAP["bollinger_breakout"] = BollingerBreakoutStrategy
+    from tradingbot.strategy.registry import get_strategy_map
+    STRATEGY_MAP.update(get_strategy_map())
 
 
 @app.command()
@@ -480,6 +473,36 @@ def balance(
             await ex.close()
 
     asyncio.run(_fetch())
+
+
+@app.command()
+def dashboard(
+    state_file: str = typer.Option("state.json", "--state-file", help="State file for live monitor"),
+) -> None:
+    """Launch the web dashboard (Streamlit)."""
+    import subprocess
+    import sys
+
+    try:
+        import streamlit  # noqa: F401
+    except ImportError:
+        console.print("[red]Dashboard requires extra dependencies. Install with:[/red]")
+        console.print('  pip install -e ".[dashboard]"')
+        raise typer.Exit(1)
+
+    dashboard_path = Path(__file__).parent / "dashboard" / "app.py"
+    if not dashboard_path.exists():
+        console.print("[red]Dashboard app not found.[/red]")
+        raise typer.Exit(1)
+
+    console.print("[bold]Launching dashboard...[/bold]")
+    console.print(f"  State file: {state_file}")
+    console.print("[yellow]Open http://localhost:8501 in your browser[/yellow]")
+
+    subprocess.run(
+        [sys.executable, "-m", "streamlit", "run", str(dashboard_path),
+         "--", f"--state-file={state_file}"],
+    )
 
 
 if __name__ == "__main__":

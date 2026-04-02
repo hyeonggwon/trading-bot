@@ -18,6 +18,10 @@ docker-compose up -d        # Start paper trading
 docker-compose logs -f       # Tail logs
 docker-compose down          # Stop
 
+# Dashboard
+pip install -e ".[dashboard]"
+tradingbot dashboard          # http://localhost:8501
+
 # Run tests
 pytest tests/ -v
 
@@ -93,7 +97,9 @@ For each timestamp ts:
 - `live/order_manager.py` — Order lifecycle (submit, poll, timeout cancel, market re-order)
 - `risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown)
 - `notifications/telegram.py` — Telegram Bot API notifications
+- `dashboard/app.py` — Streamlit web dashboard (Live Monitor + Backtest Viewer)
 - `config.py` — Pydantic settings from YAML + .env override
+- `utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
 
 ### Built-in Strategies
 - `sma_cross` — SMA golden/dead cross (fast_period, slow_period)
@@ -117,3 +123,4 @@ Candle data stored as Parquet: `data/{SYMBOL}_{QUOTE}/{timeframe}.parquet`
 - `pydantic` + `pydantic-settings` for config validation
 - `typer` + `rich` for CLI
 - `pyarrow` for Parquet I/O
+- `streamlit` + `plotly` for web dashboard (optional: `pip install -e ".[dashboard]"`)
