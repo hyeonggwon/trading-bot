@@ -1,0 +1,40 @@
+# Git
+.git
+.gitignore
+
+# Python
+__pycache__
+*.py[cod]
+*.egg-info
+dist
+build
+.eggs
+.venv
+venv
+
+# IDE
+.idea
+.vscode
+*.swp
+
+# Environment (secrets)
+.env
+
+# Data (mounted as volume)
+data/*.parquet
+data/**/*.parquet
+
+# Testing/Dev
+.pytest_cache
+.mypy_cache
+.coverage
+htmlcov
+notebooks
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Docs
+*.md

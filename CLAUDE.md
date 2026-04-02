@@ -12,6 +12,12 @@ Python-based algorithmic trading bot for **Upbit** (Korean exchange, KRW markets
 # Install
 pip install -e ".[dev]"
 
+# Docker
+docker build -t trading-bot .
+docker-compose up -d        # Start paper trading
+docker-compose logs -f       # Tail logs
+docker-compose down          # Stop
+
 # Run tests
 pytest tests/ -v
 

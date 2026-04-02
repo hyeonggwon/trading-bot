@@ -218,6 +218,37 @@ backtest:
   slippage_pct: 0.001              # 0.1% 슬리피지
 ```
 
+## Docker 배포
+
+```bash
+# 빌드
+docker build -t trading-bot .
+
+# 페이퍼 트레이딩 시작
+docker-compose up -d
+
+# 로그 확인
+docker-compose logs -f
+
+# 실매매로 전환 (docker-compose.yml의 command 주석 해제 후)
+docker-compose up -d
+
+# 중지
+docker-compose down
+
+# 상태 확인
+docker-compose ps
+```
+
+`docker-compose.yml`에서 `command`를 변경하여 전략/심볼/모드를 조정합니다:
+```yaml
+# 페이퍼 트레이딩 (기본)
+command: ["tradingbot", "paper", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
+
+# 실매매
+command: ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
+```
+
 ## 개발
 
 ```bash
@@ -237,16 +268,22 @@ mypy src/
 ## 프로젝트 구조
 
 ```
-src/tradingbot/
-├── core/           # 도메인 모델 (Candle, Order, Trade, Position)
-├── data/           # 데이터 다운로드, 저장(Parquet), 기술적 지표
-├── strategy/       # 전략 프레임워크 + 내장 전략 4종
-├── backtest/       # 백테스트 엔진, 옵티마이저, Walk-Forward
-├── risk/           # 리스크 매니저, 사전 거래 검증
-├── exchange/       # 거래소 추상화 (Upbit CCXT, 페이퍼)
-├── live/           # 라이브 엔진, 주문 관리, 상태 영속화
-├── notifications/  # 텔레그램 알림
-└── utils/          # 로깅, 시간 유틸리티
+trading-bot/
+├── Dockerfile              # 컨테이너 빌드
+├── docker-compose.yml      # 서비스 오케스트레이션
+├── scripts/healthcheck.py  # Docker 헬스체크
+├── config/                 # YAML 설정
+├── src/tradingbot/
+│   ├── core/           # 도메인 모델 (Candle, Order, Trade, Position)
+│   ├── data/           # 데이터 다운로드, 저장(Parquet), 기술적 지표
+│   ├── strategy/       # 전략 프레임워크 + 내장 전략 4종
+│   ├── backtest/       # 백테스트 엔진, 옵티마이저, Walk-Forward
+│   ├── risk/           # 리스크 매니저, 사전 거래 검증
+│   ├── exchange/       # 거래소 추상화 (Upbit CCXT, 페이퍼)
+│   ├── live/           # 라이브 엔진, 주문 관리, 상태 영속화 (원자적 쓰기)
+│   ├── notifications/  # 텔레그램 알림
+│   └── utils/          # 로깅 (콘솔 + JSON 파일 로테이션), 시간 유틸리티
+└── tests/              # 97개 테스트
 ```
 
 ## 기술 스택
@@ -259,4 +296,5 @@ src/tradingbot/
 | 설정 | pydantic + pyyaml |
 | 데이터 | pyarrow (Parquet) |
 | CLI | typer + rich |
+| 배포 | Docker + docker-compose |
 | 테스트 | pytest (97개) |
