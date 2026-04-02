@@ -87,10 +87,15 @@ class DataFetcher:
             # Move past the last candle for next page
             since_ms = last_ts + tf_ms
 
-            # Stop if we've passed the until boundary or got fewer than limit
+            # Stop if we've passed the until boundary or reached present
             if until_ms and since_ms > until_ms:
                 break
-            if len(ohlcv) < limit:
+            now_ms = int(time.time() * 1000)
+            if since_ms > now_ms:
+                break
+            # Upbit sometimes returns slightly fewer than limit (e.g., 199 instead of 200)
+            # Only stop if we got significantly fewer, indicating end of available data
+            if len(ohlcv) < limit // 2:
                 break
 
             logger.debug(
