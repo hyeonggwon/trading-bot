@@ -353,17 +353,8 @@ def _render_trade_list(report) -> None:
 
 
 def _get_strategy_map() -> dict:
-    from tradingbot.strategy.examples.bollinger_breakout import BollingerBreakoutStrategy
-    from tradingbot.strategy.examples.macd_momentum import MacdMomentumStrategy
-    from tradingbot.strategy.examples.rsi_mean_reversion import RsiMeanReversionStrategy
-    from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
-
-    return {
-        "sma_cross": SmaCrossStrategy,
-        "rsi_mean_reversion": RsiMeanReversionStrategy,
-        "macd_momentum": MacdMomentumStrategy,
-        "bollinger_breakout": BollingerBreakoutStrategy,
-    }
+    from tradingbot.strategy.registry import get_strategy_map
+    return get_strategy_map()
 
 
 def _format_timestamp(ts: str) -> str:

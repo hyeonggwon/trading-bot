@@ -102,18 +102,11 @@ STRATEGY_MAP: dict[str, type] = {}
 
 
 def _load_strategies() -> None:
-    """Lazily load built-in strategies."""
+    """Lazily load built-in strategies from the shared registry."""
     if STRATEGY_MAP:
         return
-    from tradingbot.strategy.examples.bollinger_breakout import BollingerBreakoutStrategy
-    from tradingbot.strategy.examples.macd_momentum import MacdMomentumStrategy
-    from tradingbot.strategy.examples.rsi_mean_reversion import RsiMeanReversionStrategy
-    from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
-
-    STRATEGY_MAP["sma_cross"] = SmaCrossStrategy
-    STRATEGY_MAP["rsi_mean_reversion"] = RsiMeanReversionStrategy
-    STRATEGY_MAP["macd_momentum"] = MacdMomentumStrategy
-    STRATEGY_MAP["bollinger_breakout"] = BollingerBreakoutStrategy
+    from tradingbot.strategy.registry import get_strategy_map
+    STRATEGY_MAP.update(get_strategy_map())
 
 
 @app.command()

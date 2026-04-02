@@ -71,8 +71,6 @@ class LiveEngine:
         self._running = False
         # Per-symbol last confirmed candle timestamp
         self._last_candle_ts: dict[str, datetime] = {}
-        # Track entry fees per symbol for accurate PnL on exit
-        self._entry_fees: dict[str, float] = {}
 
     async def run(self) -> None:
         """Start the trading loop. Supports multiple symbols."""
@@ -216,7 +214,7 @@ class LiveEngine:
         """Process an entry signal."""
         balance = await self.exchange.get_balance()
         cash = balance.get("KRW", 0)
-        equity = await self._calculate_equity()
+        equity = await self._calculate_equity(balance=balance)
 
         # Validate with risk manager using actual cash balance
         from tradingbot.core.models import PortfolioState
@@ -273,7 +271,7 @@ class LiveEngine:
                 stop_loss=stop_loss,
             )
             # Track entry fee for accurate PnL on exit
-            self._entry_fees[symbol] = order.fee or 0
+            self.state.entry_fees[symbol] = order.fee or 0
             logger.info(
                 "position_opened",
                 symbol=symbol,
@@ -311,7 +309,7 @@ class LiveEngine:
 
             fill_price = order.filled_price or 0
             exit_fee = order.fee or 0
-            entry_fee = self._entry_fees.pop(symbol, 0)
+            entry_fee = self.state.entry_fees.pop(symbol, 0)
             pnl = (fill_price - position.entry_price) * position.size - entry_fee - exit_fee
 
             # Track PnL for daily loss limit
@@ -331,12 +329,17 @@ class LiveEngine:
                     f"SELL {symbol}: price={fill_price:,.0f}, PnL={pnl:,.0f} KRW"
                 )
 
-    async def _calculate_equity(self, cached_tickers: dict | None = None) -> float:
+    async def _calculate_equity(
+        self,
+        cached_tickers: dict | None = None,
+        balance: dict | None = None,
+    ) -> float:
         """Calculate total equity from exchange balances.
 
-        Uses cached_tickers if provided to avoid redundant API calls.
+        Uses cached_tickers/balance if provided to avoid redundant API calls.
         """
-        balance = await self.exchange.get_balance()
+        if balance is None:
+            balance = await self.exchange.get_balance()
         equity = balance.get("KRW", 0)
         for currency, qty in balance.items():
             if currency == "KRW":

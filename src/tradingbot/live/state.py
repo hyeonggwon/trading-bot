@@ -28,6 +28,7 @@ class StateManager:
     def __init__(self, state_path: Path = DEFAULT_STATE_PATH):
         self.state_path = state_path
         self.positions: dict[str, Position] = {}
+        self.entry_fees: dict[str, float] = {}
         self.equity_history: list[dict] = []
         self.last_save: datetime | None = None
 
@@ -38,6 +39,7 @@ class StateManager:
                 symbol: _position_to_dict(pos)
                 for symbol, pos in self.positions.items()
             },
+            "entry_fees": self.entry_fees,
             "equity_history": self.equity_history[-1000:],  # Keep last 1000
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -70,6 +72,7 @@ class StateManager:
             for symbol, pos_data in data.get("positions", {}).items():
                 self.positions[symbol] = _dict_to_position(pos_data)
 
+            self.entry_fees = data.get("entry_fees", {})
             self.equity_history = data.get("equity_history", [])
 
             logger.info(
@@ -82,6 +85,7 @@ class StateManager:
             logger.error("state_load_error", error=str(e))
             # Start fresh on corrupt state
             self.positions = {}
+            self.entry_fees = {}
             self.equity_history = []
 
     def record_equity(self, equity: float) -> None:
@@ -94,6 +98,7 @@ class StateManager:
     def clear(self) -> None:
         """Reset all state."""
         self.positions = {}
+        self.entry_fees = {}
         self.equity_history = []
         if self.state_path.exists():
             self.state_path.unlink()
