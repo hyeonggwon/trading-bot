@@ -7,29 +7,85 @@ from tradingbot.strategy.filters.base import BaseFilter
 
 def get_filter_map() -> dict[str, type[BaseFilter]]:
     """Return map of filter name → class."""
+    from tradingbot.strategy.filters.exit import (
+        AtrTrailingExitFilter,
+        CciOverboughtFilter,
+        MfiOverboughtFilter,
+        PctFromMaExitFilter,
+        StochOverboughtFilter,
+        ZscoreExtremeFilter,
+    )
     from tradingbot.strategy.filters.momentum import (
+        CciOversoldFilter,
         MacdCrossUpFilter,
+        MfiOversoldFilter,
+        RocPositiveFilter,
         RsiOverboughtFilter,
         RsiOversoldFilter,
+        StochOversoldFilter,
     )
     from tradingbot.strategy.filters.price import (
         BbUpperBreakFilter,
+        DonchianBreakFilter,
+        EmaCrossUpFilter,
         EmaAboveFilter,
         PriceBreakoutFilter,
     )
-    from tradingbot.strategy.filters.trend import TrendDownFilter, TrendUpFilter
-    from tradingbot.strategy.filters.volume import VolumeSpikeFilter
+    from tradingbot.strategy.filters.trend import (
+        AdxStrongFilter,
+        AroonUpFilter,
+        IchimokuAboveFilter,
+        TrendDownFilter,
+        TrendUpFilter,
+    )
+    from tradingbot.strategy.filters.volatility import (
+        AtrBreakoutFilter,
+        BbBandwidthLowFilter,
+        BbSqueezeFilter,
+        KeltnerBreakFilter,
+    )
+    from tradingbot.strategy.filters.volume import (
+        MfiConfirmFilter,
+        ObvRisingFilter,
+        VolumeSpikeFilter,
+    )
 
     return {
+        # Trend filters
         "trend_up": TrendUpFilter,
         "trend_down": TrendDownFilter,
+        "adx_strong": AdxStrongFilter,
+        "ichimoku_above": IchimokuAboveFilter,
+        "aroon_up": AroonUpFilter,
+        # Entry signals
         "rsi_oversold": RsiOversoldFilter,
-        "rsi_overbought": RsiOverboughtFilter,
         "macd_cross_up": MacdCrossUpFilter,
-        "volume_spike": VolumeSpikeFilter,
+        "stoch_oversold": StochOversoldFilter,
+        "cci_oversold": CciOversoldFilter,
+        "roc_positive": RocPositiveFilter,
+        "mfi_oversold": MfiOversoldFilter,
+        "ema_cross_up": EmaCrossUpFilter,
+        "donchian_break": DonchianBreakFilter,
         "price_breakout": PriceBreakoutFilter,
         "ema_above": EmaAboveFilter,
         "bb_upper_break": BbUpperBreakFilter,
+        # Volatility filters
+        "atr_breakout": AtrBreakoutFilter,
+        "keltner_break": KeltnerBreakFilter,
+        "bb_squeeze": BbSqueezeFilter,
+        "bb_bandwidth_low": BbBandwidthLowFilter,
+        # Volume confirm
+        "volume_spike": VolumeSpikeFilter,
+        "obv_rising": ObvRisingFilter,
+        "mfi_confirm": MfiConfirmFilter,
+        # Exit signals
+        "rsi_overbought": RsiOverboughtFilter,
+        "stoch_overbought": StochOverboughtFilter,
+        "cci_overbought": CciOverboughtFilter,
+        "mfi_overbought": MfiOverboughtFilter,
+        "zscore_extreme": ZscoreExtremeFilter,
+        "pct_from_ma_exit": PctFromMaExitFilter,
+        "atr_trailing_exit": AtrTrailingExitFilter,
     }
 
 
@@ -112,6 +168,116 @@ def _parse_filter_params(
             kwargs["period"] = int(parts[1])
         if len(parts) >= 3:
             kwargs["std"] = float(parts[2])
+
+    # ── New filters ──
+
+    elif name in ("stoch_oversold", "stoch_overbought"):
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["k_period"] = int(parts[2])
+        if len(parts) >= 4:
+            kwargs["d_period"] = int(parts[3])
+
+    elif name in ("cci_oversold", "cci_overbought"):
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["period"] = int(parts[2])
+
+    elif name == "roc_positive":
+        if len(parts) >= 2:
+            kwargs["period"] = int(parts[1])
+
+    elif name in ("mfi_oversold", "mfi_overbought"):
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["period"] = int(parts[2])
+
+    elif name == "mfi_confirm":
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["period"] = int(parts[2])
+
+    elif name == "ema_cross_up":
+        if len(parts) >= 2:
+            kwargs["fast"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["slow"] = int(parts[2])
+
+    elif name == "donchian_break":
+        if len(parts) >= 2:
+            kwargs["period"] = int(parts[1])
+
+    elif name == "adx_strong":
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["period"] = int(parts[2])
+
+    elif name == "ichimoku_above":
+        if len(parts) >= 2:
+            kwargs["window1"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["window2"] = int(parts[2])
+        if len(parts) >= 4:
+            kwargs["window3"] = int(parts[3])
+
+    elif name == "aroon_up":
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["period"] = int(parts[2])
+
+    elif name == "atr_breakout":
+        if len(parts) >= 2:
+            kwargs["period"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["multiplier"] = float(parts[2])
+        if len(parts) >= 4:
+            kwargs["ema_period"] = int(parts[3])
+
+    elif name == "keltner_break":
+        if len(parts) >= 2:
+            kwargs["period"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["atr_period"] = int(parts[2])
+
+    elif name == "bb_squeeze":
+        if len(parts) >= 2:
+            kwargs["bb_period"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["kc_period"] = int(parts[2])
+
+    elif name == "bb_bandwidth_low":
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["period"] = int(parts[2])
+
+    elif name == "obv_rising":
+        if len(parts) >= 2:
+            kwargs["obv_sma_period"] = int(parts[1])
+
+    elif name == "zscore_extreme":
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["period"] = int(parts[2])
+
+    elif name == "pct_from_ma_exit":
+        if len(parts) >= 2:
+            kwargs["period"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["threshold"] = float(parts[2])
+
+    elif name == "atr_trailing_exit":
+        if len(parts) >= 2:
+            kwargs["period"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["multiplier"] = float(parts[2])
 
 
 def parse_filter_string(filter_string: str, base_timeframe: str = "1h") -> list[BaseFilter]:

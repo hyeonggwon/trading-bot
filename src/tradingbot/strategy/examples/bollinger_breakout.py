@@ -34,7 +34,7 @@ class BollingerBreakoutStrategy(Strategy):
         if len(df) < 2:
             return None
 
-        upper_col = f"bb_upper_{self.period}"
+        upper_col = f"bb_upper_{self.period}_{self.std}"
         if upper_col not in df.columns:
             return None
 
@@ -62,7 +62,7 @@ class BollingerBreakoutStrategy(Strategy):
         if len(df) < 2:
             return None
 
-        mid_col = f"bb_middle_{self.period}"
+        mid_col = f"bb_middle_{self.period}_{self.std}"
         if mid_col not in df.columns:
             return None
 

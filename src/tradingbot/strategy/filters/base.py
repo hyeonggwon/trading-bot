@@ -15,6 +15,7 @@ class BaseFilter(ABC):
     """Abstract base for all signal filters."""
 
     name: str = "base"
+    role: str = "entry"  # "entry" | "trend" | "volatility" | "volume" | "exit"
 
     def __init__(self, **kwargs):
         self.params = kwargs
@@ -30,6 +31,11 @@ class BaseFilter(ABC):
         ...
 
     @abstractmethod
-    def check_exit(self, df: pd.DataFrame) -> bool:
-        """Check if exit condition is met on the last confirmed candle."""
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        """Check if exit condition is met on the last confirmed candle.
+
+        Args:
+            entry_index: Index position of entry candle in df (for trailing-style exits).
+                         Most filters ignore this parameter.
+        """
         ...

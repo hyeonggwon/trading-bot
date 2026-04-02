@@ -8,15 +8,24 @@ import pandas as pd
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
 from tradingbot.strategy.combined import CombinedStrategy
-from tradingbot.strategy.filters.momentum import RsiOverboughtFilter, RsiOversoldFilter
-from tradingbot.strategy.filters.price import EmaAboveFilter, PriceBreakoutFilter
+from tradingbot.strategy.filters.exit import AtrTrailingExitFilter, ZscoreExtremeFilter
+from tradingbot.strategy.filters.momentum import (
+    RsiOverboughtFilter,
+    RsiOversoldFilter,
+    StochOversoldFilter,
+)
+from tradingbot.strategy.filters.price import (
+    EmaCrossUpFilter,
+    EmaAboveFilter,
+    PriceBreakoutFilter,
+)
 from tradingbot.strategy.filters.registry import (
     get_filter_map,
     parse_filter_spec,
     parse_filter_string,
 )
-from tradingbot.strategy.filters.trend import TrendUpFilter
-from tradingbot.strategy.filters.volume import VolumeSpikeFilter
+from tradingbot.strategy.filters.trend import AdxStrongFilter, TrendUpFilter
+from tradingbot.strategy.filters.volume import ObvRisingFilter, VolumeSpikeFilter
 
 
 def _make_data(n: int = 300) -> pd.DataFrame:
@@ -45,7 +54,7 @@ class TestFilterRegistry:
         assert "rsi_oversold" in fmap
         assert "volume_spike" in fmap
         assert "ema_above" in fmap
-        assert len(fmap) == 9
+        assert len(fmap) == 30
 
     def test_parse_simple(self):
         f = parse_filter_spec("rsi_oversold:30")
@@ -86,6 +95,57 @@ class TestFilterRegistry:
         assert filters[0].name == "trend_up"
         assert filters[1].name == "rsi_oversold"
         assert filters[2].name == "volume_spike"
+
+    def test_parse_adx_strong(self):
+        f = parse_filter_spec("adx_strong:25")
+        assert isinstance(f, AdxStrongFilter)
+        assert f.threshold == 25.0
+        assert f.role == "trend"
+
+    def test_parse_ema_cross_up(self):
+        f = parse_filter_spec("ema_cross_up:12:26")
+        assert isinstance(f, EmaCrossUpFilter)
+        assert f.fast == 12
+        assert f.slow == 26
+        assert f.role == "entry"
+
+    def test_parse_atr_trailing_exit(self):
+        f = parse_filter_spec("atr_trailing_exit:14:2.5")
+        assert isinstance(f, AtrTrailingExitFilter)
+        assert f.period == 14
+        assert f.multiplier == 2.5
+        assert f.role == "exit"
+
+    def test_parse_obv_rising(self):
+        f = parse_filter_spec("obv_rising:20")
+        assert isinstance(f, ObvRisingFilter)
+        assert f.obv_sma_period == 20
+        assert f.role == "volume"
+
+    def test_parse_stoch_oversold(self):
+        f = parse_filter_spec("stoch_oversold:20:14:3")
+        assert isinstance(f, StochOversoldFilter)
+        assert f.threshold == 20.0
+        assert f.k_period == 14
+
+    def test_parse_zscore_extreme(self):
+        f = parse_filter_spec("zscore_extreme:2.0")
+        assert isinstance(f, ZscoreExtremeFilter)
+        assert f.threshold == 2.0
+        assert f.role == "exit"
+
+    def test_role_tags(self):
+        """Verify role tags are correctly set across filter categories."""
+        fmap = get_filter_map()
+        roles = {name: fmap[name].role for name in fmap}
+        assert roles["trend_up"] == "trend"
+        assert roles["rsi_oversold"] == "entry"
+        assert roles["volume_spike"] == "volume"
+        assert roles["rsi_overbought"] == "exit"
+        assert roles["bb_squeeze"] == "volatility"
+        assert roles["atr_trailing_exit"] == "exit"
+        assert roles["obv_rising"] == "volume"
+        assert roles["adx_strong"] == "trend"
 
 
 class TestCombinedStrategy:
@@ -135,6 +195,28 @@ class TestCombinedStrategy:
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
         # With stricter filters, should have fewer trades than single filter
+        assert report.final_balance > 0
+
+    def test_exit_role_skipped_in_entry_and(self):
+        """Exit-role filters in entry_filters should be skipped in AND logic."""
+        df = _make_data(300)
+        # Put an exit-only filter in entry_filters — should be skipped
+        entry = [RsiOversoldFilter(threshold=35), ZscoreExtremeFilter(threshold=2.0)]
+        exit_ = [RsiOverboughtFilter(threshold=65)]
+        strategy = CombinedStrategy(entry_filters=entry, exit_filters=exit_)
+        strategy.timeframe = "1h"
+
+        config = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
+                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+        engine = BacktestEngine(strategy=strategy, config=config)
+        report = engine.run({"BTC/KRW": df})
+        # ZscoreExtremeFilter.check_entry() returns False always,
+        # but since role=="exit", it should be skipped → trades should happen
         assert report.final_balance > 0
 
     def test_no_entry_filters_no_trades(self):

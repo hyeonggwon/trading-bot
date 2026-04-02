@@ -52,10 +52,17 @@ class CombinedStrategy(Strategy):
         if len(df) < 2 or not self.entry_filters:
             return None
 
-        # AND logic: all entry filters must pass
+        # AND logic: all entry filters must pass (skip exit-role filters)
+        checked = 0
         for f in self.entry_filters:
+            if f.role == "exit":
+                continue
+            checked += 1
             if not f.check_entry(df):
                 return None
+
+        if checked == 0:
+            return None  # No non-exit filters to evaluate
 
         return Signal(
             timestamp=df.index[-1].to_pydatetime(),
@@ -70,9 +77,19 @@ class CombinedStrategy(Strategy):
         if len(df) < 2 or not self.exit_filters:
             return None
 
+        # Compute entry_index for trailing-style exits
+        entry_index = None
+        if position and position.entry_time:
+            try:
+                idx = df.index.get_indexer([position.entry_time], method="ffill")[0]
+                if idx >= 0:
+                    entry_index = idx
+            except (KeyError, IndexError):
+                pass
+
         # OR logic: any exit filter triggers exit
         for f in self.exit_filters:
-            if f.check_exit(df):
+            if f.check_exit(df, entry_index=entry_index):
                 return Signal(
                     timestamp=df.index[-1].to_pydatetime(),
                     symbol=symbol,

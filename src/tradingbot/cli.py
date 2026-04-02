@@ -721,6 +721,28 @@ COMBINE_TEMPLATES = [
     # Simple combos
     {"entry": "rsi_oversold:30 + volume_spike:2.0", "exit": "rsi_overbought:70", "label": "RSI+Vol"},
     {"entry": "macd_cross_up + volume_spike:2.5", "exit": "macd_cross_up", "label": "MACD+Vol"},
+    # ── Trend Following (new filters) ──
+    {"entry": "ema_cross_up:12:26 + adx_strong:25 + volume_spike:2.0", "exit": "atr_trailing_exit:14:2.5", "label": "EMACross+ADX+Vol→ATR"},
+    {"entry": "ema_cross_up:12:26 + adx_strong:25", "exit": "rsi_overbought:70", "label": "EMACross+ADX"},
+    {"entry": "stoch_oversold:20 + aroon_up:70", "exit": "stoch_overbought:80", "label": "Stoch+Aroon"},
+    {"entry": "roc_positive:12 + ichimoku_above + obv_rising", "exit": "rsi_overbought:70", "label": "ROC+Ichi+OBV"},
+    {"entry": "donchian_break:20 + adx_strong:25 + volume_spike:2.0", "exit": "donchian_break:20", "label": "Donchian+ADX+Vol"},
+    {"entry": "macd_cross_up + aroon_up:70 + mfi_confirm:50", "exit": "mfi_overbought:80", "label": "MACD+Aroon+MFI"},
+    # ── Mean Reversion (new filters) ──
+    {"entry": "rsi_oversold:30 + adx_strong:20 + obv_rising", "exit": "zscore_extreme:2.0", "label": "RSI+ADX+OBV→Zscore"},
+    {"entry": "stoch_oversold:20 + ema_above:50 + mfi_confirm:40", "exit": "stoch_overbought:80", "label": "Stoch+EMA+MFI"},
+    {"entry": "cci_oversold:100 + trend_up:4 + volume_spike:2.0", "exit": "cci_overbought:100", "label": "CCI+Trend+Vol"},
+    {"entry": "mfi_oversold:20 + trend_up:4", "exit": "mfi_overbought:80", "label": "MFI+Trend"},
+    {"entry": "rsi_oversold:30 + ichimoku_above", "exit": "pct_from_ma_exit:20:5.0", "label": "RSI+Ichi→PctMA"},
+    # ── Volatility Breakout (new filters) ──
+    {"entry": "bb_upper_break:20 + bb_squeeze + volume_spike:2.0", "exit": "ema_above:20", "label": "BB+Squeeze+Vol"},
+    {"entry": "atr_breakout:14:2.0 + adx_strong:25 + obv_rising", "exit": "atr_trailing_exit:14:2.5", "label": "ATR+ADX+OBV→ATR"},
+    {"entry": "keltner_break + trend_up:4 + volume_spike:2.0", "exit": "keltner_break", "label": "KC+Trend+Vol"},
+    {"entry": "price_breakout:20 + bb_bandwidth_low:0.05 + volume_spike:2.5", "exit": "pct_from_ma_exit:20:5.0", "label": "Breakout+BBW+Vol"},
+    # ── Multi-Confirm (new filters) ──
+    {"entry": "rsi_oversold:30 + stoch_oversold:20 + adx_strong:25", "exit": "rsi_overbought:70", "label": "RSI+Stoch+ADX"},
+    {"entry": "macd_cross_up + obv_rising + adx_strong:25", "exit": "atr_trailing_exit:14:2.0", "label": "MACD+OBV+ADX→ATR"},
+    {"entry": "ema_cross_up:12:26 + mfi_confirm:50 + bb_bandwidth_low:0.04", "exit": "zscore_extreme:2.0", "label": "EMA+MFI+BBW→Zscore"},
 ]
 
 

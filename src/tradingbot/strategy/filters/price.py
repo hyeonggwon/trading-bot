@@ -1,10 +1,10 @@
-"""Price filters — breakout, EMA, Bollinger."""
+"""Price filters — breakout, EMA, Bollinger, Donchian."""
 
 from __future__ import annotations
 
 import pandas as pd
 
-from tradingbot.data.indicators import add_bollinger_bands, add_ema
+from tradingbot.data.indicators import add_bollinger_bands, add_donchian_channel, add_ema
 from tradingbot.strategy.filters.base import BaseFilter
 
 
@@ -12,6 +12,7 @@ class PriceBreakoutFilter(BaseFilter):
     """Price closes above recent N-candle high → breakout."""
 
     name = "price_breakout"
+    role = "entry"
 
     def __init__(self, lookback: int = 10):
         super().__init__(lookback=lookback)
@@ -38,7 +39,7 @@ class PriceBreakoutFilter(BaseFilter):
             return False
         return curr_close > prev_high
 
-    def check_exit(self, df: pd.DataFrame) -> bool:
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
 
 
@@ -46,6 +47,7 @@ class EmaAboveFilter(BaseFilter):
     """Price above EMA → confirms uptrend."""
 
     name = "ema_above"
+    role = "trend"
 
     def __init__(self, period: int = 20):
         super().__init__(period=period)
@@ -67,7 +69,7 @@ class EmaAboveFilter(BaseFilter):
             return False
         return curr_close > curr_ema
 
-    def check_exit(self, df: pd.DataFrame) -> bool:
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"ema_{self.period}"
         if col not in df.columns:
             return False
@@ -82,6 +84,7 @@ class BbUpperBreakFilter(BaseFilter):
     """Price closes above upper Bollinger Band → momentum breakout."""
 
     name = "bb_upper_break"
+    role = "entry"
 
     def __init__(self, period: int = 20, std: float = 2.0):
         super().__init__(period=period, std=std)
@@ -89,7 +92,7 @@ class BbUpperBreakFilter(BaseFilter):
         self.std = std
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
-        col = f"bb_upper_{self.period}"
+        col = f"bb_upper_{self.period}_{self.std}"
         if col not in df.columns:
             df = add_bollinger_bands(df, period=self.period, std=self.std)
         return df
@@ -97,7 +100,7 @@ class BbUpperBreakFilter(BaseFilter):
     def check_entry(self, df: pd.DataFrame) -> bool:
         if len(df) < 2:
             return False
-        col = f"bb_upper_{self.period}"
+        col = f"bb_upper_{self.period}_{self.std}"
         if col not in df.columns:
             return False
         curr_close = df["close"].iloc[-1]
@@ -108,8 +111,80 @@ class BbUpperBreakFilter(BaseFilter):
             return False
         return prev_close <= prev_bb and curr_close > curr_bb
 
-    def check_exit(self, df: pd.DataFrame) -> bool:
-        mid_col = f"bb_middle_{self.period}"
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        mid_col = f"bb_middle_{self.period}_{self.std}"
+        if mid_col not in df.columns:
+            return False
+        curr_close = df["close"].iloc[-1]
+        curr_mid = df[mid_col].iloc[-1]
+        if pd.isna(curr_mid):
+            return False
+        return curr_close < curr_mid
+
+
+class EmaCrossUpFilter(BaseFilter):
+    """Fast EMA crosses above slow EMA → entry signal."""
+
+    name = "ema_cross_up"
+    role = "entry"
+
+    def __init__(self, fast: int = 12, slow: int = 26):
+        super().__init__(fast=fast, slow=slow)
+        self.fast = fast
+        self.slow = slow
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        for p in (self.fast, self.slow):
+            col = f"ema_{p}"
+            if col not in df.columns:
+                df = add_ema(df, period=p)
+        return df
+
+    def check_entry(self, df: pd.DataFrame) -> bool:
+        if len(df) < 2:
+            return False
+        fast_col = f"ema_{self.fast}"
+        slow_col = f"ema_{self.slow}"
+        curr_fast, prev_fast = df[fast_col].iloc[-1], df[fast_col].iloc[-2]
+        curr_slow, prev_slow = df[slow_col].iloc[-1], df[slow_col].iloc[-2]
+        if pd.isna(curr_fast) or pd.isna(prev_fast) or pd.isna(curr_slow) or pd.isna(prev_slow):
+            return False
+        return prev_fast <= prev_slow and curr_fast > curr_slow
+
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        return False
+
+
+class DonchianBreakFilter(BaseFilter):
+    """Close above previous Donchian upper band → breakout entry."""
+
+    name = "donchian_break"
+    role = "entry"
+
+    def __init__(self, period: int = 20):
+        super().__init__(period=period)
+        self.period = period
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        col = f"dc_upper_{self.period}"
+        if col not in df.columns:
+            df = add_donchian_channel(df, period=self.period)
+        return df
+
+    def check_entry(self, df: pd.DataFrame) -> bool:
+        if len(df) < 2:
+            return False
+        col = f"dc_upper_{self.period}"
+        if col not in df.columns:
+            return False
+        curr_close = df["close"].iloc[-1]
+        prev_upper = df[col].iloc[-2]
+        if pd.isna(prev_upper):
+            return False
+        return curr_close > prev_upper
+
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        mid_col = f"dc_middle_{self.period}"
         if mid_col not in df.columns:
             return False
         curr_close = df["close"].iloc[-1]
