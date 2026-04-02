@@ -17,15 +17,23 @@ class PriceBreakoutFilter(BaseFilter):
         super().__init__(lookback=lookback)
         self.lookback = lookback
 
+    def _col_high(self) -> str:
+        return f"_recent_high_{self.lookback}"
+
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
-        df["_recent_high"] = df["high"].rolling(window=self.lookback).max()
+        if self._col_high() in df.columns:
+            return df
+        df[self._col_high()] = df["high"].rolling(window=self.lookback).max()
         return df
 
     def check_entry(self, df: pd.DataFrame) -> bool:
-        if len(df) < 2 or "_recent_high" not in df.columns:
+        if len(df) < 2:
+            return False
+        col = self._col_high()
+        if col not in df.columns:
             return False
         curr_close = df["close"].iloc[-1]
-        prev_high = df["_recent_high"].iloc[-2]
+        prev_high = df[col].iloc[-2]
         if pd.isna(prev_high):
             return False
         return curr_close > prev_high

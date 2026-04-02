@@ -18,20 +18,27 @@ class VolumeSpikeFilter(BaseFilter):
         self.sma_period = sma_period
         self.threshold = threshold
 
+    def _col_ratio(self) -> str:
+        return f"_vol_ratio_{self.sma_period}"
+
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        if self._col_ratio() in df.columns:
+            return df
+
         col = f"volume_sma_{self.sma_period}"
         if col not in df.columns:
             df = add_volume_sma(df, period=self.sma_period)
-        df["_vol_ratio"] = df["volume"] / df[col]
+        df[self._col_ratio()] = df["volume"] / df[col]
         return df
 
     def check_entry(self, df: pd.DataFrame) -> bool:
-        if "_vol_ratio" not in df.columns:
+        col = self._col_ratio()
+        if col not in df.columns:
             return False
-        ratio = df["_vol_ratio"].iloc[-1]
+        ratio = df[col].iloc[-1]
         if pd.isna(ratio):
             return False
         return ratio >= self.threshold
 
     def check_exit(self, df: pd.DataFrame) -> bool:
-        return False  # Volume spike is entry-only
+        return False

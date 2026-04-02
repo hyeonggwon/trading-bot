@@ -39,11 +39,13 @@ class CombinedStrategy(Strategy):
         self.exit_filters = exit_filters or []
 
     def indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute all indicators needed by all filters."""
-        for f in self.entry_filters:
-            df = f.compute(df)
-        for f in self.exit_filters:
-            df = f.compute(df)
+        """Compute all indicators needed by all filters (deduplicated)."""
+        seen: set[tuple] = set()
+        for f in self.entry_filters + self.exit_filters:
+            key = (f.__class__.__name__, tuple(sorted(f.params.items())))
+            if key not in seen:
+                df = f.compute(df)
+                seen.add(key)
         return df
 
     def should_entry(self, df: pd.DataFrame, symbol: str) -> Signal | None:
