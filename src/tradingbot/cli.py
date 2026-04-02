@@ -650,5 +650,204 @@ def scan(
     console.print(table)
 
 
+@app.command()
+def combine(
+    entry: str = typer.Option(..., "--entry", help="Entry filters (e.g., 'trend_up:4 + rsi_oversold:30')"),
+    exit_: str = typer.Option(..., "--exit", help="Exit filters (e.g., 'rsi_overbought:70')"),
+    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Trading pair"),
+    timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe"),
+    balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+) -> None:
+    """Backtest a combined filter strategy (no code needed)."""
+    setup_logging()
+
+    from tradingbot.backtest.engine import BacktestEngine
+    from tradingbot.data.storage import load_candles
+    from tradingbot.strategy.combined import CombinedStrategy
+    from tradingbot.strategy.filters.registry import parse_filter_string
+
+    try:
+        entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
+        exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+
+    strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
+    strategy.symbols = [symbol]
+    strategy.timeframe = timeframe
+
+    console.print(f"[bold]Combined Strategy: {strategy.describe()}[/bold]")
+    console.print(f"  Symbol: {symbol} ({timeframe})")
+
+    try:
+        df = load_candles(symbol, timeframe, Path(data_dir))
+    except FileNotFoundError:
+        console.print(f"[red]No data for {symbol} {timeframe}.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"  Data: {len(df)} candles")
+
+    config = load_config(Path("config"), overrides={
+        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+    })
+
+    engine = BacktestEngine(strategy=strategy, config=config)
+    report = engine.run({symbol: df})
+    report.print_summary()
+
+
+# Predefined meaningful filter combination templates
+COMBINE_TEMPLATES = [
+    # Trend + timing
+    {"entry": "trend_up:4 + rsi_oversold:30", "exit": "rsi_overbought:70", "label": "Trend+RSI"},
+    {"entry": "trend_up:4 + rsi_oversold:35", "exit": "rsi_overbought:65", "label": "Trend+RSI(tight)"},
+    {"entry": "trend_up:4 + rsi_oversold:30", "exit": "trend_up:4", "label": "Trend+RSI→TrendExit"},
+    # Trend + volume
+    {"entry": "trend_up:4 + volume_spike:2.5", "exit": "rsi_overbought:70", "label": "Trend+Vol"},
+    {"entry": "trend_up:4 + volume_spike:2.0", "exit": "ema_above:20", "label": "Trend+Vol→EMA"},
+    # Triple filter
+    {"entry": "trend_up:4 + rsi_oversold:30 + volume_spike:2.0", "exit": "rsi_overbought:70", "label": "Triple"},
+    {"entry": "trend_up:4 + rsi_oversold:35 + volume_spike:2.5", "exit": "trend_up:4", "label": "Triple(strict)"},
+    # Momentum combos
+    {"entry": "ema_above:50 + macd_cross_up", "exit": "rsi_overbought:70", "label": "EMA+MACD"},
+    {"entry": "ema_above:20 + rsi_oversold:30", "exit": "rsi_overbought:70", "label": "EMA+RSI"},
+    {"entry": "ema_above:50 + macd_cross_up + volume_spike:2.0", "exit": "rsi_overbought:70", "label": "EMA+MACD+Vol"},
+    # Breakout combos
+    {"entry": "volume_spike:2.5 + price_breakout:10", "exit": "ema_above:20", "label": "Vol+Breakout"},
+    {"entry": "bb_upper_break:20 + volume_spike:2.0", "exit": "ema_above:20", "label": "BB+Vol"},
+    {"entry": "price_breakout:10 + trend_up:4", "exit": "trend_up:4", "label": "Breakout+Trend"},
+    # Simple combos
+    {"entry": "rsi_oversold:30 + volume_spike:2.0", "exit": "rsi_overbought:70", "label": "RSI+Vol"},
+    {"entry": "macd_cross_up + volume_spike:2.5", "exit": "macd_cross_up", "label": "MACD+Vol"},
+]
+
+
+@app.command(name="combine-scan")
+def combine_scan(
+    top_n: int = typer.Option(10, "--top", help="Show top N results"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
+) -> None:
+    """Scan predefined filter combinations across all symbols and timeframes."""
+    setup_logging()
+
+    from tradingbot.backtest.engine import BacktestEngine
+    from tradingbot.data.storage import list_available_data, load_candles
+    from tradingbot.strategy.combined import CombinedStrategy
+    from tradingbot.strategy.filters.registry import parse_filter_string
+
+    available = list_available_data(Path(data_dir))
+    if not available:
+        console.print("[red]No data found. Run tradingbot download first.[/red]")
+        raise typer.Exit(1)
+
+    symbol_timeframes: dict[str, list[str]] = {}
+    for item in available:
+        symbol_timeframes.setdefault(item["symbol"], []).append(item["timeframe"])
+
+    total = len(COMBINE_TEMPLATES) * sum(len(tfs) for tfs in symbol_timeframes.values())
+    console.print(f"[bold]Scanning {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols × timeframes ({total} combinations)...[/bold]")
+
+    results: list[dict] = []
+    failures: list[str] = []
+    count = 0
+
+    for sym, timeframes in symbol_timeframes.items():
+        for tf in timeframes:
+            try:
+                df = load_candles(sym, tf, Path(data_dir))
+            except FileNotFoundError:
+                continue
+
+            for tmpl in COMBINE_TEMPLATES:
+                count += 1
+                if count % 10 == 0:
+                    console.print(f"  Progress: {count}/{total}...", end="\r")
+
+                try:
+                    entry_filters = parse_filter_string(tmpl["entry"], base_timeframe=tf)
+                    exit_filters = parse_filter_string(tmpl["exit"], base_timeframe=tf)
+
+                    strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
+                    strategy.symbols = [sym]
+                    strategy.timeframe = tf
+
+                    config = load_config(Path("config"), overrides={
+                        "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
+                    })
+
+                    engine = BacktestEngine(strategy=strategy, config=config)
+                    report = engine.run({sym: df})
+
+                    results.append({
+                        "template": tmpl["label"],
+                        "entry": tmpl["entry"],
+                        "exit": tmpl["exit"],
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "sharpe_ratio": report.sharpe_ratio,
+                        "total_return": report.total_return,
+                        "max_drawdown": report.max_drawdown,
+                        "win_rate": report.win_rate,
+                        "profit_factor": report.profit_factor,
+                        "total_trades": report.total_trades,
+                    })
+                except Exception as e:
+                    failures.append(f"{tmpl['label']}/{sym}/{tf}: {e}")
+
+    console.print(f"  Completed {count}/{total} combinations.     ")
+    if failures:
+        console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
+        for f in failures[:5]:
+            console.print(f"  {f}")
+        if len(failures) > 5:
+            console.print(f"  ... and {len(failures) - 5} more")
+
+    if not results:
+        console.print("[red]No results.[/red]")
+        raise typer.Exit(1)
+
+    # Sort by Sharpe descending
+    results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
+
+    table = Table(title=f"Best Filter Combinations (Top {min(top_n, len(results))})")
+    table.add_column("#", justify="right")
+    table.add_column("Template")
+    table.add_column("Symbol")
+    table.add_column("TF")
+    table.add_column("Sharpe", justify="right")
+    table.add_column("Return", justify="right")
+    table.add_column("MaxDD", justify="right")
+    table.add_column("Win%", justify="right")
+    table.add_column("PF", justify="right")
+    table.add_column("Trades", justify="right")
+
+    for i, r in enumerate(results[:top_n], 1):
+        sharpe_style = "green" if r["sharpe_ratio"] > 1.0 else ("yellow" if r["sharpe_ratio"] > 0 else "red")
+        table.add_row(
+            str(i),
+            r["template"],
+            r["symbol"],
+            r["timeframe"],
+            f"[{sharpe_style}]{r['sharpe_ratio']:.2f}[/{sharpe_style}]",
+            f"{r['total_return']:.2%}",
+            f"{r['max_drawdown']:.2%}",
+            f"{r['win_rate']:.1%}",
+            f"{r['profit_factor']:.2f}",
+            str(r["total_trades"]),
+        )
+
+    console.print(table)
+
+    # Show the entry/exit details of top results
+    console.print("\n[bold]Top combination details:[/bold]")
+    for i, r in enumerate(results[:3], 1):
+        console.print(f"  #{i} {r['template']} ({r['symbol']} {r['timeframe']})")
+        console.print(f"     Entry: {r['entry']}")
+        console.print(f"     Exit:  {r['exit']}")
+
+
 if __name__ == "__main__":
     app()
