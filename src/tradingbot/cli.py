@@ -522,5 +522,136 @@ def dashboard(
     )
 
 
+@app.command()
+def scan(
+    top_n: int = typer.Option(10, "--top", help="Show top N results"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
+    sort_by: str = typer.Option("sharpe_ratio", "--sort-by", help="Sort metric"),
+) -> None:
+    """Scan all strategy × timeframe × symbol combinations to find the best."""
+    setup_logging()
+    _load_strategies()
+
+    valid_metrics = {"sharpe_ratio", "total_return", "max_drawdown", "win_rate", "profit_factor", "total_trades"}
+    if sort_by not in valid_metrics:
+        console.print(f"[red]Invalid sort metric: {sort_by}[/red]")
+        console.print(f"Available: {', '.join(sorted(valid_metrics))}")
+        raise typer.Exit(1)
+
+    from tradingbot.backtest.engine import BacktestEngine
+    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+    from tradingbot.data.storage import list_available_data
+
+    # Discover available data
+    available = list_available_data(Path(data_dir))
+    if not available:
+        console.print("[red]No data found. Run tradingbot download first.[/red]")
+        raise typer.Exit(1)
+
+    # Group by symbol → list of timeframes
+    symbol_timeframes: dict[str, list[str]] = {}
+    for item in available:
+        sym = item["symbol"]
+        tf = item["timeframe"]
+        symbol_timeframes.setdefault(sym, []).append(tf)
+
+    strategies = list(STRATEGY_MAP.keys())
+    results: list[dict] = []
+    failures: list[str] = []
+    total = sum(len(tfs) for tfs in symbol_timeframes.values()) * len(strategies)
+
+    console.print(f"[bold]Scanning {len(strategies)} strategies × {len(symbol_timeframes)} symbols × timeframes ({total} combinations)...[/bold]")
+
+    from tradingbot.data.storage import load_candles
+
+    count = 0
+    for sym, timeframes in symbol_timeframes.items():
+        for tf in timeframes:
+            try:
+                df = load_candles(sym, tf, Path(data_dir))
+            except FileNotFoundError:
+                continue
+
+            for strat_name in strategies:
+                count += 1
+                if count % 10 == 0:
+                    console.print(f"  Progress: {count}/{total}...", end="\r")
+
+                try:
+                    config = AppConfig(
+                        trading=TradingConfig(symbols=[sym], timeframe=tf, initial_balance=balance),
+                        risk=RiskConfig(),
+                        backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+                    )
+                    strategy_cls = STRATEGY_MAP[strat_name]
+                    strategy = strategy_cls()
+                    strategy.symbols = [sym]
+                    strategy.timeframe = tf
+
+                    engine = BacktestEngine(strategy=strategy, config=config)
+                    report = engine.run({sym: df})
+
+                    results.append({
+                        "strategy": strat_name,
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "sharpe_ratio": report.sharpe_ratio,
+                        "total_return": report.total_return,
+                        "max_drawdown": report.max_drawdown,
+                        "win_rate": report.win_rate,
+                        "profit_factor": report.profit_factor,
+                        "total_trades": report.total_trades,
+                    })
+                except Exception as e:
+                    failures.append(f"{strat_name}/{sym}/{tf}: {e}")
+
+    console.print(f"  Completed {count}/{total} combinations.     ")
+    if failures:
+        console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
+        for f in failures[:5]:
+            console.print(f"  {f}")
+        if len(failures) > 5:
+            console.print(f"  ... and {len(failures) - 5} more")
+
+    if not results:
+        console.print("[red]No results.[/red]")
+        raise typer.Exit(1)
+
+    # Sort results
+    reverse = sort_by != "max_drawdown"
+    results.sort(key=lambda r: r.get(sort_by, 0), reverse=reverse)
+
+    # Display top N
+    table = Table(title=f"Best Combinations (Top {min(top_n, len(results))})")
+    table.add_column("#", justify="right")
+    table.add_column("Strategy")
+    table.add_column("Symbol")
+    table.add_column("TF")
+    table.add_column("Sharpe", justify="right")
+    table.add_column("Return", justify="right")
+    table.add_column("MaxDD", justify="right")
+    table.add_column("Win%", justify="right")
+    table.add_column("PF", justify="right")
+    table.add_column("Trades", justify="right")
+
+    for i, r in enumerate(results[:top_n], 1):
+        sharpe_style = "green" if r["sharpe_ratio"] > 1.0 else ("yellow" if r["sharpe_ratio"] > 0 else "red")
+        table.add_row(
+            str(i),
+            r["strategy"],
+            r["symbol"],
+            r["timeframe"],
+            f"[{sharpe_style}]{r['sharpe_ratio']:.2f}[/{sharpe_style}]",
+            f"{r['total_return']:.2%}",
+            f"{r['max_drawdown']:.2%}",
+            f"{r['win_rate']:.1%}",
+            f"{r['profit_factor']:.2f}",
+            str(r["total_trades"]),
+        )
+
+    console.print(table)
+
+
 if __name__ == "__main__":
     app()
