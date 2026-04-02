@@ -27,6 +27,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase 6-7 | ✅ 완료 | Docker 배포 (Dockerfile, compose, healthcheck, 로그 관리) |
 | Phase 6-3 | ✅ 완료 | 웹 대시보드 (Streamlit, Live Monitor + Backtest Viewer) |
 | Phase 6-2 | ✅ 완료 | WebSocket 실시간 데이터 (Upbit ticker, 자동 재연결, 폴링 폴백) |
+| 고급 전략 | ✅ 완료 | multi_tf (멀티TF 추세+RSI), volume_breakout (거래량 급등+돌파), scan CLI |
 | Phase 6-4~6,8 | ⏳ 대기 | Bybit, ML/AI, 선물/마진, 성능 최적화 |
 
 ---
@@ -721,14 +722,11 @@ for sym in BTC/KRW ETH/KRW XRP/KRW SOL/KRW DOGE/KRW ADA/KRW AVAX/KRW LINK/KRW; d
 done
 ```
 
-### Step 2: 전략별 백테스트 비교
+### Step 2: 전략 자동 스캔
 ```bash
-tradingbot backtest --strategy sma_cross
-tradingbot backtest --strategy rsi_mean_reversion
-tradingbot backtest --strategy macd_momentum
-tradingbot backtest --strategy bollinger_breakout
+tradingbot scan --top 15
 ```
-→ Sharpe > 1.5, Max Drawdown < 15% 인 전략 선별
+→ 6전략 × 8심볼 × 3타임프레임 = 144 조합 자동 실행, Sharpe 기준 랭킹
 
 ### Step 3: 최적화 + Walk-Forward 검증
 ```bash
@@ -757,6 +755,7 @@ tradingbot live --strategy <best_strategy> --symbol BTC/KRW \
 
 | 항목 | 시점 | 트리거 |
 |------|------|--------|
+| **조합 엔진** | scan 결과 분석 후 | CLI로 필터 조합: `--filters "trend_up:4h + volume_spike:2.5x + rsi_oversold:30"` |
 | 6-8. 성능 최적화 | 백테스트 속도가 느릴 때 | 대규모 파라미터 그리드 실행 시 |
 | 6-4. Bybit | Upbit에 불만 또는 USDT 마켓 필요 시 | 해외 거래소 접근 필요 |
 | 6-6. ML/AI | 기본 전략 한계 체감 시 | 충분한 데이터(6개월+) 확보 후 |

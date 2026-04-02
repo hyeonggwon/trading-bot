@@ -12,12 +12,16 @@ def get_strategy_map() -> dict[str, type[Strategy]]:
     """Return map of strategy name → class. Lazy imports to avoid circular deps."""
     from tradingbot.strategy.examples.bollinger_breakout import BollingerBreakoutStrategy
     from tradingbot.strategy.examples.macd_momentum import MacdMomentumStrategy
+    from tradingbot.strategy.examples.multi_timeframe import MultiTimeframeStrategy
     from tradingbot.strategy.examples.rsi_mean_reversion import RsiMeanReversionStrategy
     from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
+    from tradingbot.strategy.examples.volume_breakout import VolumeBreakoutStrategy
 
     return {
         "sma_cross": SmaCrossStrategy,
         "rsi_mean_reversion": RsiMeanReversionStrategy,
         "macd_momentum": MacdMomentumStrategy,
         "bollinger_breakout": BollingerBreakoutStrategy,
+        "multi_tf": MultiTimeframeStrategy,
+        "volume_breakout": VolumeBreakoutStrategy,
     }

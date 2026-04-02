@@ -8,7 +8,8 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 
 - **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
-- **4가지 내장 전략** — SMA 크로스오버, RSI 역추세, MACD 모멘텀, 볼린저 밴드 브레이크아웃
+- **6가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파
+- **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
@@ -88,6 +89,18 @@ tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW \
 | WF Efficiency | > 50% | 파라미터가 미래 데이터에서도 유효 |
 | Overfitting Ratio | < 50% | 과최적화되지 않음 |
 
+### 4-1. 전략 자동 스캔
+
+모든 전략 × 심볼 × 타임프레임 조합을 자동으로 백테스트하고 랭킹:
+
+```bash
+# Sharpe 기준 상위 15개 조합 찾기
+tradingbot scan --top 15
+
+# 수익률 기준 정렬
+tradingbot scan --sort-by total_return --top 10
+```
+
 ### 5. 페이퍼 트레이딩
 
 ```bash
@@ -137,6 +150,8 @@ tradingbot live --strategy sma_cross --symbol BTC/KRW \
 | `rsi_mean_reversion` | RSI 과매도 진입 / 과매수 청산 | `rsi_period`, `oversold`, `overbought` |
 | `macd_momentum` | MACD 히스토그램 제로크로스 | `fast`, `slow`, `signal` |
 | `bollinger_breakout` | 볼린저밴드 상단 돌파 / 중간밴드 이탈 | `period`, `std` |
+| `multi_tf` | 상위 TF 추세 필터 + 하위 TF RSI 진입 | `higher_tf_factor`, `trend_sma_period`, `rsi_period` |
+| `volume_breakout` | 거래량 급등 + 최근 고점 돌파 | `volume_spike_threshold`, `price_lookback`, `exit_ema_period` |
 
 ## 커스텀 전략 작성
 
