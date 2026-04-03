@@ -31,7 +31,7 @@ class TestFeatures:
         df = _make_data(200)
         df_feat, feature_cols = build_feature_matrix(df)
         assert feature_cols == FEATURE_COLS
-        assert len(feature_cols) == 33
+        assert len(feature_cols) == 36
         for col in feature_cols:
             assert col in df_feat.columns, f"Missing column: {col}"
 

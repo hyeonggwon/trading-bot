@@ -182,7 +182,10 @@ class AtrTrailingExitFilter(BaseFilter):
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         col = f"atr_{self.period}"
         if col not in df.columns:
-            df = add_atr(df, period=self.period)
+            if len(df) < self.period + 1:
+                df[col] = float("nan")
+            else:
+                df = add_atr(df, period=self.period)
         return df
 
     def check_entry(self, df: pd.DataFrame) -> bool:

@@ -14,24 +14,26 @@ log = logging.getLogger(__name__)
 
 DEFAULT_LGBM_PARAMS = {
     "objective": "binary",
-    "metric": ["binary_logloss", "auc"],
+    "metric": ["auc", "binary_logloss"],
     "verbose": -1,
-    # Tree structure — shallow to prevent overfitting
+    # Tree structure
     "num_leaves": 31,
     "max_depth": 6,
-    "min_data_in_leaf": 200,
-    "min_sum_hessian_in_leaf": 10.0,
+    "min_data_in_leaf": 20,
+    "min_sum_hessian_in_leaf": 1.0,
     # Regularization
     "reg_alpha": 0.1,
     "reg_lambda": 0.5,
     "feature_fraction": 0.7,
     "bagging_fraction": 0.8,
     "bagging_freq": 5,
-    # Class imbalance
-    "is_unbalance": True,
+    # Class imbalance — moderate upweight (is_unbalance too aggressive for small val sets)
+    # NOTE: scale_pos_weight inflates predicted probabilities. If changed,
+    # production thresholds (e.g. lgbm_prob:0.55) may need re-tuning.
+    "scale_pos_weight": 2.0,
     # Learning
-    "learning_rate": 0.02,
-    "n_estimators": 2000,
+    "learning_rate": 0.05,
+    "n_estimators": 500,
     # Speed
     "num_threads": -1,
     "seed": 42,
@@ -51,8 +53,12 @@ class LGBMTrainer:
         X_val: pd.DataFrame | None = None,
         y_val: pd.Series | None = None,
         early_stopping_rounds: int = 100,
+        fixed_rounds: int | None = None,
     ):
         """Train a LightGBM model.
+
+        Args:
+            fixed_rounds: If set, override n_estimators and disable early stopping.
 
         Returns:
             lgb.Booster
@@ -61,7 +67,7 @@ class LGBMTrainer:
 
         # Extract n_estimators from params (used as num_boost_round)
         params = {k: v for k, v in self.params.items() if k != "n_estimators"}
-        num_boost_round = self.params.get("n_estimators", 2000)
+        num_boost_round = fixed_rounds or self.params.get("n_estimators", 500)
 
         train_set = lgb.Dataset(X_train, label=y_train)
 
@@ -69,7 +75,7 @@ class LGBMTrainer:
         valid_sets = [train_set]
         valid_names = ["train"]
 
-        if X_val is not None and y_val is not None and len(X_val) > 0:
+        if X_val is not None and y_val is not None and len(X_val) > 0 and not fixed_rounds:
             val_set = lgb.Dataset(X_val, label=y_val, reference=train_set)
             valid_sets.append(val_set)
             valid_names.append("val")

@@ -69,6 +69,11 @@ FEATURE_COLS = [
     "close_std_20",
     "atr_rank_50",
     "rsi_dist_from_50",
+    # Temporal
+    "hour",
+    "day_of_week",
+    # Interaction
+    "body_to_range",
 ]
 
 
@@ -112,8 +117,9 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # Step 2: Derived features
     _nan = float("nan")
 
-    # OBV momentum (diff, not pct_change — OBV passes through zero)
-    df["obv_roc_10"] = df["obv"].diff(10)
+    # OBV momentum (normalized by rolling std — raw diff drifts with volume scale)
+    obv_std = df["obv"].rolling(50).std().replace(0, _nan)
+    df["obv_roc_10"] = df["obv"].diff(10) / obv_std
 
     # ATR as % of price (normalized volatility)
     df["atr_pct_14"] = df["atr_14"] / df["close"]
@@ -166,7 +172,14 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     df["atr_rank_50"] = df["atr_14"].rolling(50).rank(pct=True)
     df["rsi_dist_from_50"] = df["rsi_14"] - 50.0
 
-    # Step 4: Replace any inf values with NaN
+    # Step 4: Temporal features (crypto has intraday/weekly seasonality)
+    df["hour"] = df.index.hour
+    df["day_of_week"] = df.index.dayofweek
+
+    # Step 5: Interaction features
+    df["body_to_range"] = df["candle_body"].abs() / df["hl_range_pct"].replace(0, _nan)
+
+    # Step 6: Replace any inf values with NaN
     df[FEATURE_COLS] = df[FEATURE_COLS].replace([float("inf"), float("-inf")], float("nan"))
 
     return df, FEATURE_COLS

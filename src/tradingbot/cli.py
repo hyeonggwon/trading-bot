@@ -657,6 +657,8 @@ def combine(
     symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Trading pair"),
     timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
+    start: str | None = typer.Option(None, "--start", help="Backtest start date (YYYY-MM-DD)"),
+    end: str | None = typer.Option(None, "--end", help="Backtest end date (YYYY-MM-DD)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
 ) -> None:
     """Backtest a combined filter strategy (no code needed)."""
@@ -693,6 +695,12 @@ def combine(
     except FileNotFoundError:
         console.print(f"[red]No data for {symbol} {timeframe}.[/red]")
         raise typer.Exit(1)
+
+    # Filter by date range
+    if start:
+        df = df[df.index >= start]
+    if end:
+        df = df[df.index <= end]
 
     console.print(f"  Data: {len(df)} candles")
 

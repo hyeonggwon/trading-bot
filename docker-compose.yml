@@ -3,7 +3,8 @@ services:
     build: .
     env_file: .env
     volumes:
-      - bot-data:/app/data
+      - ./data:/app/data:ro
+      - ./models:/app/models
       - bot-logs:/app/logs
       - bot-state:/app/state
       - ./config:/app/config:ro
@@ -21,6 +22,5 @@ services:
     # command: ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
 
 volumes:
-  bot-data:
   bot-logs:
   bot-state:

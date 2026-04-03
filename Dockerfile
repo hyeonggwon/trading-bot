@@ -10,11 +10,11 @@ WORKDIR /app
 COPY pyproject.toml .
 COPY src/ src/
 COPY config/ config/
-RUN pip install --no-cache-dir .
+RUN pip install --no-cache-dir ".[ml]"
 
 # Create non-root user with all needed directories
 RUN useradd --create-home --shell /bin/bash botuser && \
-    mkdir -p /app/data /app/logs /app/state && \
+    mkdir -p /app/data /app/logs /app/state /app/models && \
     chown -R botuser:botuser /app
 
 # Copy health check script

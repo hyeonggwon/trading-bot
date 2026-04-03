@@ -74,6 +74,12 @@ class MLWalkForwardTrainer:
             log.warning(f"ML WF: insufficient data ({len(df_valid)} valid rows)")
             return MLWalkForwardReport()
 
+        # Dynamic scale_pos_weight based on actual positive rate
+        pos_rate = float(target_valid.mean())
+        spw = min(2.0, max(1.0, 0.5 / pos_rate))
+        self.trainer.params["scale_pos_weight"] = round(spw, 2)
+        log.info(f"ML WF: positive_rate={pos_rate:.4f}, scale_pos_weight={spw:.2f}")
+
         # Create expanding windows
         windows = self._create_windows(df_valid)
         if not windows:
@@ -92,44 +98,41 @@ class MLWalkForwardTrainer:
                 continue
 
             # Split train into train/val for early stopping (80/20 with embargo)
+            # Need at least 1000 val rows for stable early stopping signal
+            MIN_VAL_FOR_EARLY_STOPPING = 1000
             val_split = int(len(X_train) * 0.8)
             val_start = val_split + EMBARGO_CANDLES
-            if val_start < len(X_train) - 10:
+            val_size = len(X_train) - val_start
+
+            if val_size >= MIN_VAL_FOR_EARLY_STOPPING:
                 X_tr = X_train.iloc[:val_split]
                 X_val = X_train.iloc[val_start:]
                 y_tr = y_train.iloc[:val_split]
                 y_val = y_train.iloc[val_start:]
+                model = self.trainer.train(X_tr, y_tr, X_val, y_val)
             else:
-                # Not enough data for embargo — train without early stopping
-                X_tr, X_val = X_train, None
-                y_tr, y_val = y_train, None
-
-            model = self.trainer.train(X_tr, y_tr, X_val, y_val)
+                # Val set too small — use fixed rounds, no early stopping
+                model = self.trainer.train(X_train, y_train, fixed_rounds=300)
             metrics = self.trainer.evaluate(model, X_test, y_test)
             metrics["window"] = i
             metrics["n_train"] = len(X_train)
+            metrics["best_iteration"] = model.best_iteration
             report.windows.append(metrics)
 
-            log.info(f"ML WF window {i}: AUC={metrics['auc']:.4f}, precision={metrics['precision']:.4f}, train={len(X_train)}, test={len(X_test)}")
+            log.info(f"ML WF window {i}: AUC={metrics['auc']:.4f}, precision={metrics['precision']:.4f}, best_iter={model.best_iteration}, train={len(X_train)}, test={len(X_test)}")
 
         if report.windows:
             report.avg_auc = round(np.mean([w["auc"] for w in report.windows]), 4)
             report.avg_precision = round(np.mean([w["precision"] for w in report.windows]), 4)
 
-        # Train final model on ALL valid data (with embargo between train/val)
-        val_split = int(len(df_valid) * 0.85)
-        val_start = val_split + EMBARGO_CANDLES
+        # Train final model on ALL valid data — no early stopping, fixed 300 rounds
+        # (median best_iteration from windows is unreliable when most use fixed_rounds)
+        final_rounds = 300
+        log.info(f"ML WF: final model fixed_rounds={final_rounds}")
+
         X_all = df_valid[feature_cols]
         y_all = target_valid
-        X_tr = X_all.iloc[:val_split]
-        y_tr = y_all.iloc[:val_split]
-        if val_start < len(df_valid) - 10:
-            X_val = X_all.iloc[val_start:]
-            y_val = y_all.iloc[val_start:]
-        else:
-            X_val, y_val = None, None
-
-        final_model = self.trainer.train(X_tr, y_tr, X_val, y_val)
+        final_model = self.trainer.train(X_all, y_all, fixed_rounds=final_rounds)
 
         # Feature importance
         importance = final_model.feature_importance(importance_type="gain")
