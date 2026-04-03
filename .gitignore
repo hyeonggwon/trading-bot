@@ -25,6 +25,9 @@ env/
 data/*.parquet
 data/**/*.parquet
 
+# ML models (regenerate with: tradingbot ml-train-all)
+models/
+
 # Jupyter
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/
