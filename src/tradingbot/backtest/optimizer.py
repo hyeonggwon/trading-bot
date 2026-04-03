@@ -94,6 +94,7 @@ class GridSearchOptimizer:
         data: dict[str, pd.DataFrame],
         param_space: dict[str, list[Any]] | None = None,
         sort_by: str = "sharpe_ratio",
+        progress=None,
     ) -> list[OptimizationResult]:
         """Run grid search optimization.
 
@@ -101,6 +102,7 @@ class GridSearchOptimizer:
             data: Historical OHLCV data keyed by symbol.
             param_space: Parameter search space. If None, uses strategy's default.
             sort_by: Metric to sort results by (descending).
+            progress: Optional Rich Progress instance for progress bar display.
 
         Returns:
             List of OptimizationResult sorted by the chosen metric.
@@ -114,31 +116,40 @@ class GridSearchOptimizer:
         logger.info("optimization_start", strategy=self.strategy_cls.name, combinations=total)
 
         results: list[OptimizationResult] = []
+        opt_task = progress.add_task("Optimizing", total=total) if progress else None
 
-        if self.max_workers == 1 or total <= 4:
-            # Sequential execution for small searches or debugging
-            for i, params in enumerate(combinations):
-                result = _run_single_backtest(
-                    self.strategy_cls, params, data, self.config
-                )
-                results.append(result)
-                if (i + 1) % 10 == 0 or i + 1 == total:
-                    logger.debug("optimization_progress", completed=i + 1, total=total)
-        else:
-            # Parallel execution
-            with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-                futures = {
-                    executor.submit(
-                        _run_single_backtest,
-                        self.strategy_cls, params, data, self.config,
-                    ): params
-                    for params in combinations
-                }
-                for i, future in enumerate(as_completed(futures)):
-                    result = future.result()
+        try:
+            if self.max_workers == 1 or total <= 4:
+                # Sequential execution for small searches or debugging
+                for i, params in enumerate(combinations):
+                    result = _run_single_backtest(
+                        self.strategy_cls, params, data, self.config
+                    )
                     results.append(result)
-                    if (i + 1) % 10 == 0 or i + 1 == total:
+                    if progress and opt_task is not None:
+                        progress.advance(opt_task)
+                    elif (i + 1) % 10 == 0 or i + 1 == total:
                         logger.debug("optimization_progress", completed=i + 1, total=total)
+            else:
+                # Parallel execution
+                with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
+                    futures = {
+                        executor.submit(
+                            _run_single_backtest,
+                            self.strategy_cls, params, data, self.config,
+                        ): params
+                        for params in combinations
+                    }
+                    for i, future in enumerate(as_completed(futures)):
+                        result = future.result()
+                        results.append(result)
+                        if progress and opt_task is not None:
+                            progress.advance(opt_task)
+                        elif (i + 1) % 10 == 0 or i + 1 == total:
+                            logger.debug("optimization_progress", completed=i + 1, total=total)
+        finally:
+            if progress and opt_task is not None:
+                progress.remove_task(opt_task)
 
         # Sort by chosen metric (descending, except max_drawdown which is ascending)
         reverse = sort_by != "max_drawdown"

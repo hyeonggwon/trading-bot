@@ -209,6 +209,7 @@ class WalkForwardValidator:
         self,
         data: dict[str, pd.DataFrame],
         param_space: dict[str, list[Any]] | None = None,
+        progress=None,
     ) -> WalkForwardReport:
         """Run walk-forward validation.
 
@@ -243,53 +244,66 @@ class WalkForwardValidator:
         )
 
         results: list[WalkForwardWindow] = []
+        wf_task = progress.add_task("Walk-Forward", total=len(windows)) if progress else None
 
-        for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
-            logger.info(
-                "walk_forward_window",
-                window=i + 1,
-                train=f"{train_start.date()} ~ {train_end.date()}",
-                test=f"{test_start.date()} ~ {test_end.date()}",
-            )
+        try:
+            for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
+                if progress and wf_task is not None:
+                    desc = f"WF {i+1}/{len(windows)}: {train_start.date()}~{test_end.date()}"
+                    progress.update(wf_task, description=desc)
+                logger.info(
+                    "walk_forward_window",
+                    window=i + 1,
+                    train=f"{train_start.date()} ~ {train_end.date()}",
+                    test=f"{test_start.date()} ~ {test_end.date()}",
+                )
 
-            # Step 1: Optimize on training data
-            train_df = df[(df.index >= train_start) & (df.index < train_end)]
-            train_data = {symbol: train_df}
+                # Step 1: Optimize on training data
+                train_df = df[(df.index >= train_start) & (df.index < train_end)]
+                train_data = {symbol: train_df}
 
-            optimizer = GridSearchOptimizer(
-                strategy_cls=self.strategy_cls,
-                config=wf_config,
-                max_workers=1,  # Sequential within each window
-            )
-            opt_results = optimizer.optimize(train_data, param_space, sort_by="sharpe_ratio")
+                optimizer = GridSearchOptimizer(
+                    strategy_cls=self.strategy_cls,
+                    config=wf_config,
+                    max_workers=1,  # Sequential within each window
+                )
+                opt_results = optimizer.optimize(train_data, param_space, sort_by="sharpe_ratio")
 
-            if not opt_results:
-                continue
+                if not opt_results:
+                    if progress and wf_task is not None:
+                        progress.advance(wf_task)
+                    continue
 
-            best = opt_results[0]
+                best = opt_results[0]
 
-            # Step 2: Test on out-of-sample data
-            test_df = df[(df.index >= test_start) & (df.index < test_end)]
-            test_data = {symbol: test_df}
+                # Step 2: Test on out-of-sample data
+                test_df = df[(df.index >= test_start) & (df.index < test_end)]
+                test_data = {symbol: test_df}
 
-            test_result = _run_test(
-                self.strategy_cls, best.params, test_data, wf_config
-            )
+                test_result = _run_test(
+                    self.strategy_cls, best.params, test_data, wf_config
+                )
 
-            results.append(WalkForwardWindow(
-                window_index=i,
-                train_start=train_start,
-                train_end=train_end,
-                test_start=test_start,
-                test_end=test_end,
-                best_params=best.params,
-                train_sharpe=best.sharpe_ratio,
-                train_return=best.total_return,
-                test_sharpe=test_result.sharpe_ratio,
-                test_return=test_result.total_return,
-                test_trades=test_result.total_trades,
-                test_max_drawdown=test_result.max_drawdown,
-            ))
+                results.append(WalkForwardWindow(
+                    window_index=i,
+                    train_start=train_start,
+                    train_end=train_end,
+                    test_start=test_start,
+                    test_end=test_end,
+                    best_params=best.params,
+                    train_sharpe=best.sharpe_ratio,
+                    train_return=best.total_return,
+                    test_sharpe=test_result.sharpe_ratio,
+                    test_return=test_result.total_return,
+                    test_trades=test_result.total_trades,
+                    test_max_drawdown=test_result.max_drawdown,
+                ))
+
+                if progress and wf_task is not None:
+                    progress.advance(wf_task)
+        finally:
+            if progress and wf_task is not None:
+                progress.remove_task(wf_task)
 
         report = WalkForwardReport(
             windows=results,

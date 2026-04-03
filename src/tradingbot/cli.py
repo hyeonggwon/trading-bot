@@ -1,9 +1,20 @@
 from __future__ import annotations
 
+import logging
+from contextlib import contextmanager
 from pathlib import Path
 
+import structlog
 import typer
 from rich.console import Console
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeRemainingColumn,
+)
 from rich.table import Table
 
 from tradingbot.config import ExchangeConfig, load_config
@@ -14,6 +25,31 @@ from tradingbot.utils.time import parse_date
 
 app = typer.Typer(name="tradingbot", help="Algorithmic trading bot for Upbit")
 console = Console()
+
+
+@contextmanager
+def _progress_context():
+    """Create a Rich Progress bar and suppress structlog during display."""
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold blue]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TimeRemainingColumn(),
+        console=console,
+    )
+    # Suppress ALL structlog output to avoid breaking progress bar
+    prev_config = structlog.get_config()
+    suppressed_config = {
+        **prev_config,
+        "wrapper_class": structlog.make_filtering_bound_logger(logging.CRITICAL),
+    }
+    structlog.configure(**suppressed_config)
+    try:
+        with progress:
+            yield progress
+    finally:
+        structlog.configure(**prev_config)
 
 
 @app.command()
@@ -212,7 +248,10 @@ def optimize(
     console.print(f"[bold]Optimizing {strategy_name} on {symbol} ({len(df)} candles)[/bold]")
 
     optimizer = GridSearchOptimizer(strategy_cls=strategy_cls, config=config, max_workers=1)
-    results = optimizer.optimize({symbol: df}, param_space=space, sort_by=sort_by)
+    with _progress_context() as progress:
+        results = optimizer.optimize(
+            {symbol: df}, param_space=space, sort_by=sort_by, progress=progress,
+        )
     optimizer.print_results(results, top_n=top_n)
 
 
@@ -253,7 +292,8 @@ def walk_forward(
         strategy_cls=strategy_cls, config=config,
         train_months=train_months, test_months=test_months,
     )
-    report = validator.validate({symbol: df})
+    with _progress_context() as progress:
+        report = validator.validate({symbol: df}, progress=progress)
     report.print_summary()
 
 
@@ -564,46 +604,47 @@ def scan(
 
     from tradingbot.data.storage import load_candles
 
-    count = 0
-    for sym, timeframes in symbol_timeframes.items():
-        for tf in timeframes:
-            try:
-                df = load_candles(sym, tf, Path(data_dir))
-            except FileNotFoundError:
-                continue
+    with _progress_context() as progress:
+        task = progress.add_task("Scanning strategies", total=total)
 
-            for strat_name in strategies:
-                count += 1
-                if count % 10 == 0:
-                    console.print(f"  Progress: {count}/{total}...", end="\r")
-
+        for sym, timeframes in symbol_timeframes.items():
+            for tf in timeframes:
                 try:
-                    config = load_config(Path("config"), overrides={
-                        "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
-                    })
-                    strategy_cls = STRATEGY_MAP[strat_name]
-                    strategy = strategy_cls()
-                    strategy.symbols = [sym]
-                    strategy.timeframe = tf
+                    df = load_candles(sym, tf, Path(data_dir))
+                except FileNotFoundError:
+                    progress.advance(task, advance=len(strategies))
+                    continue
 
-                    engine = BacktestEngine(strategy=strategy, config=config)
-                    report = engine.run({sym: df})
+                for strat_name in strategies:
+                    progress.update(task, description=f"{strat_name} · {sym} {tf}")
 
-                    results.append({
-                        "strategy": strat_name,
-                        "symbol": sym,
-                        "timeframe": tf,
-                        "sharpe_ratio": report.sharpe_ratio,
-                        "total_return": report.total_return,
-                        "max_drawdown": report.max_drawdown,
-                        "win_rate": report.win_rate,
-                        "profit_factor": report.profit_factor,
-                        "total_trades": report.total_trades,
-                    })
-                except Exception as e:
-                    failures.append(f"{strat_name}/{sym}/{tf}: {e}")
+                    try:
+                        config = load_config(Path("config"), overrides={
+                            "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
+                        })
+                        strategy_cls = STRATEGY_MAP[strat_name]
+                        strategy = strategy_cls()
+                        strategy.symbols = [sym]
+                        strategy.timeframe = tf
 
-    console.print(f"  Completed {count}/{total} combinations.     ")
+                        engine = BacktestEngine(strategy=strategy, config=config)
+                        report = engine.run({sym: df})
+
+                        results.append({
+                            "strategy": strat_name,
+                            "symbol": sym,
+                            "timeframe": tf,
+                            "sharpe_ratio": report.sharpe_ratio,
+                            "total_return": report.total_return,
+                            "max_drawdown": report.max_drawdown,
+                            "win_rate": report.win_rate,
+                            "profit_factor": report.profit_factor,
+                            "total_trades": report.total_trades,
+                        })
+                    except Exception as e:
+                        failures.append(f"{strat_name}/{sym}/{tf}: {e}")
+
+                    progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
         for f in failures[:5]:
@@ -793,59 +834,60 @@ def combine_scan(
 
     results: list[dict] = []
     failures: list[str] = []
-    count = 0
 
-    for sym, timeframes in symbol_timeframes.items():
-        for tf in timeframes:
-            try:
-                df = load_candles(sym, tf, Path(data_dir))
-            except FileNotFoundError:
-                continue
+    with _progress_context() as progress:
+        task = progress.add_task("Scanning combinations", total=total)
 
-            for tmpl in COMBINE_TEMPLATES:
-                count += 1
-                if count % 10 == 0:
-                    console.print(f"  Progress: {count}/{total}...", end="\r")
-
+        for sym, timeframes in symbol_timeframes.items():
+            for tf in timeframes:
                 try:
-                    entry_filters = parse_filter_string(tmpl["entry"], base_timeframe=tf)
-                    exit_filters = parse_filter_string(tmpl["exit"], base_timeframe=tf)
+                    df = load_candles(sym, tf, Path(data_dir))
+                except FileNotFoundError:
+                    progress.advance(task, advance=len(COMBINE_TEMPLATES))
+                    continue
 
-                    # Pass symbol/timeframe to ML filters
-                    for f in entry_filters + exit_filters:
-                        if hasattr(f, "symbol"):
-                            f.symbol = sym
-                        if hasattr(f, "timeframe"):
-                            f.timeframe = tf
+                for tmpl in COMBINE_TEMPLATES:
+                    progress.update(task, description=f"{tmpl['label']} · {sym} {tf}")
 
-                    strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
-                    strategy.symbols = [sym]
-                    strategy.timeframe = tf
+                    try:
+                        entry_filters = parse_filter_string(tmpl["entry"], base_timeframe=tf)
+                        exit_filters = parse_filter_string(tmpl["exit"], base_timeframe=tf)
 
-                    config = load_config(Path("config"), overrides={
-                        "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
-                    })
+                        # Pass symbol/timeframe to ML filters
+                        for f in entry_filters + exit_filters:
+                            if hasattr(f, "symbol"):
+                                f.symbol = sym
+                            if hasattr(f, "timeframe"):
+                                f.timeframe = tf
 
-                    engine = BacktestEngine(strategy=strategy, config=config)
-                    report = engine.run({sym: df})
+                        strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
+                        strategy.symbols = [sym]
+                        strategy.timeframe = tf
 
-                    results.append({
-                        "template": tmpl["label"],
-                        "entry": tmpl["entry"],
-                        "exit": tmpl["exit"],
-                        "symbol": sym,
-                        "timeframe": tf,
-                        "sharpe_ratio": report.sharpe_ratio,
-                        "total_return": report.total_return,
-                        "max_drawdown": report.max_drawdown,
-                        "win_rate": report.win_rate,
-                        "profit_factor": report.profit_factor,
-                        "total_trades": report.total_trades,
-                    })
-                except Exception as e:
-                    failures.append(f"{tmpl['label']}/{sym}/{tf}: {e}")
+                        config = load_config(Path("config"), overrides={
+                            "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
+                        })
 
-    console.print(f"  Completed {count}/{total} combinations.     ")
+                        engine = BacktestEngine(strategy=strategy, config=config)
+                        report = engine.run({sym: df})
+
+                        results.append({
+                            "template": tmpl["label"],
+                            "entry": tmpl["entry"],
+                            "exit": tmpl["exit"],
+                            "symbol": sym,
+                            "timeframe": tf,
+                            "sharpe_ratio": report.sharpe_ratio,
+                            "total_return": report.total_return,
+                            "max_drawdown": report.max_drawdown,
+                            "win_rate": report.win_rate,
+                            "profit_factor": report.profit_factor,
+                            "total_trades": report.total_trades,
+                        })
+                    except Exception as e:
+                        failures.append(f"{tmpl['label']}/{sym}/{tf}: {e}")
+
+                    progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
         for f in failures[:5]:
@@ -1058,43 +1100,49 @@ def ml_train_all(
 
     results: list[dict] = []
 
-    for i, (sym, tf) in enumerate(pairs, 1):
-        console.print(f"[{i}/{len(pairs)}] {sym} {tf}...", end=" ")
+    with _progress_context() as progress:
+        task = progress.add_task("Training models", total=len(pairs))
 
-        try:
-            df = load_candles(sym, tf, Path(data_dir))
-        except FileNotFoundError:
-            console.print("[red]no data[/red]")
-            continue
+        for sym, tf in pairs:
+            progress.update(task, description=f"Training {sym} {tf}")
 
-        try:
-            trainer = MLWalkForwardTrainer(
-                symbol=sym,
-                timeframe=tf,
-                train_months=train_months,
-                test_months=test_months,
-                model_dir=Path(model_dir),
-            )
-            report = trainer.run(df)
+            try:
+                df = load_candles(sym, tf, Path(data_dir))
+            except FileNotFoundError:
+                progress.log(f"[red]{sym} {tf}: no data[/red]")
+                progress.advance(task)
+                continue
 
-            if report.windows:
-                console.print(
-                    f"[green]AUC={report.avg_auc:.4f} "
-                    f"precision={report.avg_precision:.4f} "
-                    f"windows={len(report.windows)}[/green]"
+            try:
+                trainer = MLWalkForwardTrainer(
+                    symbol=sym,
+                    timeframe=tf,
+                    train_months=train_months,
+                    test_months=test_months,
+                    model_dir=Path(model_dir),
                 )
-                results.append({
-                    "symbol": sym,
-                    "timeframe": tf,
-                    "avg_auc": report.avg_auc,
-                    "avg_precision": report.avg_precision,
-                    "n_windows": len(report.windows),
-                    "model_path": str(report.model_path),
-                })
-            else:
-                console.print("[yellow]insufficient data[/yellow]")
-        except Exception as e:
-            console.print(f"[red]error: {e}[/red]")
+                report = trainer.run(df)
+
+                if report.windows:
+                    progress.log(
+                        f"[green]{sym} {tf}: AUC={report.avg_auc:.4f} "
+                        f"precision={report.avg_precision:.4f} "
+                        f"windows={len(report.windows)}[/green]"
+                    )
+                    results.append({
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "avg_auc": report.avg_auc,
+                        "avg_precision": report.avg_precision,
+                        "n_windows": len(report.windows),
+                        "model_path": str(report.model_path),
+                    })
+                else:
+                    progress.log(f"[yellow]{sym} {tf}: insufficient data[/yellow]")
+            except Exception as e:
+                progress.log(f"[red]{sym} {tf}: error: {e}[/red]")
+
+            progress.advance(task)
 
     if not results:
         console.print("\n[red]No models were trained.[/red]")
