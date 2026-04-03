@@ -11,7 +11,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 - **7가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파, LightGBM ML
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹 + Rich 프로그레스바
 - **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 5가지 역할 태깅, AND 진입 / OR 청산)
-- **ML 전략 (LightGBM)** — 36개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징
+- **ML 전략 (LightGBM)** — 36개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징, 병렬 학습
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
@@ -23,6 +23,8 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 
 ```bash
 # Python 3.11+ 필요
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 ```
 
@@ -160,6 +162,9 @@ tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h
 
 # 모든 다운로드된 심볼×타임프레임 일괄 학습
 tradingbot ml-train-all
+
+# 병렬 학습 (워커 수 지정, 0=자동)
+tradingbot ml-train-all --workers 4
 
 # 특정 타임프레임만 학습
 tradingbot ml-train-all --timeframe 1h

@@ -9,7 +9,9 @@ Python-based algorithmic trading bot for **Upbit** (Korean exchange, KRW markets
 ## Commands
 
 ```bash
-# Install
+# Install (always use venv)
+python -m venv .venv
+source .venv/bin/activate
 pip install -e ".[dev]"
 
 # Docker
@@ -64,6 +66,7 @@ tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.55" --exi
 pip install -e ".[ml]"
 tradingbot ml-train --symbol BTC/KRW --timeframe 1h --train-months 3 --test-months 1
 tradingbot ml-train-all                    # Train all downloaded symbol × timeframe pairs
+tradingbot ml-train-all --workers 4        # Parallel training (4 workers)
 tradingbot ml-train-all --timeframe 1h     # Train specific timeframe only
 tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h
 tradingbot backtest --strategy lgbm --symbol BTC/KRW
@@ -123,6 +126,7 @@ For each timestamp ts:
 - `ml/targets.py` — 4h forward return binary classification target (offline only)
 - `ml/trainer.py` — LGBMTrainer: train, evaluate, save/load (.lgb + _meta.json)
 - `ml/walk_forward.py` — MLWalkForwardTrainer: purged expanding window + embargo
+- `ml/parallel.py` — Spawn-safe parallel training worker (ProcessPoolExecutor)
 - `exchange/base.py` — Abstract exchange interface (BaseExchange ABC)
 - `exchange/ccxt_exchange.py` — CCXT async implementation for Upbit (retry + rate limiting)
 - `exchange/paper.py` — Paper trading exchange (simulated fills, portfolio tracking)

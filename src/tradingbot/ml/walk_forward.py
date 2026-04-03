@@ -76,6 +76,9 @@ class MLWalkForwardTrainer:
 
         # Dynamic scale_pos_weight based on actual positive rate
         pos_rate = float(target_valid.mean())
+        if pos_rate < 0.01:
+            log.warning(f"ML WF: positive rate too low ({pos_rate:.4f}), skipping")
+            return MLWalkForwardReport()
         spw = min(2.0, max(1.0, 0.5 / pos_rate))
         self.trainer.params["scale_pos_weight"] = round(spw, 2)
         log.info(f"ML WF: positive_rate={pos_rate:.4f}, scale_pos_weight={spw:.2f}")
