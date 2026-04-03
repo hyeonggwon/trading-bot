@@ -1014,7 +1014,7 @@ def ml_backtest(
 
 @app.command(name="ml-train-all")
 def ml_train_all(
-    timeframe: str = typer.Option(
+    timeframe: str | None = typer.Option(
         None, "--timeframe", "-t", help="Train only this timeframe",
     ),
     train_months: int = typer.Option(3, "--train-months", help="Training window months"),
@@ -1041,7 +1041,8 @@ def ml_train_all(
         pairs.append((item["symbol"], item["timeframe"]))
 
     if not pairs:
-        console.print(f"[red]No data found for timeframe={timeframe}.[/red]")
+        tf_label = timeframe if timeframe else "all"
+        console.print(f"[red]No data found for timeframe={tf_label}.[/red]")
         raise typer.Exit(1)
 
     console.print(f"[bold]Training ML models for {len(pairs)} symbol × timeframe pairs...[/bold]")
