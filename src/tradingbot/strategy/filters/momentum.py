@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 from tradingbot.data.indicators import add_cci, add_macd, add_mfi, add_roc, add_rsi, add_stochastic
+
+log = logging.getLogger(__name__)
 from tradingbot.strategy.filters.base import BaseFilter
 
 
@@ -76,8 +80,11 @@ class MacdCrossUpFilter(BaseFilter):
     role = "entry"
 
     def __init__(self, fast: int = 12, slow: int = 26, signal: int = 9):
-        self.fast = min(fast, slow)
-        self.slow = max(fast, slow)
+        if fast > slow:
+            log.warning(f"MACD fast({fast}) > slow({slow}). Swapping parameters.")
+            fast, slow = slow, fast
+        self.fast = fast
+        self.slow = slow
         self.signal = signal
         super().__init__(fast=self.fast, slow=self.slow, signal=self.signal)
 

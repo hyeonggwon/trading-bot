@@ -14,9 +14,13 @@ Usage:
 
 from __future__ import annotations
 
+import logging
+
 import pandas as pd
 
 from tradingbot.core.enums import SignalType
+
+log = logging.getLogger(__name__)
 from tradingbot.core.models import Position, Signal
 from tradingbot.strategy.base import Strategy
 from tradingbot.strategy.filters.base import BaseFilter
@@ -84,8 +88,8 @@ class CombinedStrategy(Strategy):
                 idx = df.index.get_indexer([position.entry_time], method="ffill")[0]
                 if idx >= 0:
                     entry_index = idx
-            except (KeyError, IndexError):
-                pass
+            except (KeyError, IndexError) as e:
+                log.warning(f"Could not find entry_index for position entered at {position.entry_time}: {e}")
 
         # OR logic: any exit filter triggers exit
         for f in self.exit_filters:
