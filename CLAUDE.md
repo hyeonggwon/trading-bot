@@ -76,29 +76,29 @@ The backtest engine iterates candle-by-candle, only passing confirmed (closed) c
 
 ### Key Flow: Backtest Loop (Multi-Symbol)
 ```
+Pre-compute: strategy.indicators(full_df) per symbol  ← O(N), once
+  (strategies with supports_precompute=False use per-iteration fallback)
+
 Build unified timeline from all symbols' timestamps
 
 For each timestamp ts:
-  For each symbol with data at ts:
-    idx = position of ts in symbol's data
-    visible_df = symbol_candles[0..idx-1]  ← strategy sees ONLY past candles
-    fill_candle = symbol_candles[idx]       ← used for execution
+  Phase 1 — fills:
+    fill_candle = symbol_candles[idx]
+    Check stop losses, fill pending orders
 
-    1. Check stop losses against fill_candle's OHLC (per symbol)
-    2. Fill pending orders for this symbol only
-    3. strategy.indicators(visible_df)
-    4. strategy.should_exit(visible_df) for open positions
-    5. strategy.should_entry(visible_df) — blocked if stop loss fired this candle
-    6. Risk manager validates signals (max_open_positions across portfolio)
-    7. Approved signals → fill at fill_candle's open + slippage
+  Phase 2 — strategy evaluation:
+    visible_df = indicator_df[0..idx-1]  ← strategy sees ONLY past candles
+    strategy.should_exit(visible_df)
+    strategy.should_entry(visible_df) — blocked if stop loss fired this candle
+    Risk manager validates → fill at fill_candle's open + slippage
 
-  Update last_known_prices & record portfolio equity snapshot
+  Phase 3 — update prices & record equity
 ```
 
 ### Module Responsibilities
 - `core/models.py` — Frozen dataclasses: Candle, Signal, Order, Trade, Position, PortfolioState
-- `strategy/base.py` — Abstract `Strategy` class with `indicators()`, `should_entry()`, `should_exit()`
-- `backtest/engine.py` — Core backtest loop, multi-symbol support (most critical file)
+- `strategy/base.py` — Abstract `Strategy` class with `indicators()`, `should_entry()`, `should_exit()`, `supports_precompute`
+- `backtest/engine.py` — Core backtest loop, multi-symbol support, indicator pre-computation (most critical file)
 - `backtest/simulator.py` — Order fill simulation with slippage and fees (Upbit: 0.05%)
 - `backtest/report.py` — Performance metrics: Sharpe, Sortino, max drawdown, win rate, profit factor
 - `risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
@@ -119,7 +119,7 @@ For each timestamp ts:
   - `registry.py` — 31 filters registered, parse_filter_spec/parse_filter_string
 - `strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip, ML strength collection) + OR exit with entry_index for trailing stops
 - `strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing
-- `ml/features.py` — 33 features from 19 indicators (raw + derived + rolling stats)
+- `ml/features.py` — 36 features from 19 indicators (raw + derived + rolling stats + temporal)
 - `ml/targets.py` — 4h forward return binary classification target (offline only)
 - `ml/trainer.py` — LGBMTrainer: train, evaluate, save/load (.lgb + _meta.json)
 - `ml/walk_forward.py` — MLWalkForwardTrainer: purged expanding window + embargo
@@ -141,9 +141,9 @@ For each timestamp ts:
 - `rsi_mean_reversion` — RSI oversold entry / overbought exit (rsi_period, oversold, overbought)
 - `macd_momentum` — MACD histogram zero-cross (fast, slow, signal)
 - `bollinger_breakout` — Price breaks upper BB / drops below middle BB (period, std)
-- `multi_tf` — Higher TF trend filter (SMA) + base TF entry (RSI), anti-lookahead resample
+- `multi_tf` — Higher TF trend filter (SMA) + base TF entry (RSI), anti-lookahead resample, `supports_precompute=False`
 - `volume_breakout` — Volume spike (avg × N) + price breakout above recent high
-- `lgbm` — LightGBM meta-model: 33 features from indicators → binary classification → Half-Kelly sizing
+- `lgbm` — LightGBM meta-model: 36 features from indicators → binary classification → Half-Kelly sizing
 
 ### Strategy Interface
 Strategies inherit from `Strategy` and implement three methods:

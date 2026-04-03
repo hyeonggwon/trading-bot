@@ -65,6 +65,7 @@ class MultiTimeframeStrategy(Strategy):
     name = "multi_tf"
     timeframe = "1h"  # Base timeframe
     symbols = ["BTC/KRW"]
+    supports_precompute = False  # Resampling depends on visible data length
 
     def __init__(self, params: StrategyParams | None = None):
         super().__init__(params)

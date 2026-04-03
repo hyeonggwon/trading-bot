@@ -41,15 +41,24 @@ class CombinedStrategy(Strategy):
         super().__init__()
         self.entry_filters = entry_filters or []
         self.exit_filters = exit_filters or []
+        self._entry_indices: dict[str, int] = {}
+        self._unique_filters = self._deduplicate_filters()
 
-    def indicators(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Compute all indicators needed by all filters (deduplicated)."""
+    def _deduplicate_filters(self) -> list[BaseFilter]:
+        """Pre-compute unique filter list for indicators() (avoid per-call key sorting)."""
         seen: set[tuple] = set()
+        unique: list[BaseFilter] = []
         for f in self.entry_filters + self.exit_filters:
             key = (f.__class__.__name__, tuple(sorted(f.params.items())))
             if key not in seen:
-                df = f.compute(df)
+                unique.append(f)
                 seen.add(key)
+        return unique
+
+    def indicators(self, df: pd.DataFrame) -> pd.DataFrame:
+        """Compute all indicators needed by all filters (deduplicated)."""
+        for f in self._unique_filters:
+            df = f.compute(df)
         return df
 
     def should_entry(self, df: pd.DataFrame, symbol: str) -> Signal | None:
@@ -72,6 +81,9 @@ class CombinedStrategy(Strategy):
         if checked == 0:
             return None  # No non-exit filters to evaluate
 
+        # Cache entry index for trailing-style exit filters
+        self._entry_indices[symbol] = len(df) - 1
+
         return Signal(
             timestamp=df.index[-1].to_pydatetime(),
             symbol=symbol,
@@ -86,19 +98,13 @@ class CombinedStrategy(Strategy):
         if len(df) < 2 or not self.exit_filters:
             return None
 
-        # Compute entry_index for trailing-style exits
-        entry_index = None
-        if position and position.entry_time:
-            try:
-                idx = df.index.get_indexer([position.entry_time], method="ffill")[0]
-                if idx >= 0:
-                    entry_index = idx
-            except (KeyError, IndexError) as e:
-                log.warning(f"Could not find entry_index for position entered at {position.entry_time}: {e}")
+        # Use cached entry_index (stored at entry time, O(1) lookup)
+        entry_index = self._entry_indices.get(symbol)
 
         # OR logic: any exit filter triggers exit
         for f in self.exit_filters:
             if f.check_exit(df, entry_index=entry_index):
+                self._entry_indices.pop(symbol, None)
                 return Signal(
                     timestamp=df.index[-1].to_pydatetime(),
                     symbol=symbol,

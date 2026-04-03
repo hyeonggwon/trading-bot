@@ -67,8 +67,19 @@ class BacktestEngine:
             data: Dict mapping symbol to OHLCV DataFrame. Supports single
                   or multiple symbols.
         """
-        initial_balance = self.cash
+        # Reset state for safe reuse of engine instances
+        initial_balance = self.config.trading.initial_balance
+        self.cash = initial_balance
+        self.positions.clear()
+        self.pending_orders.clear()
+        self.completed_trades.clear()
+        self.equity_snapshots.clear()
+        self._entry_orders.clear()
+        self._last_known_prices.clear()
         self.risk_manager.peak_equity = initial_balance
+        # Clear strategy-side caches (e.g., CombinedStrategy._entry_indices)
+        if hasattr(self.strategy, "_entry_indices"):
+            self.strategy._entry_indices.clear()
 
         symbols = self.strategy.symbols
         available_symbols = [s for s in symbols if s in data]
@@ -115,22 +126,41 @@ class BacktestEngine:
             end=str(all_timestamps[-1]),
         )
 
+        # Pre-compute indicators on full DataFrame per symbol (O(N) total)
+        # Safe for anti-lookahead: all indicators use only past data (rolling, shift, etc.)
+        # Future access is prevented by slicing indicator_data[sym].iloc[:idx]
+        # Strategies that depend on DataFrame length (e.g., resampling) opt out
+        # via supports_precompute = False and use per-iteration computation.
+        use_precompute = self.strategy.supports_precompute
+        indicator_data: dict[str, pd.DataFrame] = {}
+        if use_precompute:
+            for sym, df in symbol_data.items():
+                indicator_data[sym] = self.strategy.indicators(df.copy())
+
         # Track per-symbol candle index (how many candles have been seen)
         symbol_indices: dict[str, int] = {sym: 0 for sym in symbol_data}
-        # Original columns per symbol for anti-lookahead assertion
-        original_columns: dict[str, set] = {
-            sym: set(df.columns) for sym, df in symbol_data.items()
+        # Original columns for anti-lookahead assertion (per-iteration path only)
+        if not use_precompute:
+            original_columns: dict[str, set] = {
+                sym: set(df.columns) for sym, df in symbol_data.items()
+            }
+
+        # Pre-build timestamp sets for O(1) membership checks
+        symbol_ts_sets: dict[str, set] = {
+            sym: set(df.index) for sym, df in symbol_data.items()
         }
 
         # Main loop: iterate through unified timeline
         for ts in all_timestamps:
             stop_loss_fired_symbols: set[str] = set()
+            fill_candles: dict[str, Candle] = {}
 
             # Phase 1: Update indices and process fills/stop losses per symbol
             for sym in list(symbol_data.keys()):
-                df = symbol_data[sym]
-                if ts not in df.index:
+                if ts not in symbol_ts_sets[sym]:
                     continue
+
+                df = symbol_data[sym]
 
                 # Find the position of this timestamp in the symbol's data
                 idx = df.index.get_loc(ts)
@@ -148,42 +178,37 @@ class BacktestEngine:
                     close=float(fill_row["close"]),
                     volume=float(fill_row["volume"]),
                 )
+                fill_candles[sym] = fill_candle
 
                 # Stop losses
                 if self._check_stop_losses(sym, fill_candle):
                     stop_loss_fired_symbols.add(sym)
+                    # Clear strategy's entry_index cache for stopped-out positions
+                    if hasattr(self.strategy, "_entry_indices"):
+                        self.strategy._entry_indices.pop(sym, None)
 
                 # Pending orders — only process orders for this symbol's candle
                 self._process_pending_orders(fill_candle, sym)
 
             # Phase 2: Strategy evaluation per symbol
             for sym in list(symbol_data.keys()):
-                df = symbol_data[sym]
-                if ts not in df.index:
+                if sym not in fill_candles:
                     continue
 
                 idx = symbol_indices[sym]
-                if idx == 0:
-                    continue
 
                 # Visible data: candles [0..idx-1] (anti-lookahead)
-                visible_df = df.iloc[:idx].copy()
-                visible_df = self.strategy.indicators(visible_df)
+                if use_precompute:
+                    visible_df = indicator_data[sym].iloc[:idx].copy()
+                else:
+                    visible_df = symbol_data[sym].iloc[:idx].copy()
+                    visible_df = self.strategy.indicators(visible_df)
+                    # Verify no leakage in per-iteration path
+                    assert set(symbol_data[sym].columns) == original_columns[sym], (
+                        f"Anti-lookahead violation on {sym}: indicator columns leaked"
+                    )
 
-                # Verify no leakage
-                assert set(df.columns) == original_columns[sym], (
-                    f"Anti-lookahead violation on {sym}: indicator columns leaked"
-                )
-
-                fill_row = df.iloc[idx]
-                fill_candle = Candle(
-                    timestamp=ts.to_pydatetime(),
-                    open=float(fill_row["open"]),
-                    high=float(fill_row["high"]),
-                    low=float(fill_row["low"]),
-                    close=float(fill_row["close"]),
-                    volume=float(fill_row["volume"]),
-                )
+                fill_candle = fill_candles[sym]
 
                 # Check exits
                 if sym in self.positions:
@@ -201,9 +226,8 @@ class BacktestEngine:
 
             # Phase 3: Update last known prices and record portfolio equity
             for sym in symbol_data:
-                df = symbol_data[sym]
-                if ts in df.index:
-                    self._last_known_prices[sym] = float(df.loc[ts, "close"])
+                if ts in symbol_ts_sets[sym]:
+                    self._last_known_prices[sym] = float(symbol_data[sym].loc[ts, "close"])
 
             equity = self._calculate_equity(self._last_known_prices)
             self.risk_manager.update_peak_equity(equity)
