@@ -15,6 +15,7 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
         StochOverboughtFilter,
         ZscoreExtremeFilter,
     )
+    from tradingbot.strategy.filters.ml import LgbmProbFilter
     from tradingbot.strategy.filters.momentum import (
         CciOversoldFilter,
         MacdCrossUpFilter,
@@ -27,8 +28,8 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
     from tradingbot.strategy.filters.price import (
         BbUpperBreakFilter,
         DonchianBreakFilter,
-        EmaCrossUpFilter,
         EmaAboveFilter,
+        EmaCrossUpFilter,
         PriceBreakoutFilter,
     )
     from tradingbot.strategy.filters.trend import (
@@ -86,6 +87,8 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
         "zscore_extreme": ZscoreExtremeFilter,
         "pct_from_ma_exit": PctFromMaExitFilter,
         "atr_trailing_exit": AtrTrailingExitFilter,
+        # ML filter
+        "lgbm_prob": LgbmProbFilter,
     }
 
 
@@ -107,7 +110,7 @@ def parse_filter_spec(spec: str, base_timeframe: str = "1h") -> BaseFilter:
     # Filter empty parts from trailing colons
     parts = [p for p in parts if p]
     if not parts:
-        raise ValueError(f"Empty filter spec")
+        raise ValueError("Empty filter spec")
     name = parts[0]
 
     try:
@@ -278,6 +281,12 @@ def _parse_filter_params(
             kwargs["period"] = int(parts[1])
         if len(parts) >= 3:
             kwargs["multiplier"] = float(parts[2])
+
+    elif name == "lgbm_prob":
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["model_dir"] = parts[2]
 
 
 def parse_filter_string(filter_string: str, base_timeframe: str = "1h") -> list[BaseFilter]:

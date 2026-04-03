@@ -58,12 +58,16 @@ class CombinedStrategy(Strategy):
 
         # AND logic: all entry filters must pass (skip exit-role filters)
         checked = 0
+        strength = 1.0
         for f in self.entry_filters:
             if f.role == "exit":
                 continue
             checked += 1
             if not f.check_entry(df):
                 return None
+            # Collect ML-based strength if available
+            if hasattr(f, "last_strength") and f.last_strength is not None:
+                strength = f.last_strength
 
         if checked == 0:
             return None  # No non-exit filters to evaluate
@@ -73,6 +77,7 @@ class CombinedStrategy(Strategy):
             symbol=symbol,
             signal_type=SignalType.LONG_ENTRY,
             price=df["close"].iloc[-1],
+            strength=strength,
         )
 
     def should_exit(
