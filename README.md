@@ -10,7 +10,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **6가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹
-- **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (9종 필터, AND 진입 / OR 청산)
+- **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (30종 필터, 5가지 역할 태깅, AND 진입 / OR 청산)
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
@@ -119,23 +119,21 @@ tradingbot combine \
   --exit "ema_above:20" \
   --symbol BTC/KRW
 
-# 15개 사전정의 조합 자동 스캔
+# 33개 사전정의 조합 자동 스캔
 tradingbot combine-scan --top 10
 ```
 
-**사용 가능한 필터:**
+**사용 가능한 필터 (30종, 역할별 분류):**
 
-| 필터 | 용도 | 예시 |
+| 역할 | 필터 | 예시 |
 |------|------|------|
-| `trend_up` | 상위 TF 상승 추세 | `trend_up:4` (4배 상위 TF) |
-| `rsi_oversold` | RSI 과매도 탈출 | `rsi_oversold:30` |
-| `rsi_overbought` | RSI 과매수 도달 | `rsi_overbought:70` |
-| `volume_spike` | 거래량 급등 | `volume_spike:2.5` (평균 2.5배) |
-| `macd_cross_up` | MACD 양전환 | `macd_cross_up` |
-| `price_breakout` | 최근 고점 돌파 | `price_breakout:10` |
-| `ema_above` | EMA 위 위치 | `ema_above:50` |
-| `bb_upper_break` | 볼린저 상단 돌파 | `bb_upper_break:20` |
+| **Entry Signal** | `rsi_oversold`, `macd_cross_up`, `stoch_oversold`, `cci_oversold`, `roc_positive`, `mfi_oversold`, `ema_cross_up`, `donchian_break`, `price_breakout`, `bb_upper_break` | `rsi_oversold:30`, `ema_cross_up:12:26` |
+| **Trend Filter** | `trend_up`, `trend_down`, `ema_above`, `adx_strong`, `ichimoku_above`, `aroon_up` | `adx_strong:25`, `ichimoku_above` |
+| **Volatility Filter** | `atr_breakout`, `keltner_break`, `bb_squeeze`, `bb_bandwidth_low` | `atr_breakout:14:2.0`, `bb_squeeze` |
+| **Volume Confirm** | `volume_spike`, `obv_rising`, `mfi_confirm` | `volume_spike:2.5`, `obv_rising:20` |
+| **Exit Signal** | `rsi_overbought`, `stoch_overbought`, `cci_overbought`, `mfi_overbought`, `zscore_extreme`, `pct_from_ma_exit`, `atr_trailing_exit` | `atr_trailing_exit:14:2.5` |
 
+조합 규칙: `Entry + Trend Filter + Volume Confirm → Exit`
 진입: 모든 필터 AND 충족 시 매수 / 청산: 하나라도 OR 충족 시 매도
 
 ### 5. 페이퍼 트레이딩
@@ -352,7 +350,7 @@ trading-bot/
 ├── src/tradingbot/
 │   ├── core/           # 도메인 모델 (Candle, Order, Trade, Position)
 │   ├── data/           # 데이터 다운로드, 저장(Parquet), 기술적 지표
-│   ├── strategy/       # 전략 프레임워크 + 내장 전략 4종
+│   ├── strategy/       # 전략 프레임워크 + 내장 전략 6종 + 30종 필터 조합 엔진
 │   ├── backtest/       # 백테스트 엔진, 옵티마이저, Walk-Forward
 │   ├── risk/           # 리스크 매니저, 사전 거래 검증
 │   ├── exchange/       # 거래소 추상화 (Upbit CCXT, 페이퍼)
@@ -360,7 +358,7 @@ trading-bot/
 │   ├── notifications/  # 텔레그램 알림
 │   ├── dashboard/      # Streamlit 웹 대시보드
 │   └── utils/          # 로깅 (콘솔 + JSON 파일 로테이션), 시간 유틸리티
-└── tests/              # 97개 테스트
+└── tests/              # 139개 테스트
 ```
 
 ## 기술 스택
@@ -376,4 +374,4 @@ trading-bot/
 | 실시간 | websockets (Upbit WebSocket) |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (119개) |
+| 테스트 | pytest (139개) |

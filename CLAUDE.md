@@ -57,7 +57,7 @@ tradingbot scan --sort-by total_return --top 20
 
 # Combine filters (no-code strategy building)
 tradingbot combine --entry "trend_up:4 + rsi_oversold:30" --exit "rsi_overbought:70" --symbol BTC/KRW
-tradingbot combine-scan --top 15  # Scan 15 predefined filter templates
+tradingbot combine-scan --top 15  # Scan 33 predefined filter templates
 ```
 
 ## Architecture
@@ -95,11 +95,19 @@ For each timestamp ts:
 - `risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
 - `data/fetcher.py` — CCXT-based OHLCV download with Upbit rate limiting
 - `data/storage.py` — Parquet file I/O with auto-merge on save
-- `data/indicators.py` — Technical indicator wrappers using `ta` library
+- `data/indicators.py` — 19 technical indicator wrappers (SMA, EMA, RSI, MACD, BB, ATR, Stochastic, ADX, Ichimoku, Aroon, CCI, ROC, MFI, OBV, Keltner, Donchian, Z-score, PctFromMA, Volume SMA)
 - `backtest/optimizer.py` — Grid search parameter optimization with parallel execution
 - `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling)
-- `strategy/filters/` — 9 reusable filters (trend, RSI, MACD, volume, price, BB, EMA)
-- `strategy/combined.py` — CombinedStrategy: AND entry + OR exit from filter combinations
+- `strategy/filters/` — 30 reusable filters with role tagging (entry/trend/volatility/volume/exit)
+  - `base.py` — BaseFilter ABC with `role` field + `check_exit(df, entry_index)` for trailing exits
+  - `trend.py` — TrendUp/Down, AdxStrong, IchimokuAbove, AroonUp
+  - `momentum.py` — RsiOversold, RsiOverbought, MacdCrossUp, StochOversold, CciOversold, RocPositive, MfiOversold
+  - `price.py` — PriceBreakout, EmaAbove, BbUpperBreak, EmaCrossUp, DonchianBreak
+  - `volatility.py` — AtrBreakout, KeltnerBreak, BbSqueeze, BbBandwidthLow
+  - `volume.py` — VolumeSpike, ObvRising, MfiConfirm
+  - `exit.py` — StochOverbought, CciOverbought, MfiOverbought, ZscoreExtreme, PctFromMaExit, AtrTrailingExit
+  - `registry.py` — 30 filters registered, parse_filter_spec/parse_filter_string
+- `strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip) + OR exit with entry_index for trailing stops
 - `exchange/base.py` — Abstract exchange interface (BaseExchange ABC)
 - `exchange/ccxt_exchange.py` — CCXT async implementation for Upbit (retry + rate limiting)
 - `exchange/paper.py` — Paper trading exchange (simulated fills, portfolio tracking)
