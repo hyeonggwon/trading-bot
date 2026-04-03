@@ -54,7 +54,8 @@ class TestFilterRegistry:
         assert "rsi_oversold" in fmap
         assert "volume_spike" in fmap
         assert "ema_above" in fmap
-        assert len(fmap) == 30
+        assert "lgbm_prob" in fmap
+        assert len(fmap) == 31
 
     def test_parse_simple(self):
         f = parse_filter_spec("rsi_oversold:30")
@@ -146,6 +147,30 @@ class TestFilterRegistry:
         assert roles["atr_trailing_exit"] == "exit"
         assert roles["obv_rising"] == "volume"
         assert roles["adx_strong"] == "trend"
+        assert roles["lgbm_prob"] == "entry"
+
+    def test_parse_lgbm_prob(self):
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        f = parse_filter_spec("lgbm_prob:0.55")
+        assert isinstance(f, LgbmProbFilter)
+        assert f.threshold == 0.55
+        assert f.role == "entry"
+
+    def test_parse_lgbm_prob_with_model_dir(self):
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        f = parse_filter_spec("lgbm_prob:0.60:/tmp/models")
+        assert isinstance(f, LgbmProbFilter)
+        assert f.threshold == 0.60
+        assert str(f.model_dir) == "/tmp/models"
+
+    def test_parse_lgbm_prob_default(self):
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        f = parse_filter_spec("lgbm_prob")
+        assert isinstance(f, LgbmProbFilter)
+        assert f.threshold == 0.55  # default
 
 
 class TestCombinedStrategy:
@@ -222,6 +247,114 @@ class TestCombinedStrategy:
     def test_no_entry_filters_no_trades(self):
         df = _make_data(100)
         strategy = CombinedStrategy(entry_filters=[], exit_filters=[])
+        strategy.timeframe = "1h"
+
+        config = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+        engine = BacktestEngine(strategy=strategy, config=config)
+        report = engine.run({"BTC/KRW": df})
+        assert report.total_trades == 0
+
+
+class TestLgbmProbFilter:
+    def test_no_model_returns_false(self, tmp_path):
+        """Without a model, check_entry should always return False."""
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        f = LgbmProbFilter(threshold=0.55, model_dir=str(tmp_path))
+        df = _make_data(200)
+        df = f.compute(df)
+        assert f.check_entry(df) is False
+        assert f.last_prob is None
+        assert f.last_strength is None
+
+    def test_with_model(self, tmp_path):
+        """With a trained model, check_entry should return based on probability."""
+        from tradingbot.ml.features import build_feature_matrix
+        from tradingbot.ml.targets import build_target
+        from tradingbot.ml.trainer import LGBMTrainer
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        df = _make_data(500)
+
+        # Train and save model
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+
+        # Test filter with very low threshold (should pass)
+        f = LgbmProbFilter(threshold=0.01, symbol="BTC/KRW", timeframe="1h", model_dir=str(tmp_path))
+        df_test = _make_data(200)
+        df_test = f.compute(df_test)
+        result = f.check_entry(df_test)
+
+        # Model loaded and prediction made
+        assert f._loaded is True
+        assert f._model is not None
+        assert f.last_prob is not None
+        assert 0 <= f.last_prob <= 1
+
+        if result:
+            assert f.last_strength is not None
+            assert f.last_strength >= 0
+
+    def test_combined_strategy_strength(self, tmp_path):
+        """CombinedStrategy should propagate ML strength to Signal."""
+        from tradingbot.ml.features import build_feature_matrix
+        from tradingbot.ml.targets import build_target
+        from tradingbot.ml.trainer import LGBMTrainer
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        df = _make_data(500)
+
+        # Train model
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+
+        # CombinedStrategy with ML filter (low threshold to ensure entry)
+        ml_filter = LgbmProbFilter(threshold=0.01, symbol="BTC/KRW", timeframe="1h", model_dir=str(tmp_path))
+        entry = [RsiOversoldFilter(threshold=40), ml_filter]
+        exit_ = [RsiOverboughtFilter(threshold=60)]
+
+        strategy = CombinedStrategy(entry_filters=entry, exit_filters=exit_)
+        strategy.timeframe = "1h"
+
+        config = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
+                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+        engine = BacktestEngine(strategy=strategy, config=config)
+        report = engine.run({"BTC/KRW": df})
+        assert report.final_balance > 0
+
+    def test_no_model_no_trades_combined(self, tmp_path):
+        """Without a model, ML filter blocks all entries in CombinedStrategy."""
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        df = _make_data(300)
+        ml_filter = LgbmProbFilter(threshold=0.55, model_dir=str(tmp_path))  # Empty dir
+        entry = [RsiOversoldFilter(threshold=35), ml_filter]
+        exit_ = [RsiOverboughtFilter(threshold=65)]
+
+        strategy = CombinedStrategy(entry_filters=entry, exit_filters=exit_)
         strategy.timeframe = "1h"
 
         config = AppConfig(

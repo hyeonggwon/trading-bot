@@ -200,6 +200,51 @@ class TestLGBMStrategy:
         # so Half-Kelly yields strength=0 → no trades. This is correct behavior.
         # The test verifies the full pipeline runs without errors.
 
+    def test_lgbm_prob_filter_combined_backtest(self, tmp_path):
+        """Full pipeline: train → save → CombinedStrategy with lgbm_prob + rule filters."""
+        from tradingbot.backtest.engine import BacktestEngine
+        from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+        from tradingbot.ml.trainer import LGBMTrainer
+        from tradingbot.strategy.combined import CombinedStrategy
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+        from tradingbot.strategy.filters.momentum import RsiOverboughtFilter, RsiOversoldFilter
+
+        df = _make_data(500)
+
+        # Train
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+
+        # Combined: RSI + ML filter
+        ml_filter = LgbmProbFilter(
+            threshold=0.01,  # Low threshold for synthetic data
+            symbol="BTC/KRW",
+            timeframe="1h",
+            model_dir=str(tmp_path),
+        )
+        entry = [RsiOversoldFilter(threshold=40), ml_filter]
+        exit_ = [RsiOverboughtFilter(threshold=60)]
+
+        strategy = CombinedStrategy(entry_filters=entry, exit_filters=exit_)
+        strategy.timeframe = "1h"
+
+        config = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
+                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+        engine = BacktestEngine(strategy=strategy, config=config)
+        report = engine.run({"BTC/KRW": df})
+        assert report.final_balance > 0
+
     def test_no_model_no_trades(self, tmp_path):
         """Without a model file, strategy should generate no trades."""
         from tradingbot.backtest.engine import BacktestEngine

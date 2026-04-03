@@ -674,6 +674,13 @@ def combine(
         console.print(f"[red]{e}[/red]")
         raise typer.Exit(1)
 
+    # Pass symbol/timeframe to ML filters
+    for f in entry_filters + exit_filters:
+        if hasattr(f, "symbol"):
+            f.symbol = symbol
+        if hasattr(f, "timeframe"):
+            f.timeframe = timeframe
+
     strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
     strategy.symbols = [symbol]
     strategy.timeframe = timeframe
@@ -743,6 +750,10 @@ COMBINE_TEMPLATES = [
     {"entry": "rsi_oversold:30 + stoch_oversold:20 + adx_strong:25", "exit": "rsi_overbought:70", "label": "RSI+Stoch+ADX"},
     {"entry": "macd_cross_up + obv_rising + adx_strong:25", "exit": "atr_trailing_exit:14:2.0", "label": "MACD+OBV+ADX→ATR"},
     {"entry": "ema_cross_up:12:26 + mfi_confirm:50 + bb_bandwidth_low:0.04", "exit": "zscore_extreme:2.0", "label": "EMA+MFI+BBW→Zscore"},
+    # ── ML + Rule combos ──
+    {"entry": "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.55", "exit": "rsi_overbought:70", "label": "Trend+RSI+ML"},
+    {"entry": "ema_cross_up:12:26 + lgbm_prob:0.50", "exit": "atr_trailing_exit:14:2.5", "label": "EMACross+ML→ATR"},
+    {"entry": "volume_spike:2.0 + adx_strong:25 + lgbm_prob:0.55", "exit": "rsi_overbought:70", "label": "Vol+ADX+ML"},
 ]
 
 
@@ -791,6 +802,13 @@ def combine_scan(
                 try:
                     entry_filters = parse_filter_string(tmpl["entry"], base_timeframe=tf)
                     exit_filters = parse_filter_string(tmpl["exit"], base_timeframe=tf)
+
+                    # Pass symbol/timeframe to ML filters
+                    for f in entry_filters + exit_filters:
+                        if hasattr(f, "symbol"):
+                            f.symbol = sym
+                        if hasattr(f, "timeframe"):
+                            f.timeframe = tf
 
                     strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
                     strategy.symbols = [sym]
@@ -992,6 +1010,107 @@ def ml_backtest(
     console.print(f"  Win Rate: {report.win_rate:.2%}")
     console.print(f"  Profit Factor: {report.profit_factor:.2f}")
     console.print(f"  Total Trades: {report.total_trades}")
+
+
+@app.command(name="ml-train-all")
+def ml_train_all(
+    timeframe: str | None = typer.Option(
+        None, "--timeframe", "-t", help="Train only this timeframe",
+    ),
+    train_months: int = typer.Option(3, "--train-months", help="Training window months"),
+    test_months: int = typer.Option(1, "--test-months", help="Test window months"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
+) -> None:
+    """Train LightGBM models for all available symbol × timeframe combinations."""
+    setup_logging()
+
+    from tradingbot.data.storage import load_candles
+    from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+
+    available = list_available_data(Path(data_dir))
+    if not available:
+        console.print("[red]No data found. Run tradingbot download first.[/red]")
+        raise typer.Exit(1)
+
+    # Build symbol × timeframe pairs
+    pairs: list[tuple[str, str]] = []
+    for item in available:
+        if timeframe and item["timeframe"] != timeframe:
+            continue
+        pairs.append((item["symbol"], item["timeframe"]))
+
+    if not pairs:
+        tf_label = timeframe if timeframe else "all"
+        console.print(f"[red]No data found for timeframe={tf_label}.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Training ML models for {len(pairs)} symbol × timeframe pairs...[/bold]")
+    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test\n")
+
+    results: list[dict] = []
+
+    for i, (sym, tf) in enumerate(pairs, 1):
+        console.print(f"[{i}/{len(pairs)}] {sym} {tf}...", end=" ")
+
+        try:
+            df = load_candles(sym, tf, Path(data_dir))
+        except FileNotFoundError:
+            console.print("[red]no data[/red]")
+            continue
+
+        try:
+            trainer = MLWalkForwardTrainer(
+                symbol=sym,
+                timeframe=tf,
+                train_months=train_months,
+                test_months=test_months,
+                model_dir=Path(model_dir),
+            )
+            report = trainer.run(df)
+
+            if report.windows:
+                console.print(
+                    f"[green]AUC={report.avg_auc:.4f} "
+                    f"precision={report.avg_precision:.4f} "
+                    f"windows={len(report.windows)}[/green]"
+                )
+                results.append({
+                    "symbol": sym,
+                    "timeframe": tf,
+                    "avg_auc": report.avg_auc,
+                    "avg_precision": report.avg_precision,
+                    "n_windows": len(report.windows),
+                    "model_path": str(report.model_path),
+                })
+            else:
+                console.print("[yellow]insufficient data[/yellow]")
+        except Exception as e:
+            console.print(f"[red]error: {e}[/red]")
+
+    if not results:
+        console.print("\n[red]No models were trained.[/red]")
+        raise typer.Exit(1)
+
+    # Summary table
+    table = Table(title=f"\nML Training Summary ({len(results)} models)")
+    table.add_column("Symbol")
+    table.add_column("TF")
+    table.add_column("AUC", justify="right")
+    table.add_column("Precision", justify="right")
+    table.add_column("Windows", justify="right")
+
+    for r in sorted(results, key=lambda x: x["avg_auc"], reverse=True):
+        auc_style = "green" if r["avg_auc"] > 0.55 else ("yellow" if r["avg_auc"] > 0.50 else "red")
+        table.add_row(
+            r["symbol"],
+            r["timeframe"],
+            f"[{auc_style}]{r['avg_auc']:.4f}[/{auc_style}]",
+            f"{r['avg_precision']:.4f}",
+            str(r["n_windows"]),
+        )
+
+    console.print(table)
 
 
 if __name__ == "__main__":
