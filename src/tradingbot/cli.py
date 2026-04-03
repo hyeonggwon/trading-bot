@@ -871,5 +871,128 @@ def combine_scan(
         console.print(f"     Exit:  {r['exit']}")
 
 
+@app.command(name="ml-train")
+def ml_train(
+    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol to train"),
+    timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Timeframe"),
+    train_months: int = typer.Option(3, "--train-months", help="Training window months"),
+    test_months: int = typer.Option(1, "--test-months", help="Test window months"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
+) -> None:
+    """Train a LightGBM model with walk-forward validation."""
+    setup_logging()
+
+    from tradingbot.data.storage import load_candles
+    from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+
+    try:
+        df = load_candles(symbol, timeframe, Path(data_dir))
+    except FileNotFoundError:
+        console.print(f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]")
+        raise typer.Exit(1)
+
+    console.print(f"[bold]Training LightGBM model for {symbol} {timeframe}...[/bold]")
+    console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
+    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
+
+    trainer = MLWalkForwardTrainer(
+        symbol=symbol,
+        timeframe=timeframe,
+        train_months=train_months,
+        test_months=test_months,
+        model_dir=Path(model_dir),
+    )
+    report = trainer.run(df)
+
+    if not report.windows:
+        console.print("[red]Training failed — insufficient data or no valid windows.[/red]")
+        raise typer.Exit(1)
+
+    # Display results
+    console.print(f"\n[bold green]Training complete![/bold green]")
+    console.print(f"  Walk-Forward windows: {len(report.windows)}")
+    console.print(f"  Avg AUC: {report.avg_auc:.4f}")
+    console.print(f"  Avg Precision: {report.avg_precision:.4f}")
+    console.print(f"  Model saved: {report.model_path}")
+
+    # Per-window details
+    table = Table(title="Walk-Forward Results")
+    table.add_column("Window", style="cyan")
+    table.add_column("AUC", justify="right")
+    table.add_column("Precision", justify="right")
+    table.add_column("Recall", justify="right")
+    table.add_column("Train", justify="right")
+    table.add_column("Test", justify="right")
+
+    for w in report.windows:
+        table.add_row(
+            str(w["window"]),
+            f"{w['auc']:.4f}",
+            f"{w['precision']:.4f}",
+            f"{w['recall']:.4f}",
+            str(w["n_train"]),
+            str(w["n_test"]),
+        )
+    console.print(table)
+
+    # Top 10 feature importance
+    if report.feature_importance:
+        console.print("\n[bold]Top 10 Feature Importance:[/bold]")
+        for i, (feat, imp) in enumerate(list(report.feature_importance.items())[:10], 1):
+            console.print(f"  {i:2d}. {feat}: {imp:.1f}")
+
+
+@app.command(name="ml-backtest")
+def ml_backtest(
+    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol"),
+    timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Timeframe"),
+    balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    model_dir: str = typer.Option("models", "--model-dir", help="Model directory"),
+    entry_threshold: float = typer.Option(0.60, "--entry-threshold", help="Entry probability threshold"),
+    exit_threshold: float = typer.Option(0.45, "--exit-threshold", help="Exit probability threshold"),
+) -> None:
+    """Backtest using a pre-trained LightGBM model."""
+    setup_logging()
+
+    from tradingbot.backtest.engine import BacktestEngine
+    from tradingbot.data.storage import load_candles
+    from tradingbot.strategy.base import StrategyParams
+    from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+
+    try:
+        df = load_candles(symbol, timeframe, Path(data_dir))
+    except FileNotFoundError:
+        console.print(f"[red]No data for {symbol} {timeframe}.[/red]")
+        raise typer.Exit(1)
+
+    strategy = LGBMStrategy(StrategyParams(values={
+        "entry_threshold": entry_threshold,
+        "exit_threshold": exit_threshold,
+        "model_dir": model_dir,
+    }))
+    strategy.symbols = [symbol]
+    strategy.timeframe = timeframe
+
+    config = load_config(Path("config"), overrides={
+        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+    })
+
+    console.print(f"[bold]Backtesting LightGBM strategy on {symbol} {timeframe}...[/bold]")
+
+    engine = BacktestEngine(strategy=strategy, config=config)
+    report = engine.run({symbol: df})
+
+    console.print(f"\n[bold]Results:[/bold]")
+    console.print(f"  Final Balance: {report.final_balance:,.0f} KRW")
+    console.print(f"  Total Return: {report.total_return:.2%}")
+    console.print(f"  Sharpe Ratio: {report.sharpe_ratio:.2f}")
+    console.print(f"  Max Drawdown: {report.max_drawdown:.2%}")
+    console.print(f"  Win Rate: {report.win_rate:.2%}")
+    console.print(f"  Profit Factor: {report.profit_factor:.2f}")
+    console.print(f"  Total Trades: {report.total_trades}")
+
+
 if __name__ == "__main__":
     app()

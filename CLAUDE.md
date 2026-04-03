@@ -58,6 +58,12 @@ tradingbot scan --sort-by total_return --top 20
 # Combine filters (no-code strategy building)
 tradingbot combine --entry "trend_up:4 + rsi_oversold:30" --exit "rsi_overbought:70" --symbol BTC/KRW
 tradingbot combine-scan --top 15  # Scan 33 predefined filter templates
+
+# ML strategy (LightGBM)
+pip install -e ".[ml]"
+tradingbot ml-train --symbol BTC/KRW --timeframe 1h --train-months 3 --test-months 1
+tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h
+tradingbot backtest --strategy lgbm --symbol BTC/KRW
 ```
 
 ## Architecture
@@ -108,6 +114,11 @@ For each timestamp ts:
   - `exit.py` — StochOverbought, CciOverbought, MfiOverbought, ZscoreExtreme, PctFromMaExit, AtrTrailingExit
   - `registry.py` — 30 filters registered, parse_filter_spec/parse_filter_string
 - `strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip) + OR exit with entry_index for trailing stops
+- `strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing
+- `ml/features.py` — 33 features from 19 indicators (raw + derived + rolling stats)
+- `ml/targets.py` — 4h forward return binary classification target (offline only)
+- `ml/trainer.py` — LGBMTrainer: train, evaluate, save/load (.lgb + _meta.json)
+- `ml/walk_forward.py` — MLWalkForwardTrainer: purged expanding window + embargo
 - `exchange/base.py` — Abstract exchange interface (BaseExchange ABC)
 - `exchange/ccxt_exchange.py` — CCXT async implementation for Upbit (retry + rate limiting)
 - `exchange/paper.py` — Paper trading exchange (simulated fills, portfolio tracking)
@@ -121,13 +132,14 @@ For each timestamp ts:
 - `config.py` — Pydantic settings from YAML + .env override
 - `utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
 
-### Built-in Strategies (6종)
+### Built-in Strategies (7종)
 - `sma_cross` — SMA golden/dead cross (fast_period, slow_period)
 - `rsi_mean_reversion` — RSI oversold entry / overbought exit (rsi_period, oversold, overbought)
 - `macd_momentum` — MACD histogram zero-cross (fast, slow, signal)
 - `bollinger_breakout` — Price breaks upper BB / drops below middle BB (period, std)
 - `multi_tf` — Higher TF trend filter (SMA) + base TF entry (RSI), anti-lookahead resample
 - `volume_breakout` — Volume spike (avg × N) + price breakout above recent high
+- `lgbm` — LightGBM meta-model: 33 features from indicators → binary classification → Half-Kelly sizing
 
 ### Strategy Interface
 Strategies inherit from `Strategy` and implement three methods:
@@ -147,3 +159,4 @@ Candle data stored as Parquet: `data/{SYMBOL}_{QUOTE}/{timeframe}.parquet`
 - `pyarrow` for Parquet I/O
 - `websockets` for Upbit real-time data (auto-reconnect, interruptible cooldown)
 - `streamlit` + `plotly` for web dashboard (optional: `pip install -e ".[dashboard]"`)
+- `lightgbm` + `scikit-learn` for ML strategy (optional: `pip install -e ".[ml]"`)

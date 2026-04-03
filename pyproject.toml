@@ -40,6 +40,12 @@ dashboard = [
     "streamlit>=1.30",
     "plotly>=5.0",
 ]
+ml = [
+    "lightgbm>=4.3.0",
+    "scikit-learn>=1.4.0",
+    "optuna>=3.5.0",
+    "shap>=0.45.0",
+]
 
 [project.scripts]
 tradingbot = "tradingbot.cli:app"
