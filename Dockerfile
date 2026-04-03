@@ -6,6 +6,9 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
+# Install system dependencies for LightGBM (OpenMP)
+RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
+
 # Copy source and install (single layer for hatchling compatibility)
 COPY pyproject.toml .
 COPY src/ src/
