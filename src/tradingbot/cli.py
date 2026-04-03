@@ -1071,12 +1071,15 @@ def ml_train_all(
     test_months: int = typer.Option(1, "--test-months", help="Test window months"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
+    workers: int = typer.Option(
+        0, "--workers", "-w",
+        help="Parallel workers (0=auto: cpu_count//2, 1=sequential)",
+    ),
 ) -> None:
     """Train LightGBM models for all available symbol × timeframe combinations."""
-    setup_logging()
+    import multiprocessing as mp
 
-    from tradingbot.data.storage import load_candles
-    from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+    setup_logging()
 
     available = list_available_data(Path(data_dir))
     if not available:
@@ -1095,54 +1098,125 @@ def ml_train_all(
         console.print(f"[red]No data found for timeframe={tf_label}.[/red]")
         raise typer.Exit(1)
 
+    # Resolve worker count
+    cpu_count = mp.cpu_count()
+    if workers <= 0:
+        workers = max(1, min(cpu_count // 2, len(pairs)))
+    workers = min(workers, len(pairs))
+    threads_per_worker = max(1, cpu_count // workers)
+
     console.print(f"[bold]Training ML models for {len(pairs)} symbol × timeframe pairs...[/bold]")
-    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test\n")
+    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
+    console.print(f"  Workers: {workers}  (threads/worker: {threads_per_worker})\n")
 
     results: list[dict] = []
 
-    with _progress_context() as progress:
-        task = progress.add_task("Training models", total=len(pairs))
+    if workers == 1:
+        # Sequential — zero subprocess overhead
+        from tradingbot.data.storage import load_candles
+        from tradingbot.ml.walk_forward import MLWalkForwardTrainer
 
-        for sym, tf in pairs:
-            progress.update(task, description=f"Training {sym} {tf}")
+        with _progress_context() as progress:
+            task = progress.add_task("Training models", total=len(pairs))
 
-            try:
-                df = load_candles(sym, tf, Path(data_dir))
-            except FileNotFoundError:
-                progress.log(f"[red]{sym} {tf}: no data[/red]")
-                progress.advance(task)
-                continue
+            for sym, tf in pairs:
+                progress.update(task, description=f"Training {sym} {tf}")
 
-            try:
-                trainer = MLWalkForwardTrainer(
-                    symbol=sym,
-                    timeframe=tf,
-                    train_months=train_months,
-                    test_months=test_months,
-                    model_dir=Path(model_dir),
-                )
-                report = trainer.run(df)
+                try:
+                    df = load_candles(sym, tf, Path(data_dir))
+                except FileNotFoundError:
+                    progress.log(f"[red]{sym} {tf}: no data[/red]")
+                    progress.advance(task)
+                    continue
 
-                if report.windows:
-                    progress.log(
-                        f"[green]{sym} {tf}: AUC={report.avg_auc:.4f} "
-                        f"precision={report.avg_precision:.4f} "
-                        f"windows={len(report.windows)}[/green]"
+                try:
+                    trainer = MLWalkForwardTrainer(
+                        symbol=sym,
+                        timeframe=tf,
+                        train_months=train_months,
+                        test_months=test_months,
+                        model_dir=Path(model_dir),
+                        lgbm_params={"num_threads": threads_per_worker},
                     )
-                    results.append({
-                        "symbol": sym,
-                        "timeframe": tf,
-                        "avg_auc": report.avg_auc,
-                        "avg_precision": report.avg_precision,
-                        "n_windows": len(report.windows),
-                        "model_path": str(report.model_path),
-                    })
-                else:
-                    progress.log(f"[yellow]{sym} {tf}: insufficient data[/yellow]")
-            except Exception as e:
-                progress.log(f"[red]{sym} {tf}: error: {e}[/red]")
+                    report = trainer.run(df)
 
-            progress.advance(task)
+                    if report.windows:
+                        progress.log(
+                            f"[green]{sym} {tf}: AUC={report.avg_auc:.4f} "
+                            f"precision={report.avg_precision:.4f} "
+                            f"windows={len(report.windows)}[/green]"
+                        )
+                        results.append({
+                            "symbol": sym,
+                            "timeframe": tf,
+                            "avg_auc": report.avg_auc,
+                            "avg_precision": report.avg_precision,
+                            "n_windows": len(report.windows),
+                            "model_path": str(report.model_path),
+                        })
+                    else:
+                        progress.log(f"[yellow]{sym} {tf}: insufficient data[/yellow]")
+                except Exception as e:
+                    progress.log(f"[red]{sym} {tf}: error: {e}[/red]")
+
+                progress.advance(task)
+    else:
+        # Parallel — ProcessPoolExecutor with spawn context
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        from tradingbot.ml.parallel import train_pair
+
+        ctx = mp.get_context("spawn")
+        data_dir_abs = str(Path(data_dir).resolve())
+        model_dir_abs = str(Path(model_dir).resolve())
+
+        with _progress_context() as progress:
+            task = progress.add_task("Training models", total=len(pairs))
+
+            with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as executor:
+                futures = {
+                    executor.submit(
+                        train_pair, sym, tf, data_dir_abs, model_dir_abs,
+                        train_months, test_months, threads_per_worker,
+                    ): (sym, tf)
+                    for sym, tf in pairs
+                }
+
+                try:
+                    for future in as_completed(futures):
+                        sym, tf = futures[future]
+                        try:
+                            r = future.result()
+                        except Exception as exc:
+                            progress.log(f"[red]{sym} {tf}: unexpected error: {exc}[/red]")
+                            progress.advance(task)
+                            continue
+
+                        if r.error:
+                            color = "yellow" if r.error == "no data" else "red"
+                            progress.log(f"[{color}]{sym} {tf}: {r.error}[/{color}]")
+                        elif r.n_windows == 0:
+                            progress.log(f"[yellow]{sym} {tf}: insufficient data[/yellow]")
+                        else:
+                            progress.log(
+                                f"[green]{sym} {tf}: AUC={r.avg_auc:.4f} "
+                                f"precision={r.avg_precision:.4f} "
+                                f"windows={r.n_windows}[/green]"
+                            )
+                            results.append({
+                                "symbol": sym,
+                                "timeframe": tf,
+                                "avg_auc": r.avg_auc,
+                                "avg_precision": r.avg_precision,
+                                "n_windows": r.n_windows,
+                                "model_path": r.model_path,
+                            })
+
+                        progress.advance(task)
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Interrupted. Cancelling...[/yellow]")
+                    executor.shutdown(wait=False, cancel_futures=True)
+                    raise typer.Exit(130)
 
     if not results:
         console.print("\n[red]No models were trained.[/red]")
