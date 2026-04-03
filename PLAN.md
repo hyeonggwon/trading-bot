@@ -19,7 +19,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase | 상태 | 내용 |
 |-------|------|------|
 | Phase 1 | ✅ 완료 | 데이터 레이어 (다운로드, 저장, 지표) |
-| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (60+건 총 수정, 158 tests) |
+| Phase 2 | ✅ 완료 | 백테스트 엔진 + 버그 수정 (60+건 총 수정, 159 tests) |
 | Phase 3 | ✅ 완료 | 전략 최적화 + Walk-Forward 검증 + 추가 전략 4종 |
 | Phase 4 | ✅ 완료 | 페이퍼 트레이딩 (거래소 추상화, 모의 체결, 텔레그램) |
 | Phase 5 | ✅ 완료 | 실매매 (주문 관리, 안전 장치, 일일 손실 한도) |
@@ -29,9 +29,11 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase 6-2 | ✅ 완료 | WebSocket 실시간 데이터 (Upbit ticker, 자동 재연결, 폴링 폴백) |
 | 고급 전략 | ✅ 완료 | multi_tf, volume_breakout, scan CLI |
 | 조합 엔진 | ✅ 완료 | 31종 필터 (역할 태깅 + ML), CombinedStrategy, combine/combine-scan CLI, 36 템플릿 |
-| ML 전략 | ✅ 완료 | LightGBM 메타 모델 (33 피처, Walk-Forward 학습, Half-Kelly), ml-train/ml-backtest CLI |
+| ML 전략 | ✅ 완료 | LightGBM 메타 모델 (36 피처, Walk-Forward 학습, Half-Kelly), ml-train/ml-backtest CLI |
 | ML+Rule 조합 | ✅ 완료 | LgbmProbFilter (31번째 필터) — ML 확률을 기존 필터와 AND 조합, Half-Kelly strength, ml-train-all CLI |
-| Phase 6-4~6,8 | ⏳ 대기 | Bybit, 선물/마진, 성능 최적화, 레짐 감지 (HMM) |
+| 성능 최적화 | ✅ 완료 | 인디케이터 사전 계산 (O(N²)→O(N)), 300x+ 속도 향상, 159 tests |
+| ML 학습 개선 | ✅ 완료 | Walk-forward early stopping 수정, 36 피처, 동적 scale_pos_weight |
+| Phase 6-4~6,8 | ⏳ 대기 | Bybit, 선물/마진, 레짐 감지 (HMM) |
 
 ---
 

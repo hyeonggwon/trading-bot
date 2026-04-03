@@ -231,10 +231,10 @@ class TestBugFixes:
             symbols = ["BTC/KRW"]
 
             def indicators(self, df):
-                seen_lengths.append(len(df))
                 return df
 
             def should_entry(self, df, symbol):
+                seen_lengths.append(len(df))
                 return None
 
             def should_exit(self, df, symbol, position):
@@ -245,9 +245,40 @@ class TestBugFixes:
         engine = BacktestEngine(strategy=SpyStrategy(), config=config)
         engine.run({"BTC/KRW": df})
 
-        # Strategy should see lengths 1, 2, 3, ..., 49 (never 50 = full data)
-        # i goes from 1 to 49, visible_df = df[:i] has length i
+        # should_entry sees lengths 1, 2, 3, ..., 49 (never 50 = full data)
+        # idx goes from 1 to 49, visible_df = indicator_df[:idx] has length idx
         assert seen_lengths == list(range(1, 50))
+
+    def test_no_lookahead_signals_stable_with_more_data(self):
+        """Signals for first N candles must be identical whether we backtest N or N+50 candles.
+        This catches lookahead from pre-computing indicators on the full dataset."""
+        df_short = _make_trending_data(100)
+        df_long = _make_trending_data(150)
+        # Ensure first 100 candles are identical
+        df_long.iloc[:100] = df_short.iloc[:100]
+
+        config = self._make_config()
+
+        strategy_short = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        engine_short = BacktestEngine(strategy=strategy_short, config=config)
+        report_short = engine_short.run({"BTC/KRW": df_short})
+
+        strategy_long = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        engine_long = BacktestEngine(strategy=strategy_long, config=config)
+        report_long = engine_long.run({"BTC/KRW": df_long})
+
+        # Trades that occurred within the first 100 candles must match
+        short_ts = df_short.index[-1]
+        trades_short = report_short.trades
+        trades_long_subset = [
+            t for t in report_long.trades
+            if t.entry_order.created_at <= short_ts.to_pydatetime()
+        ]
+
+        assert len(trades_short) == len(trades_long_subset)
+        for ts, tl in zip(trades_short, trades_long_subset):
+            assert ts.entry_order.filled_price == tl.entry_order.filled_price
+            assert ts.exit_order.filled_price == tl.exit_order.filled_price
 
     def test_bug4_entry_order_pairing(self):
         """Bug #4: Each trade should pair with its own entry order, not a stale one."""

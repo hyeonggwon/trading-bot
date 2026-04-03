@@ -6,12 +6,12 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 
 ## 주요 기능
 
-- **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생
+- **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생, 인디케이터 사전 계산으로 300x+ 성능
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **7가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파, LightGBM ML
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹
 - **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 5가지 역할 태깅, AND 진입 / OR 청산)
-- **ML 전략 (LightGBM)** — 33개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징
+- **ML 전략 (LightGBM)** — 36개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
@@ -225,7 +225,7 @@ tradingbot live --strategy sma_cross --symbol BTC/KRW \
 | `bollinger_breakout` | 볼린저밴드 상단 돌파 / 중간밴드 이탈 | `period`, `std` |
 | `multi_tf` | 상위 TF 추세 필터 + 하위 TF RSI 진입 | `higher_tf_factor`, `trend_sma_period`, `rsi_period` |
 | `volume_breakout` | 거래량 급등 + 최근 고점 돌파 | `volume_spike_threshold`, `price_lookback`, `exit_ema_period` |
-| `lgbm` | LightGBM ML 메타 모델 (33 피처 → 확률 → Half-Kelly) | `entry_threshold`, `exit_threshold` |
+| `lgbm` | LightGBM ML 메타 모델 (36 피처 → 확률 → Half-Kelly) | `entry_threshold`, `exit_threshold` |
 
 ## 커스텀 전략 작성
 
@@ -397,7 +397,7 @@ trading-bot/
 │   ├── notifications/  # 텔레그램 알림
 │   ├── dashboard/      # Streamlit 웹 대시보드
 │   └── utils/          # 로깅 (콘솔 + JSON 파일 로테이션), 시간 유틸리티
-└── tests/              # 158개 테스트
+└── tests/              # 159개 테스트
 ```
 
 ## 기술 스택

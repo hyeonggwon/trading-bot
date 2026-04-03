@@ -44,6 +44,9 @@ class Strategy(ABC):
     name: str = "base"
     timeframe: str = "1h"
     symbols: list[str] = ["BTC/KRW"]
+    # Set to False for strategies that depend on DataFrame length in indicators()
+    # (e.g., higher-timeframe resampling). These will use per-iteration computation.
+    supports_precompute: bool = True
 
     def __init__(self, params: StrategyParams | None = None):
         self.params = params or StrategyParams()
