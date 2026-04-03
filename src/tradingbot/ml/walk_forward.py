@@ -91,10 +91,18 @@ class MLWalkForwardTrainer:
             if len(X_train) < 100 or len(X_test) < 30:
                 continue
 
-            # Split train into train/val for early stopping (80/20)
+            # Split train into train/val for early stopping (80/20 with embargo)
             val_split = int(len(X_train) * 0.8)
-            X_tr, X_val = X_train.iloc[:val_split], X_train.iloc[val_split:]
-            y_tr, y_val = y_train.iloc[:val_split], y_train.iloc[val_split:]
+            val_start = val_split + EMBARGO_CANDLES
+            if val_start < len(X_train) - 10:
+                X_tr = X_train.iloc[:val_split]
+                X_val = X_train.iloc[val_start:]
+                y_tr = y_train.iloc[:val_split]
+                y_val = y_train.iloc[val_start:]
+            else:
+                # Not enough data for embargo — train without early stopping
+                X_tr, X_val = X_train, None
+                y_tr, y_val = y_train, None
 
             model = self.trainer.train(X_tr, y_tr, X_val, y_val)
             metrics = self.trainer.evaluate(model, X_test, y_test)
@@ -110,13 +118,16 @@ class MLWalkForwardTrainer:
 
         # Train final model on ALL valid data (with embargo between train/val)
         val_split = int(len(df_valid) * 0.85)
-        embargo = self.forward_candles
+        val_start = val_split + EMBARGO_CANDLES
         X_all = df_valid[feature_cols]
         y_all = target_valid
         X_tr = X_all.iloc[:val_split]
-        X_val = X_all.iloc[val_split + embargo:]
         y_tr = y_all.iloc[:val_split]
-        y_val = y_all.iloc[val_split + embargo:]
+        if val_start < len(df_valid) - 10:
+            X_val = X_all.iloc[val_start:]
+            y_val = y_all.iloc[val_start:]
+        else:
+            X_val, y_val = None, None
 
         final_model = self.trainer.train(X_tr, y_tr, X_val, y_val)
 

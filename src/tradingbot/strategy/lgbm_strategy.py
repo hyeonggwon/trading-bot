@@ -33,7 +33,7 @@ def _half_kelly(p: float, avg_win_loss_ratio: float = 1.5) -> float:
     """
     q = 1.0 - p
     b = avg_win_loss_ratio
-    full_kelly = (p * b - q) / b
+    full_kelly = (p * b - q) / b if b > 0 else 0.0
     return max(0.0, full_kelly * 0.5)
 
 

@@ -112,8 +112,8 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # Step 2: Derived features
     _nan = float("nan")
 
-    # OBV rate of change (raw OBV is non-stationary)
-    df["obv_roc_10"] = df["obv"].pct_change(10)
+    # OBV momentum (diff, not pct_change — OBV passes through zero)
+    df["obv_roc_10"] = df["obv"].diff(10)
 
     # ATR as % of price (normalized volatility)
     df["atr_pct_14"] = df["atr_14"] / df["close"]
@@ -166,9 +166,7 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     df["atr_rank_50"] = df["atr_14"].rolling(50).rank(pct=True)
     df["rsi_dist_from_50"] = df["rsi_14"] - 50.0
 
-    # Step 4: Replace any inf values with NaN (e.g., OBV pct_change through zero)
-    import numpy as np
-
-    df[FEATURE_COLS] = df[FEATURE_COLS].replace([np.inf, -np.inf], float("nan"))
+    # Step 4: Replace any inf values with NaN
+    df[FEATURE_COLS] = df[FEATURE_COLS].replace([float("inf"), float("-inf")], float("nan"))
 
     return df, FEATURE_COLS

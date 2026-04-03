@@ -30,6 +30,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | 고급 전략 | ✅ 완료 | multi_tf, volume_breakout, scan CLI |
 | 조합 엔진 | ✅ 완료 | 30종 필터 (역할 태깅), CombinedStrategy, combine/combine-scan CLI, 33 템플릿 |
 | ML 전략 | ✅ 완료 | LightGBM 메타 모델 (33 피처, Walk-Forward 학습, Half-Kelly), ml-train/ml-backtest CLI |
+| ML+Rule 조합 | ⏳ TODO | LgbmProbFilter 구현 — ML 확률을 기존 30개 필터와 조합 가능하게 (방식1: ML 거부권 필터 우선) |
 | Phase 6-4~6,8 | ⏳ 대기 | Bybit, 선물/마진, 성능 최적화, 레짐 감지 (HMM) |
 
 ---
