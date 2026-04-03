@@ -105,8 +105,8 @@ For each timestamp ts:
 - `data/fetcher.py` — CCXT-based OHLCV download with Upbit rate limiting
 - `data/storage.py` — Parquet file I/O with auto-merge on save
 - `data/indicators.py` — 19 technical indicator wrappers (SMA, EMA, RSI, MACD, BB, ATR, Stochastic, ADX, Ichimoku, Aroon, CCI, ROC, MFI, OBV, Keltner, Donchian, Z-score, PctFromMA, Volume SMA)
-- `backtest/optimizer.py` — Grid search parameter optimization with parallel execution
-- `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling)
+- `backtest/optimizer.py` — Grid search parameter optimization with parallel execution, optional `progress` parameter
+- `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling), optional `progress` parameter
 - `strategy/filters/` — 31 reusable filters with role tagging (entry/trend/volatility/volume/exit)
   - `base.py` — BaseFilter ABC with `role` field + `check_exit(df, entry_index)` for trailing exits
   - `trend.py` — TrendUp/Down, AdxStrong, IchimokuAbove, AroonUp
