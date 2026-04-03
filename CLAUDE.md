@@ -57,11 +57,14 @@ tradingbot scan --sort-by total_return --top 20
 
 # Combine filters (no-code strategy building)
 tradingbot combine --entry "trend_up:4 + rsi_oversold:30" --exit "rsi_overbought:70" --symbol BTC/KRW
-tradingbot combine-scan --top 15  # Scan 33 predefined filter templates
+tradingbot combine-scan --top 15  # Scan 36 predefined filter templates
+tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.55" --exit "rsi_overbought:70"  # ML + Rule
 
 # ML strategy (LightGBM)
 pip install -e ".[ml]"
 tradingbot ml-train --symbol BTC/KRW --timeframe 1h --train-months 3 --test-months 1
+tradingbot ml-train-all                    # Train all downloaded symbol × timeframe pairs
+tradingbot ml-train-all --timeframe 1h     # Train specific timeframe only
 tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h
 tradingbot backtest --strategy lgbm --symbol BTC/KRW
 ```
@@ -104,7 +107,7 @@ For each timestamp ts:
 - `data/indicators.py` — 19 technical indicator wrappers (SMA, EMA, RSI, MACD, BB, ATR, Stochastic, ADX, Ichimoku, Aroon, CCI, ROC, MFI, OBV, Keltner, Donchian, Z-score, PctFromMA, Volume SMA)
 - `backtest/optimizer.py` — Grid search parameter optimization with parallel execution
 - `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling)
-- `strategy/filters/` — 30 reusable filters with role tagging (entry/trend/volatility/volume/exit)
+- `strategy/filters/` — 31 reusable filters with role tagging (entry/trend/volatility/volume/exit)
   - `base.py` — BaseFilter ABC with `role` field + `check_exit(df, entry_index)` for trailing exits
   - `trend.py` — TrendUp/Down, AdxStrong, IchimokuAbove, AroonUp
   - `momentum.py` — RsiOversold, RsiOverbought, MacdCrossUp, StochOversold, CciOversold, RocPositive, MfiOversold
@@ -112,8 +115,9 @@ For each timestamp ts:
   - `volatility.py` — AtrBreakout, KeltnerBreak, BbSqueeze, BbBandwidthLow
   - `volume.py` — VolumeSpike, ObvRising, MfiConfirm
   - `exit.py` — StochOverbought, CciOverbought, MfiOverbought, ZscoreExtreme, PctFromMaExit, AtrTrailingExit
-  - `registry.py` — 30 filters registered, parse_filter_spec/parse_filter_string
-- `strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip) + OR exit with entry_index for trailing stops
+  - `ml.py` — LgbmProbFilter: ML probability as entry veto + Half-Kelly strength for position sizing
+  - `registry.py` — 31 filters registered, parse_filter_spec/parse_filter_string
+- `strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip, ML strength collection) + OR exit with entry_index for trailing stops
 - `strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing
 - `ml/features.py` — 33 features from 19 indicators (raw + derived + rolling stats)
 - `ml/targets.py` — 4h forward return binary classification target (offline only)
