@@ -17,6 +17,8 @@ def get_strategy_map() -> dict[str, type[Strategy]]:
     from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
     from tradingbot.strategy.examples.volume_breakout import VolumeBreakoutStrategy
 
+    from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+
     return {
         "sma_cross": SmaCrossStrategy,
         "rsi_mean_reversion": RsiMeanReversionStrategy,
@@ -24,4 +26,5 @@ def get_strategy_map() -> dict[str, type[Strategy]]:
         "bollinger_breakout": BollingerBreakoutStrategy,
         "multi_tf": MultiTimeframeStrategy,
         "volume_breakout": VolumeBreakoutStrategy,
+        "lgbm": LGBMStrategy,
     }

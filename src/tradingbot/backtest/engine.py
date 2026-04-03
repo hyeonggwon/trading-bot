@@ -271,6 +271,7 @@ class BacktestEngine:
             quantity = self.risk_manager.calculate_position_size(
                 fill.fill_price, stop_loss, equity
             )
+            quantity = quantity * signal.strength  # ML probability-based sizing
             if quantity <= 0:
                 return
 
