@@ -52,6 +52,16 @@ class AtrBreakoutFilter(BaseFilter):
             return False
         return close < ema - atr * self.multiplier
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] > df[f"ema_{self.ema_period}"] + df[f"atr_{self.period}"] * self.multiplier
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] < df[f"ema_{self.ema_period}"] - df[f"atr_{self.period}"] * self.multiplier
+
 
 class KeltnerBreakFilter(BaseFilter):
     """Price breaks above Keltner upper band."""
@@ -89,6 +99,16 @@ class KeltnerBreakFilter(BaseFilter):
         if pd.isna(mid):
             return False
         return close < mid
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] > df[f"kc_upper_{self.period}"]
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] < df[f"kc_middle_{self.period}"]
 
 
 class BbSqueezeFilter(BaseFilter):
@@ -129,6 +149,18 @@ class BbSqueezeFilter(BaseFilter):
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False  # Confirmation filter only
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        bb_col = f"bb_upper_{self.bb_period}_{self.bb_std}"
+        kc_col = f"kc_upper_{self.kc_period}"
+        return (df[bb_col].shift(1) < df[kc_col].shift(1)) & (df[bb_col] >= df[kc_col])
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
 
 class BbBandwidthLowFilter(BaseFilter):
     """Bollinger Bandwidth below threshold → low volatility (squeeze precursor)."""
@@ -161,3 +193,17 @@ class BbBandwidthLowFilter(BaseFilter):
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False  # Confirmation filter only
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        upper = df[f"bb_upper_{self.period}_{self.std}"]
+        lower = df[f"bb_lower_{self.period}_{self.std}"]
+        mid = df[f"bb_middle_{self.period}_{self.std}"]
+        bandwidth = (upper - lower) / mid.replace(0, float("nan"))
+        return bandwidth < self.threshold
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)

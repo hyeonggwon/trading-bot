@@ -56,6 +56,16 @@ class TrendUpFilter(BaseFilter):
             return False
         return close < sma
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df[self._col_close()] > df[self._col_sma()]
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[self._col_close()] < df[self._col_sma()]
+
 
 class TrendDownFilter(BaseFilter):
     """Higher TF downtrend: resampled close below SMA."""
@@ -105,6 +115,16 @@ class TrendDownFilter(BaseFilter):
             return False
         return close > sma
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df[self._col_close()] < df[self._col_sma()]
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[self._col_close()] > df[self._col_sma()]
+
 
 class AdxStrongFilter(BaseFilter):
     """ADX above threshold → strong trend exists (direction agnostic)."""
@@ -140,6 +160,16 @@ class AdxStrongFilter(BaseFilter):
         if pd.isna(val):
             return False
         return val < self.threshold
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"adx_{self.period}"] > self.threshold
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"adx_{self.period}"] < self.threshold
 
 
 class IchimokuAboveFilter(BaseFilter):
@@ -181,6 +211,20 @@ class IchimokuAboveFilter(BaseFilter):
             return False
         return close < min(span_a, span_b)
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        s = self._suffix()
+        cloud_top = df[[f"ichi_a{s}", f"ichi_b{s}"]].max(axis=1)
+        return df["close"] > cloud_top
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        s = self._suffix()
+        cloud_bottom = df[[f"ichi_a{s}", f"ichi_b{s}"]].min(axis=1)
+        return df["close"] < cloud_bottom
+
 
 class AroonUpFilter(BaseFilter):
     """Aroon Up dominant → uptrend confirmation."""
@@ -219,4 +263,18 @@ class AroonUpFilter(BaseFilter):
         dn = df[dn_col].iloc[-1]
         if pd.isna(up) or pd.isna(dn):
             return False
+        return dn > up
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        up = df[f"aroon_up_{self.period}"]
+        dn = df[f"aroon_down_{self.period}"]
+        return (up > self.threshold) & (up > dn)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        up = df[f"aroon_up_{self.period}"]
+        dn = df[f"aroon_down_{self.period}"]
         return dn > up

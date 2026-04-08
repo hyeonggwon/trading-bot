@@ -45,6 +45,16 @@ class StochOverboughtFilter(BaseFilter):
             return False
         return val >= self.threshold
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"stoch_k_{self.k_period}"] >= self.threshold
+
 
 class CciOverboughtFilter(BaseFilter):
     """CCI above +threshold → exit signal."""
@@ -74,6 +84,16 @@ class CciOverboughtFilter(BaseFilter):
         if pd.isna(val):
             return False
         return val > self.threshold
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"cci_{self.period}"] > self.threshold
 
 
 class MfiOverboughtFilter(BaseFilter):
@@ -105,6 +125,16 @@ class MfiOverboughtFilter(BaseFilter):
             return False
         return val >= self.threshold
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"mfi_{self.period}"] >= self.threshold
+
 
 class ZscoreExtremeFilter(BaseFilter):
     """Z-score above +threshold → overbought exit."""
@@ -135,6 +165,16 @@ class ZscoreExtremeFilter(BaseFilter):
             return False
         return val > self.threshold
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"zscore_{self.period}"] > self.threshold
+
 
 class PctFromMaExitFilter(BaseFilter):
     """Percent from MA exceeds threshold → overbought exit."""
@@ -164,6 +204,16 @@ class PctFromMaExitFilter(BaseFilter):
         if pd.isna(val):
             return False
         return val > self.threshold
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"pct_from_ma_{self.period}"] > self.threshold
 
 
 class AtrTrailingExitFilter(BaseFilter):
