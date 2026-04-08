@@ -42,7 +42,11 @@ tradingbot optimize --strategy sma_cross --param-grid '{"fast_period":[10,20],"s
 tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW --train-months 3 --test-months 1
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --balance 1000000
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --websocket  # Real-time prices via WebSocket
+tradingbot paper --strategy ML+TrendEMA --symbol BTC/KRW              # Combined template by name
+tradingbot paper --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" --exit "rsi_overbought:70" --symbol BTC/KRW  # Custom combined
 tradingbot live --strategy sma_cross --symbol BTC/KRW --max-order 500000 --daily-loss-limit 200000
+tradingbot live --strategy ML+ADXTrend --symbol BTC/KRW              # Combined template by name
+tradingbot live --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" --exit "rsi_overbought:70" --symbol BTC/KRW  # Custom combined
 tradingbot status
 tradingbot balance
 tradingbot data-list
@@ -59,8 +63,8 @@ tradingbot scan --sort-by total_return --top 20
 
 # Combine filters (no-code strategy building)
 tradingbot combine --entry "trend_up:4 + rsi_oversold:30" --exit "rsi_overbought:70" --symbol BTC/KRW
-tradingbot combine-scan --top 15  # Scan 36 predefined filter templates
-tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.55" --exit "rsi_overbought:70"  # ML + Rule
+tradingbot combine-scan --top 15  # Scan 48 predefined filter templates
+tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" --exit "rsi_overbought:70"  # ML + Rule
 
 # ML strategy (LightGBM)
 pip install -e ".[ml]"

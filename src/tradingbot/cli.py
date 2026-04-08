@@ -145,6 +145,73 @@ def _load_strategies() -> None:
     STRATEGY_MAP.update(get_strategy_map())
 
 
+def _build_combined_strategy(
+    entry: str, exit_: str, symbol: str, timeframe: str,
+):
+    """Build a CombinedStrategy from filter strings."""
+    from tradingbot.strategy.combined import CombinedStrategy
+    from tradingbot.strategy.filters.registry import parse_filter_string
+
+    entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
+    exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
+
+    for f in entry_filters + exit_filters:
+        if hasattr(f, "symbol"):
+            f.symbol = symbol
+        if hasattr(f, "timeframe"):
+            f.timeframe = timeframe
+
+    strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
+    strategy.symbols = [symbol]
+    strategy.timeframe = timeframe
+    return strategy
+
+
+def _find_combine_template(label: str) -> dict | None:
+    """Find a COMBINE_TEMPLATES entry by label (case-insensitive)."""
+    label_lower = label.lower()
+    for tmpl in COMBINE_TEMPLATES:
+        if tmpl["label"].lower() == label_lower:
+            return tmpl
+    return None
+
+
+def _resolve_strategy(
+    strategy_name: str,
+    symbol: str,
+    timeframe: str,
+    symbols: list[str] | None = None,
+):
+    """Resolve strategy by name — checks COMBINE_TEMPLATES, then STRATEGY_MAP.
+
+    Returns (strategy_instance, strategy_name, strategy_cls_or_none).
+    strategy_cls is only set for registered strategies (needed by optimize/walk-forward).
+    """
+    tmpl = _find_combine_template(strategy_name)
+    if tmpl is not None:
+        strategy = _build_combined_strategy(
+            tmpl["entry"], tmpl["exit"], symbol, timeframe,
+        )
+        if symbols:
+            strategy.symbols = symbols
+        return strategy, tmpl["label"], None
+
+    _load_strategies()
+    if strategy_name not in STRATEGY_MAP:
+        console.print(f"[red]Unknown strategy: {strategy_name}[/red]")
+        available = list(STRATEGY_MAP.keys()) + [
+            t["label"] for t in COMBINE_TEMPLATES
+        ]
+        console.print(f"Available: {', '.join(available)}")
+        raise typer.Exit(1)
+
+    strategy_cls = STRATEGY_MAP[strategy_name]
+    strategy = strategy_cls()
+    strategy.symbols = symbols or [symbol]
+    strategy.timeframe = timeframe
+    return strategy, strategy_name, strategy_cls
+
+
 @app.command()
 def backtest(
     strategy_name: str = typer.Option("sma_cross", "--strategy", "-S", help="Strategy name"),
@@ -157,12 +224,6 @@ def backtest(
 ) -> None:
     """Run a backtest on historical data. Supports single or multiple symbols."""
     setup_logging()
-    _load_strategies()
-
-    if strategy_name not in STRATEGY_MAP:
-        console.print(f"[red]Unknown strategy: {strategy_name}[/red]")
-        console.print(f"Available: {', '.join(STRATEGY_MAP.keys())}")
-        raise typer.Exit(1)
 
     from tradingbot.backtest.engine import BacktestEngine
     from tradingbot.data.storage import load_candles
@@ -182,10 +243,9 @@ def backtest(
         },
     })
 
-    strategy_cls = STRATEGY_MAP[strategy_name]
-    strategy = strategy_cls()
-    strategy.symbols = symbols
-    strategy.timeframe = timeframe
+    strategy, strategy_name, _ = _resolve_strategy(
+        strategy_name, symbols[0], timeframe, symbols=symbols,
+    )
 
     # Load data for all symbols
     data: dict = {}
@@ -222,10 +282,12 @@ def optimize(
     import json
 
     setup_logging()
-    _load_strategies()
 
-    if strategy_name not in STRATEGY_MAP:
-        console.print(f"[red]Unknown strategy: {strategy_name}[/red]")
+    _, strategy_name, strategy_cls = _resolve_strategy(
+        strategy_name, symbol, timeframe,
+    )
+    if strategy_cls is None:
+        console.print("[red]Combined templates cannot be optimized (no param_space). Use backtest instead.[/red]")
         raise typer.Exit(1)
 
     from tradingbot.backtest.optimizer import GridSearchOptimizer
@@ -234,8 +296,6 @@ def optimize(
     config = load_config(Path("config"), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
     })
-
-    strategy_cls = STRATEGY_MAP[strategy_name]
     space = None
     if param_grid:
         try:
@@ -267,10 +327,12 @@ def walk_forward(
 ) -> None:
     """Run walk-forward validation."""
     setup_logging()
-    _load_strategies()
 
-    if strategy_name not in STRATEGY_MAP:
-        console.print(f"[red]Unknown strategy: {strategy_name}[/red]")
+    _, strategy_name, strategy_cls = _resolve_strategy(
+        strategy_name, symbol, timeframe,
+    )
+    if strategy_cls is None:
+        console.print("[red]Combined templates cannot be walk-forward validated (no param_space). Use backtest instead.[/red]")
         raise typer.Exit(1)
 
     from tradingbot.backtest.walk_forward import WalkForwardValidator
@@ -279,8 +341,6 @@ def walk_forward(
     config = load_config(Path("config"), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
     })
-
-    strategy_cls = STRATEGY_MAP[strategy_name]
 
     df = load_candles(symbol, timeframe, Path(data_dir))
     console.print(
@@ -306,16 +366,23 @@ def paper(
     exchange: str = typer.Option("upbit", "--exchange", "-e", help="Exchange for data feed"),
     state_file: str = typer.Option("state.json", "--state-file", help="State persistence file"),
     use_websocket: bool = typer.Option(False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"),
+    entry: str | None = typer.Option(None, "--entry", help="Combined entry filters (e.g., 'trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35')"),
+    exit_: str | None = typer.Option(None, "--exit", help="Combined exit filters (e.g., 'rsi_overbought:70')"),
 ) -> None:
     """Start paper trading with simulated execution."""
     import asyncio
 
     setup_logging()
-    _load_strategies()
 
-    if strategy_name not in STRATEGY_MAP:
-        console.print(f"[red]Unknown strategy: {strategy_name}[/red]")
-        raise typer.Exit(1)
+    if entry is not None:
+        # --entry/--exit: custom combined strategy
+        if exit_ is None:
+            console.print("[red]--exit is required when using --entry[/red]")
+            raise typer.Exit(1)
+        strategy = _build_combined_strategy(entry, exit_, symbol, timeframe)
+        strategy_name = strategy.describe()
+    else:
+        strategy, strategy_name, _ = _resolve_strategy(strategy_name, symbol, timeframe)
 
     from tradingbot.config import EnvSettings, ExchangeConfig
     from tradingbot.exchange.ccxt_exchange import CcxtExchange
@@ -327,11 +394,6 @@ def paper(
     config = load_config(Path("config"), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
     })
-
-    strategy_cls = STRATEGY_MAP[strategy_name]
-    strategy = strategy_cls()
-    strategy.symbols = [symbol]
-    strategy.timeframe = timeframe
 
     env = EnvSettings()
     data_feed = CcxtExchange(ExchangeConfig(name=exchange), env)
@@ -429,16 +491,23 @@ def live(
     max_order_krw: float = typer.Option(500_000, "--max-order", help="Max order value (KRW)"),
     daily_loss_krw: float = typer.Option(200_000, "--daily-loss-limit", help="Daily loss limit (KRW)"),
     use_websocket: bool = typer.Option(False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"),
+    entry: str | None = typer.Option(None, "--entry", help="Combined entry filters (e.g., 'trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35')"),
+    exit_: str | None = typer.Option(None, "--exit", help="Combined exit filters (e.g., 'rsi_overbought:70')"),
 ) -> None:
     """Start LIVE trading with real money. Use with caution."""
     import asyncio
 
     setup_logging()
-    _load_strategies()
 
-    if strategy_name not in STRATEGY_MAP:
-        console.print(f"[red]Unknown strategy: {strategy_name}[/red]")
-        raise typer.Exit(1)
+    if entry is not None:
+        # --entry/--exit: custom combined strategy
+        if exit_ is None:
+            console.print("[red]--exit is required when using --entry[/red]")
+            raise typer.Exit(1)
+        strategy = _build_combined_strategy(entry, exit_, symbol, timeframe)
+        strategy_name = strategy.describe()
+    else:
+        strategy, strategy_name, _ = _resolve_strategy(strategy_name, symbol, timeframe)
 
     from tradingbot.config import EnvSettings, ExchangeConfig
     from tradingbot.exchange.ccxt_exchange import CcxtExchange
@@ -456,11 +525,6 @@ def live(
     config = load_config(Path("config"), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe},
     })
-
-    strategy_cls = STRATEGY_MAP[strategy_name]
-    strategy = strategy_cls()
-    strategy.symbols = [symbol]
-    strategy.timeframe = timeframe
 
     real_exchange = CcxtExchange(ExchangeConfig(name=exchange_name), env)
     order_mgr = OrderManager(exchange=real_exchange)
@@ -799,10 +863,27 @@ COMBINE_TEMPLATES = [
     {"entry": "rsi_oversold:30 + stoch_oversold:20 + adx_strong:25", "exit": "rsi_overbought:70", "label": "RSI+Stoch+ADX"},
     {"entry": "macd_cross_up + obv_rising + adx_strong:25", "exit": "atr_trailing_exit:14:2.0", "label": "MACD+OBV+ADX→ATR"},
     {"entry": "ema_cross_up:12:26 + mfi_confirm:50 + bb_bandwidth_low:0.04", "exit": "zscore_extreme:2.0", "label": "EMA+MFI+BBW→Zscore"},
-    # ── ML + Rule combos ──
-    {"entry": "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.55", "exit": "rsi_overbought:70", "label": "Trend+RSI+ML"},
-    {"entry": "ema_cross_up:12:26 + lgbm_prob:0.50", "exit": "atr_trailing_exit:14:2.5", "label": "EMACross+ML→ATR"},
-    {"entry": "volume_spike:2.0 + adx_strong:25 + lgbm_prob:0.55", "exit": "rsi_overbought:70", "label": "Vol+ADX+ML"},
+    # ── ML + Rule combos (threshold 0.35 = veto filter mode) ──
+    {"entry": "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35", "exit": "rsi_overbought:70", "label": "Trend+RSI+ML"},
+    {"entry": "ema_cross_up:12:26 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.5", "label": "EMACross+ML→ATR"},
+    {"entry": "volume_spike:2.0 + adx_strong:25 + lgbm_prob:0.35", "exit": "rsi_overbought:70", "label": "Vol+ADX+ML"},
+    # ── ML Veto: Trend Following ──
+    {"entry": "ema_cross_up:12:26 + trend_up:4 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.5", "label": "ML+TrendEMA"},
+    {"entry": "adx_strong:25 + ema_above:50 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + atr_trailing_exit:14:2.0", "label": "ML+ADXTrend"},
+    {"entry": "ichimoku_above + aroon_up:70 + lgbm_prob:0.35", "exit": "pct_from_ma_exit:20:5.0", "label": "ML+IchimokuTrend"},
+    # ── ML Veto: Mean Reversion ──
+    {"entry": "rsi_oversold:30 + stoch_oversold:20 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + stoch_overbought:80", "label": "ML+RSIStoch"},
+    {"entry": "cci_oversold:100 + obv_rising + lgbm_prob:0.35", "exit": "cci_overbought:100 + zscore_extreme:2.0", "label": "ML+CCIMeanRev"},
+    {"entry": "mfi_oversold:20 + ema_above:50 + lgbm_prob:0.35", "exit": "mfi_overbought:80 + pct_from_ma_exit:20:5.0", "label": "ML+MFIMeanRev"},
+    # ── ML Veto: Breakout ──
+    {"entry": "donchian_break:20 + volume_spike:2.0 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.5", "label": "ML+DonchianBreak"},
+    {"entry": "bb_squeeze + price_breakout:10 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.0 + zscore_extreme:2.0", "label": "ML+BBSqueeze"},
+    {"entry": "keltner_break + adx_strong:25 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + atr_trailing_exit:14:2.5", "label": "ML+KeltnerBreak"},
+    # ── ML Veto: Volume-Confirmed ──
+    {"entry": "macd_cross_up + volume_spike:2.0 + mfi_confirm:50 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + mfi_overbought:80", "label": "ML+VolMACDConfirm"},
+    # ── ML Veto: Multi-Confluence ──
+    {"entry": "roc_positive + obv_rising + trend_up:4 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.0", "label": "ML+ROCObvTrend"},
+    {"entry": "stoch_oversold:25 + aroon_up:70 + lgbm_prob:0.35", "exit": "stoch_overbought:80 + pct_from_ma_exit:20:5.0", "label": "ML+StochAroonConfirm"},
 ]
 
 
