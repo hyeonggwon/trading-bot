@@ -27,6 +27,8 @@ def _half_kelly(p: float, avg_win_loss_ratio: float = 1.5) -> float:
     Args:
         p: Predicted win probability from model.
         avg_win_loss_ratio: Historical avg_win / avg_loss.
+            Default 1.5 based on backtest: 1h avg=1.52, 4h avg=2.07
+            across BTC/ETH/SOL. Conservative estimate.
 
     Returns:
         Fraction of capital to risk (0.0–1.0).

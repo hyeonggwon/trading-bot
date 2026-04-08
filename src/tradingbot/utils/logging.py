@@ -8,14 +8,16 @@ from pathlib import Path
 import structlog
 
 
-def setup_logging(level: str = "INFO", log_dir: str | None = None) -> None:
+def setup_logging(level: str | None = None, log_dir: str | None = None) -> None:
     """Configure structlog for console and optional file output.
 
     Args:
         level: Log level (DEBUG, INFO, WARNING, ERROR).
+               Defaults to LOG_LEVEL env var, then INFO.
         log_dir: If set, also writes JSON logs to files with daily rotation.
                  Defaults to LOG_DIR env var if set.
     """
+    level = level or os.environ.get("LOG_LEVEL", "INFO")
     log_dir = log_dir or os.environ.get("LOG_DIR")
 
     # Shared processors (run before final rendering)

@@ -27,10 +27,9 @@ DEFAULT_LGBM_PARAMS = {
     "feature_fraction": 0.7,
     "bagging_fraction": 0.8,
     "bagging_freq": 5,
-    # Class imbalance — moderate upweight (is_unbalance too aggressive for small val sets)
-    # NOTE: scale_pos_weight inflates predicted probabilities. If changed,
-    # production thresholds (e.g. lgbm_prob:0.55) may need re-tuning.
-    "scale_pos_weight": 2.0,
+    # Class imbalance — walk_forward.py dynamically computes scale_pos_weight
+    # based on actual positive rate. Default 1.0 avoids probability distortion.
+    "scale_pos_weight": 1.0,
     # Learning
     "learning_rate": 0.05,
     "n_estimators": 500,
