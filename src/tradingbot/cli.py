@@ -389,11 +389,16 @@ def _walk_forward_combined(
     import copy
 
     from tradingbot.backtest.engine import BacktestEngine
+    from tradingbot.backtest.report import BacktestReport
     from tradingbot.backtest.walk_forward import (
         WalkForwardReport,
         WalkForwardWindow,
         create_walk_forward_windows,
     )
+
+    # Warmup buffer: enough for the most demanding indicators
+    # (e.g., trend_up:4 with SMA_50 at 4x = 200 bars, plus margin)
+    WARMUP_BARS = 300
 
     wf_config = config.model_copy(deep=True)
     wf_config.backtest.start_date = None
@@ -412,17 +417,72 @@ def _walk_forward_combined(
         for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
             progress.update(task, description=f"WF {i+1}/{len(windows)}: {train_start.date()}~{test_end.date()}")
 
-            # Train window — run for in-sample Sharpe
-            train_df = df[(df.index >= train_start) & (df.index < train_end)].copy()
+            # Train window — include warmup buffer for indicator computation
+            train_start_idx = df.index.searchsorted(train_start)
+            train_warmup_idx = max(0, train_start_idx - WARMUP_BARS)
+            train_with_warmup = df.iloc[train_warmup_idx:].copy()
+            train_with_warmup = train_with_warmup[train_with_warmup.index < train_end]
+
             train_strategy = copy.deepcopy(strategy)
             engine = BacktestEngine(strategy=train_strategy, config=wf_config)
-            train_report = engine.run({symbol: train_df})
+            full_train_report = engine.run({symbol: train_with_warmup})
 
-            # Test window — out-of-sample
-            test_df = df[(df.index >= test_start) & (df.index < test_end)].copy()
+            # Filter to train period only
+            train_start_dt = train_start.to_pydatetime() if hasattr(train_start, "to_pydatetime") else train_start
+            train_trades = [
+                t for t in full_train_report.trades
+                if t.entry_order.created_at is not None
+                and t.entry_order.created_at >= train_start_dt
+            ]
+            train_equity = full_train_report.equity_curve[full_train_report.equity_curve.index >= train_start]
+
+            if len(train_equity) < 2:
+                train_report = full_train_report
+            else:
+                train_report = BacktestReport(
+                    trades=train_trades,
+                    equity_curve=train_equity,
+                    initial_balance=float(train_equity.iloc[0]),
+                    final_balance=float(train_equity.iloc[-1]),
+                    timeframe=wf_config.trading.timeframe,
+                )
+
+            # Test window — include warmup buffer for indicator computation
+            test_start_idx = df.index.searchsorted(test_start)
+            warmup_idx = max(0, test_start_idx - WARMUP_BARS)
+            test_with_warmup = df.iloc[warmup_idx:].copy()
+            test_with_warmup = test_with_warmup[test_with_warmup.index < test_end]
+
             test_strategy = copy.deepcopy(strategy)
             engine = BacktestEngine(strategy=test_strategy, config=wf_config)
-            test_report = engine.run({symbol: test_df})
+            full_report = engine.run({symbol: test_with_warmup})
+
+            # Filter to test period only (exclude warmup trades)
+            test_start_dt = test_start.to_pydatetime() if hasattr(test_start, "to_pydatetime") else test_start
+            test_trades = [
+                t for t in full_report.trades
+                if t.entry_order.created_at is not None
+                and t.entry_order.created_at >= test_start_dt
+            ]
+            test_equity = full_report.equity_curve[full_report.equity_curve.index >= test_start]
+
+            if len(test_equity) < 2:
+                test_sharpe = 0.0
+                test_return_val = 0.0
+                test_dd = 0.0
+                test_trade_count = 0
+            else:
+                filtered_report = BacktestReport(
+                    trades=test_trades,
+                    equity_curve=test_equity,
+                    initial_balance=float(test_equity.iloc[0]),
+                    final_balance=float(test_equity.iloc[-1]),
+                    timeframe=wf_config.trading.timeframe,
+                )
+                test_sharpe = filtered_report.sharpe_ratio
+                test_return_val = filtered_report.total_return
+                test_dd = filtered_report.max_drawdown
+                test_trade_count = filtered_report.total_trades
 
             results.append(WalkForwardWindow(
                 window_index=i,
@@ -433,10 +493,10 @@ def _walk_forward_combined(
                 best_params={"filters": "fixed"},
                 train_sharpe=train_report.sharpe_ratio,
                 train_return=train_report.total_return,
-                test_sharpe=test_report.sharpe_ratio,
-                test_return=test_report.total_return,
-                test_trades=test_report.total_trades,
-                test_max_drawdown=test_report.max_drawdown,
+                test_sharpe=test_sharpe,
+                test_return=test_return_val,
+                test_trades=test_trade_count,
+                test_max_drawdown=test_dd,
             ))
 
             progress.advance(task)
