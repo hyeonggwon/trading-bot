@@ -15,27 +15,18 @@ ML Engineer + Quant Analyst 분석 결과, **ML 단독 전략 대신 veto 필터
 - 레짐 변화 시에도 ML AUC가 0.50으로 떨어져도 룰 기반이 계속 작동 → 안정적
 - 예상 Sharpe: 단독 ML 0.3~0.8 vs veto 필터 0.8~1.5
 
-## PR 1: ML 학습 파이프라인 개선 + 버그 수정
+## PR 1: ML 학습 파이프라인 개선 ✅ (merged #13)
 
-- [ ] **scale_pos_weight 수정**: 2.0 → 1.0 (확률 왜곡 제거, veto 필터 보정에 필수)
-  - `src/tradingbot/ml/trainer.py` line 33
-
-- [ ] **fixed_rounds 제거**: 300 고정 → walk-forward에서 early stopping된 윈도우들의 median best_iteration 사용
-  - `src/tradingbot/ml/walk_forward.py` line 131-138
-
-- [ ] **Feature 축소**: 36개 → 상위 12~15개 (다중공선성 제거)
-  - RSI 파생 3개(rsi_14, rsi_dist_from_50, rsi_roc_3) → 1개
-  - Stochastic 파생 3개(stoch_k, stoch_d, stoch_kd_diff) → 1개
-  - 핵심 feature: volume_ratio, atr_pct, close_roc_1/3/5, bb_pos
-  - `src/tradingbot/ml/features.py`
-
-- [ ] **Half-Kelly 수정**: `avg_win_loss_ratio` 1.5 하드코딩 → 백테스트 실제 승/패 비율로 산출
-  - `src/tradingbot/strategy/lgbm_strategy.py` line 24
-
-- [ ] **로그 레벨 반영**: `setup_logging()`이 `LOG_LEVEL` 환경변수를 읽도록 수정
-  - `src/tradingbot/cli.py`의 `setup_logging()` 호출부
-
-- [ ] 전 심볼 재학습 (`tradingbot ml-train-all`) + walk-forward AUC 확인 (0.56~0.58 목표)
+- [x] **scale_pos_weight 수정**: 2.0 → 1.0 (확률 왜곡 제거)
+- [x] **fixed_rounds 제거**: 300 고정 → median best_iteration 사용
+- [x] **Feature 축소**: 36개 → 15개 (gain importance 기반, 다중공선성 제거)
+- [x] **Half-Kelly 주석 추가**: 백테스트 근거 (1h=1.52, 4h=2.07) → 1.5 유지
+- [x] **LOG_LEVEL 환경변수 지원**: `setup_logging()`에서 자동 반영
+- [x] **state/ git tracking 제거**: `.gitignore` 추가
+- [x] 전 심볼 재학습 + walk-forward AUC 확인
+  - BTC/KRW 1h: **0.6092** (목표 초과)
+  - XRP/KRW 1h: 0.5877, DOGE/KRW 1h: 0.5734, ETH/KRW 1h: 0.5683
+  - 4h/1d는 0.50~0.55 수준 (veto 필터로 충분)
 
 ## PR 2: Veto 필터 전환 + 룰 기반 조합 탐색
 
