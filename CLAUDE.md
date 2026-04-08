@@ -106,6 +106,8 @@ For each timestamp ts:
 - `core/models.py` — Frozen dataclasses: Candle, Signal, Order, Trade, Position, PortfolioState
 - `strategy/base.py` — Abstract `Strategy` class with `indicators()`, `should_entry()`, `should_exit()`, `supports_precompute`
 - `backtest/engine.py` — Core backtest loop, multi-symbol support, indicator pre-computation (most critical file)
+- `backtest/vectorized.py` — Vectorized screening engine for fast combine-scan (~100x vs candle-by-candle). Produces boolean signal arrays, extracts trades in O(N) pass. NOT for live/paper — screening only
+- `backtest/parallel.py` — Spawn-safe parallel workers for scan/combine-scan. Routes combined templates to vectorized engine (rule-based) or full engine (ML templates)
 - `backtest/simulator.py` — Order fill simulation with slippage and fees (Upbit: 0.05%)
 - `backtest/report.py` — Performance metrics: Sharpe, Sortino, max drawdown, win rate, profit factor
 - `risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
@@ -115,7 +117,7 @@ For each timestamp ts:
 - `backtest/optimizer.py` — Grid search parameter optimization with parallel execution, optional `progress` parameter
 - `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling), optional `progress` parameter
 - `strategy/filters/` — 31 reusable filters with role tagging (entry/trend/volatility/volume/exit)
-  - `base.py` — BaseFilter ABC with `role` field + `check_exit(df, entry_index)` for trailing exits
+  - `base.py` — BaseFilter ABC with `role` field + `check_exit(df, entry_index)` for trailing exits + `vectorized_entry/exit()` for screening
   - `trend.py` — TrendUp/Down, AdxStrong, IchimokuAbove, AroonUp
   - `momentum.py` — RsiOversold, RsiOverbought, MacdCrossUp, StochOversold, CciOversold, RocPositive, MfiOversold
   - `price.py` — PriceBreakout, EmaAbove, BbUpperBreak, EmaCrossUp, DonchianBreak

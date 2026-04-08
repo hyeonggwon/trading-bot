@@ -50,18 +50,29 @@ ML Engineer + Quant Analyst 분석 결과, **ML 단독 전략 대신 veto 필터
 
 ## PR 3: 전략 검증 + 배포
 
-### 스캔 결과 요약 (2026-04-08)
+### 스캔 결과 요약 (2026-04-09, 6년 전체 데이터)
 
 1d는 인샘플 과적합으로 제외. 1h/4h 기준:
 
-| 전략 | 심볼 | TF | Sharpe | Return | Trades | 비고 |
-|------|------|----|--------|--------|--------|------|
-| Breakout+ATR | BTC/KRW | 1h | 2.38 | 8.49% | 43 | 룰 기반, 1순위 후보 |
-| BB+Vol | BTC/KRW | 4h | 2.44 | 5.62% | 20 | 낮은 MaxDD(1.29%) |
-| Trend+RSI | BTC/KRW | 4h | 2.26 | 6.44% | 77 | 거래 수 충분 |
-| sma_cross | BTC/KRW | 4h | 2.58 | 7.94% | 21 | 단독 전략 중 최고 |
+**scan (등록된 전략, 168조합, ~10분):**
 
-ML veto(threshold 0.35) 조합은 거래 多 + 수익 거의 0 → threshold 조정 필요
+| 전략 | 심볼 | TF | Sharpe | Return | MaxDD | Trades |
+|------|------|----|--------|--------|-------|--------|
+| volume_breakout | ETH/KRW | 4h | 1.70 | 40.31% | 4.30% | 120 |
+| bollinger | BTC/KRW | 4h | 1.63 | 33.23% | 2.57% | 241 |
+| bollinger | ETH/KRW | 4h | 1.59 | 44.06% | 4.90% | 270 |
+| sma_cross | ETH/KRW | 4h | 1.52 | 47.23% | 4.51% | 157 |
+| sma_cross | BTC/KRW | 4h | 1.39 | 35.66% | 4.78% | 142 |
+
+**combine-scan (48 템플릿, 1152조합, ~3분 26초):**
+
+| 전략 | 심볼 | TF | Sharpe | Return | MaxDD | Trades |
+|------|------|----|--------|--------|-------|--------|
+| KC+Trend+Vol | ETH/KRW | 4h | 1.80 | 41.81% | 2.22% | 135 |
+| BB+Vol | ETH/KRW | 4h | 1.77 | 44.49% | 4.08% | 130 |
+| Vol+Breakout | ETH/KRW | 4h | 1.72 | 40.90% | 4.29% | 120 |
+| Trend+RSI | ETH/KRW | 4h | 1.63 | 46.02% | 4.29% | 284 |
+| Breakout+Trend | BTC/KRW | 4h | 1.50 | 49.52% | 7.28% | 78 |
 
 ### Task A: 룰 기반 walk-forward 검증
 
@@ -83,15 +94,14 @@ ML veto(threshold 0.35) 조합은 거래 多 + 수익 거의 0 → threshold 조
 - [ ] Docker 컨테이너 재배포
 - [ ] Paper trading 1주 모니터링
 
-### Task D: 벡터화 스크리닝 엔진 (scan/combine-scan 고속화)
+### Task D: 벡터화 스크리닝 엔진 (scan/combine-scan 고속화) ✅ (merged #16)
 
-- [ ] **scan/combine-scan 전용 간소화 엔진 추가**
-  - 시그널만 벡터 계산 (pandas boolean mask), 거래 시뮬레이션은 간단히
+- [x] **combine-scan 전용 벡터화 엔진 추가** (`backtest/vectorized.py`)
+  - 29/31 필터에 `vectorized_entry()`/`vectorized_exit()` 구현
+  - 시그널을 boolean 배열로 한 번에 생성 → O(N) 거래 추출
   - 기존 엔진은 그대로 유지 (정밀 백테스트, live/paper용)
-  - 상위 N개 결과만 기존 엔진으로 재검증
-  - 예상: combine-scan 12~15분 → **1~2분**
-- [ ] 벡터화 가능 필터: 27/31개 (AtrTrailingExit, LgbmProb 제외)
-- [ ] 벡터화 불가 필터는 기존 엔진 fallback
+  - ML 포함 템플릿(15개)은 기존 엔진 fallback
+  - 실측: combine-scan 1152조합 **~1.5시간 → 3분 26초** (26x 개선)
 
 ### 보류
 

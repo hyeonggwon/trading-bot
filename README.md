@@ -6,7 +6,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 
 ## 주요 기능
 
-- **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생, 인디케이터 사전 계산으로 300x+ 성능
+- **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생, 벡터화 스크리닝 엔진으로 combine-scan 1152조합 3분대
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **7가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파, LightGBM ML
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹 + Rich 프로그레스바
@@ -416,7 +416,7 @@ trading-bot/
 │   ├── notifications/  # 텔레그램 알림
 │   ├── dashboard/      # Streamlit 웹 대시보드
 │   └── utils/          # 로깅 (콘솔 + JSON 파일 로테이션), 시간 유틸리티
-└── tests/              # 180개 테스트
+└── tests/              # 211개 테스트
 ```
 
 ## 기술 스택
@@ -432,4 +432,4 @@ trading-bot/
 | 실시간 | websockets (Upbit WebSocket) |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (180개) |
+| 테스트 | pytest (211개) |
