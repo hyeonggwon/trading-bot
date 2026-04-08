@@ -10,8 +10,8 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **7가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파, LightGBM ML
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹 + Rich 프로그레스바
-- **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 5가지 역할 태깅, AND 진입 / OR 청산)
-- **ML 전략 (LightGBM)** — 36개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징, 병렬 학습
+- **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 48개 템플릿, 5가지 역할 태깅, AND 진입 / OR 청산)
+- **ML 전략 (LightGBM)** — 15개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징, 병렬 학습
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
 - **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
@@ -122,12 +122,12 @@ tradingbot combine \
   --exit "ema_above:20" \
   --symbol BTC/KRW
 
-# 36개 사전정의 조합 자동 스캔
+# 48개 사전정의 조합 자동 스캔
 tradingbot combine-scan --top 10
 
-# ML + Rule 조합 (ML 모델이 거부권 역할)
+# ML + Rule 조합 (ML 모델이 veto 필터 역할)
 tradingbot combine \
-  --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.55" \
+  --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" \
   --exit "rsi_overbought:70" \
   --symbol BTC/KRW
 ```
@@ -136,7 +136,7 @@ tradingbot combine \
 
 | 역할 | 필터 | 예시 |
 |------|------|------|
-| **Entry Signal** | `rsi_oversold`, `macd_cross_up`, `stoch_oversold`, `cci_oversold`, `roc_positive`, `mfi_oversold`, `ema_cross_up`, `donchian_break`, `price_breakout`, `bb_upper_break`, `lgbm_prob` | `rsi_oversold:30`, `lgbm_prob:0.55` |
+| **Entry Signal** | `rsi_oversold`, `macd_cross_up`, `stoch_oversold`, `cci_oversold`, `roc_positive`, `mfi_oversold`, `ema_cross_up`, `donchian_break`, `price_breakout`, `bb_upper_break`, `lgbm_prob` | `rsi_oversold:30`, `lgbm_prob:0.35` |
 | **Trend Filter** | `trend_up`, `trend_down`, `ema_above`, `adx_strong`, `ichimoku_above`, `aroon_up` | `adx_strong:25`, `ichimoku_above` |
 | **Volatility Filter** | `atr_breakout`, `keltner_break`, `bb_squeeze`, `bb_bandwidth_low` | `atr_breakout:14:2.0`, `bb_squeeze` |
 | **Volume Confirm** | `volume_spike`, `obv_rising`, `mfi_confirm` | `volume_spike:2.5`, `obv_rising:20` |
@@ -188,6 +188,13 @@ tradingbot paper --strategy sma_cross --symbol BTC/KRW --balance 1000000
 # WebSocket 모드 (Upbit 실시간 가격, REST API 호출 최소화)
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --websocket
 
+# Combined 템플릿 이름으로 실행
+tradingbot paper --strategy ML+TrendEMA --symbol BTC/KRW --websocket
+
+# 커스텀 필터 조합으로 실행
+tradingbot paper --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" \
+  --exit "rsi_overbought:70" --symbol BTC/KRW
+
 # 다른 터미널에서 상태 확인
 tradingbot status
 ```
@@ -205,6 +212,10 @@ tradingbot balance
 # 3) 실매매 시작 (소액부터)
 tradingbot live --strategy sma_cross --symbol BTC/KRW \
   --max-order 100000 --daily-loss-limit 50000
+
+# Combined 템플릿으로 실매매
+tradingbot live --strategy ML+ADXTrend --symbol BTC/KRW \
+  --max-order 100000 --daily-loss-limit 50000 --websocket
 
 # WebSocket 모드로 실매매 (실시간 가격, REST 호출 최소화)
 tradingbot live --strategy sma_cross --symbol BTC/KRW \
@@ -230,7 +241,7 @@ tradingbot live --strategy sma_cross --symbol BTC/KRW \
 | `bollinger_breakout` | 볼린저밴드 상단 돌파 / 중간밴드 이탈 | `period`, `std` |
 | `multi_tf` | 상위 TF 추세 필터 + 하위 TF RSI 진입 | `higher_tf_factor`, `trend_sma_period`, `rsi_period` |
 | `volume_breakout` | 거래량 급등 + 최근 고점 돌파 | `volume_spike_threshold`, `price_lookback`, `exit_ema_period` |
-| `lgbm` | LightGBM ML 메타 모델 (36 피처 → 확률 → Half-Kelly) | `entry_threshold`, `exit_threshold` |
+| `lgbm` | LightGBM ML 메타 모델 (15 피처 → 확률 → Half-Kelly) | `entry_threshold`, `exit_threshold` |
 
 ## 커스텀 전략 작성
 
@@ -348,6 +359,9 @@ docker-compose ps
 # 페이퍼 트레이딩 (기본)
 command: ["tradingbot", "paper", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
 
+# Combined 템플릿으로 페이퍼 트레이딩
+command: ["tradingbot", "paper", "--strategy", "ML+TrendEMA", "--symbol", "BTC/KRW", "--websocket"]
+
 # 실매매
 command: ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
 ```
@@ -394,7 +408,7 @@ trading-bot/
 ├── src/tradingbot/
 │   ├── core/           # 도메인 모델 (Candle, Order, Trade, Position)
 │   ├── data/           # 데이터 다운로드, 저장(Parquet), 기술적 지표
-│   ├── strategy/       # 전략 프레임워크 + 내장 전략 7종 + 31종 필터 조합 엔진
+│   ├── strategy/       # 전략 프레임워크 + 내장 전략 7종 + 31종 필터 + 48개 조합 템플릿
 │   ├── backtest/       # 백테스트 엔진, 옵티마이저, Walk-Forward
 │   ├── risk/           # 리스크 매니저, 사전 거래 검증
 │   ├── exchange/       # 거래소 추상화 (Upbit CCXT, 페이퍼)
@@ -402,7 +416,7 @@ trading-bot/
 │   ├── notifications/  # 텔레그램 알림
 │   ├── dashboard/      # Streamlit 웹 대시보드
 │   └── utils/          # 로깅 (콘솔 + JSON 파일 로테이션), 시간 유틸리티
-└── tests/              # 159개 테스트
+└── tests/              # 180개 테스트
 ```
 
 ## 기술 스택
@@ -418,4 +432,4 @@ trading-bot/
 | 실시간 | websockets (Upbit WebSocket) |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (158개) |
+| 테스트 | pytest (180개) |

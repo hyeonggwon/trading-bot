@@ -28,11 +28,12 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase 6-3 | ✅ 완료 | 웹 대시보드 (Streamlit, Live Monitor + Backtest Viewer) |
 | Phase 6-2 | ✅ 완료 | WebSocket 실시간 데이터 (Upbit ticker, 자동 재연결, 폴링 폴백) |
 | 고급 전략 | ✅ 완료 | multi_tf, volume_breakout, scan CLI |
-| 조합 엔진 | ✅ 완료 | 31종 필터 (역할 태깅 + ML), CombinedStrategy, combine/combine-scan CLI, 36 템플릿 |
-| ML 전략 | ✅ 완료 | LightGBM 메타 모델 (36 피처, Walk-Forward 학습, Half-Kelly), ml-train/ml-backtest CLI |
-| ML+Rule 조합 | ✅ 완료 | LgbmProbFilter (31번째 필터) — ML 확률을 기존 필터와 AND 조합, Half-Kelly strength, ml-train-all CLI |
-| 성능 최적화 | ✅ 완료 | 인디케이터 사전 계산 (O(N²)→O(N)), 300x+ 속도 향상, 159 tests |
-| ML 학습 개선 | ✅ 완료 | Walk-forward early stopping 수정, 36 피처, 동적 scale_pos_weight |
+| 조합 엔진 | ✅ 완료 | 31종 필터 (역할 태깅 + ML), CombinedStrategy, combine/combine-scan CLI, 48 템플릿 |
+| ML 전략 | ✅ 완료 | LightGBM 메타 모델 (15 피처, Walk-Forward 학습, Half-Kelly), ml-train/ml-backtest CLI |
+| ML+Rule 조합 | ✅ 완료 | LgbmProbFilter (31번째 필터) — ML 확률을 veto 필터로 사용 (threshold 0.35), Half-Kelly strength |
+| ML 파이프라인 개선 | ✅ 완료 | Feature 36→15 축소, median best_iteration, scale_pos_weight 1.0, LOG_LEVEL 지원 |
+| Combined 전략 배포 | ✅ 완료 | paper/live/backtest에서 템플릿 이름으로 실행, --entry/--exit 커스텀 조합 |
+| 성능 최적화 | ✅ 완료 | 인디케이터 사전 계산 (O(N²)→O(N)), 300x+ 속도 향상, 180 tests |
 | CLI UX 개선 | ✅ 완료 | Rich Progress 바 (combine-scan, ml-train-all, scan, optimize, walk-forward) |
 | ML 병렬 학습 | ✅ 완료 | ml-train-all --workers N (심볼별 병렬 학습, ProcessPoolExecutor + spawn) |
 | 클라우드 배포 | ⏳ TODO | AWS/GCP에 Docker 배포 (24/7 무중단 페이퍼/실매매) |
