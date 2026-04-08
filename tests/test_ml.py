@@ -31,7 +31,7 @@ class TestFeatures:
         df = _make_data(200)
         df_feat, feature_cols = build_feature_matrix(df)
         assert feature_cols == FEATURE_COLS
-        assert len(feature_cols) == 36
+        assert len(feature_cols) == 15
         for col in feature_cols:
             assert col in df_feat.columns, f"Missing column: {col}"
 
@@ -61,7 +61,7 @@ class TestFeatures:
                     assert abs(val_full - val_partial) < 1e-6, f"Leakage in {col}"
                     compared += 1
         # Ensure a meaningful number of columns were actually compared
-        assert compared >= 20, f"Only {compared} columns compared — too many NaN"
+        assert compared >= 10, f"Only {compared} columns compared — too many NaN"
 
 
 class TestTargets:

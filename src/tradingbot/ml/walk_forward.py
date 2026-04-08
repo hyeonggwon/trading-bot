@@ -9,7 +9,7 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from tradingbot.ml.features import WARMUP_CANDLES, build_feature_matrix
+from tradingbot.ml.features import build_feature_matrix
 from tradingbot.ml.targets import build_target
 from tradingbot.ml.trainer import LGBMTrainer
 
@@ -90,6 +90,7 @@ class MLWalkForwardTrainer:
             return MLWalkForwardReport()
 
         report = MLWalkForwardReport()
+        es_iterations: list[int] = []  # best_iteration from early-stopped windows
 
         for i, (train_end_idx, test_start_idx, test_end_idx) in enumerate(windows):
             X_train = df_valid[feature_cols].iloc[:train_end_idx]
@@ -107,12 +108,14 @@ class MLWalkForwardTrainer:
             val_start = val_split + EMBARGO_CANDLES
             val_size = len(X_train) - val_start
 
+            used_early_stopping = False
             if val_size >= MIN_VAL_FOR_EARLY_STOPPING:
                 X_tr = X_train.iloc[:val_split]
                 X_val = X_train.iloc[val_start:]
                 y_tr = y_train.iloc[:val_split]
                 y_val = y_train.iloc[val_start:]
                 model = self.trainer.train(X_tr, y_tr, X_val, y_val)
+                used_early_stopping = True
             else:
                 # Val set too small — use fixed rounds, no early stopping
                 model = self.trainer.train(X_train, y_train, fixed_rounds=300)
@@ -122,16 +125,26 @@ class MLWalkForwardTrainer:
             metrics["best_iteration"] = model.best_iteration
             report.windows.append(metrics)
 
+            if used_early_stopping and model.best_iteration > 0:
+                es_iterations.append(model.best_iteration)
+
             log.info(f"ML WF window {i}: AUC={metrics['auc']:.4f}, precision={metrics['precision']:.4f}, best_iter={model.best_iteration}, train={len(X_train)}, test={len(X_test)}")
 
         if report.windows:
             report.avg_auc = round(np.mean([w["auc"] for w in report.windows]), 4)
             report.avg_precision = round(np.mean([w["precision"] for w in report.windows]), 4)
 
-        # Train final model on ALL valid data — no early stopping, fixed 300 rounds
-        # (median best_iteration from windows is unreliable when most use fixed_rounds)
-        final_rounds = 300
-        log.info(f"ML WF: final model fixed_rounds={final_rounds}")
+        # Train final model on ALL data using median best_iteration from
+        # early-stopped windows (more reliable than arbitrary fixed rounds)
+        if es_iterations:
+            final_rounds = int(np.median(es_iterations))
+            log.info(
+                f"ML WF: final model rounds={final_rounds} "
+                f"(median of {len(es_iterations)} early-stopped windows)"
+            )
+        else:
+            final_rounds = 300
+            log.info(f"ML WF: no early stopping data, using default rounds={final_rounds}")
 
         X_all = df_valid[feature_cols]
         y_all = target_valid

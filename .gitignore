@@ -28,6 +28,9 @@ data/**/*.parquet
 # ML models (regenerate with: tradingbot ml-train-all)
 models/
 
+# Runtime state (paper/live trading)
+state/
+
 # Jupyter
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/

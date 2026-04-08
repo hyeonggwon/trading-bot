@@ -122,7 +122,7 @@ For each timestamp ts:
   - `registry.py` — 31 filters registered, parse_filter_spec/parse_filter_string
 - `strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip, ML strength collection) + OR exit with entry_index for trailing stops
 - `strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing
-- `ml/features.py` — 36 features from 19 indicators (raw + derived + rolling stats + temporal)
+- `ml/features.py` — 15 features from 8 indicators (top by gain importance, reduced from 36)
 - `ml/targets.py` — 4h forward return binary classification target (offline only)
 - `ml/trainer.py` — LGBMTrainer: train, evaluate, save/load (.lgb + _meta.json)
 - `ml/walk_forward.py` — MLWalkForwardTrainer: purged expanding window + embargo
@@ -147,7 +147,7 @@ For each timestamp ts:
 - `bollinger_breakout` — Price breaks upper BB / drops below middle BB (period, std)
 - `multi_tf` — Higher TF trend filter (SMA) + base TF entry (RSI), anti-lookahead resample, `supports_precompute=False`
 - `volume_breakout` — Volume spike (avg × N) + price breakout above recent high
-- `lgbm` — LightGBM meta-model: 36 features from indicators → binary classification → Half-Kelly sizing
+- `lgbm` — LightGBM meta-model: 15 features from indicators → binary classification → Half-Kelly sizing
 
 ### Strategy Interface
 Strategies inherit from `Strategy` and implement three methods:
