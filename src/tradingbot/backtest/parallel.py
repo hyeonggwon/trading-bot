@@ -25,17 +25,19 @@ class ScanResult:
     error: str | None = None
 
 
-def _run_backtest(
-    strategy_name: str,
+def _run_batch(
     symbol: str,
     timeframe: str,
+    jobs: list[tuple[str, str, str]],
     data_dir: str,
     balance: float,
-    entry: str = "",
-    exit_: str = "",
     config_dir: str = "config",
-) -> ScanResult:
-    """Run a single backtest. Top-level function for spawn-safe pickling."""
+) -> list[ScanResult]:
+    """Run a batch of backtests sharing the same (symbol, timeframe) data.
+
+    Each job is (strategy_name, entry, exit_).
+    Data is loaded once and reused for all jobs in the batch.
+    """
     import logging
 
     import structlog
@@ -51,59 +53,64 @@ def _run_backtest(
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))
     except FileNotFoundError:
-        return ScanResult(
-            strategy=strategy_name, symbol=symbol, timeframe=timeframe,
-            sharpe_ratio=0, total_return=0, max_drawdown=0,
-            win_rate=0, profit_factor=0, total_trades=0,
-            entry=entry, exit=exit_, error="no data",
-        )
+        return [
+            ScanResult(
+                strategy=name, symbol=symbol, timeframe=timeframe,
+                sharpe_ratio=0, total_return=0, max_drawdown=0,
+                win_rate=0, profit_factor=0, total_trades=0,
+                entry=entry, exit=exit_, error="no data",
+            )
+            for name, entry, exit_ in jobs
+        ]
 
-    try:
-        from tradingbot.backtest.engine import BacktestEngine
+    from tradingbot.backtest.engine import BacktestEngine
 
-        config = load_config(Path(config_dir), overrides={
-            "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-        })
+    config = load_config(Path(config_dir), overrides={
+        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+    })
 
-        if entry:
-            # Combined strategy mode
-            from tradingbot.strategy.combined import CombinedStrategy
-            from tradingbot.strategy.filters.registry import parse_filter_string
+    results: list[ScanResult] = []
+    for strategy_name, entry, exit_ in jobs:
+        try:
+            if entry:
+                from tradingbot.strategy.combined import CombinedStrategy
+                from tradingbot.strategy.filters.registry import parse_filter_string
 
-            entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
-            exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
-            for f in entry_filters + exit_filters:
-                if hasattr(f, "symbol"):
-                    f.symbol = symbol
-                if hasattr(f, "timeframe"):
-                    f.timeframe = timeframe
-            strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
-        else:
-            # Registered strategy mode
-            from tradingbot.strategy.registry import get_strategy_map
-            strategy_cls = get_strategy_map()[strategy_name]
-            strategy = strategy_cls()
+                entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
+                exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
+                for f in entry_filters + exit_filters:
+                    if hasattr(f, "symbol"):
+                        f.symbol = symbol
+                    if hasattr(f, "timeframe"):
+                        f.timeframe = timeframe
+                strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
+            else:
+                from tradingbot.strategy.registry import get_strategy_map
+                strategy_cls = get_strategy_map()[strategy_name]
+                strategy = strategy_cls()
 
-        strategy.symbols = [symbol]
-        strategy.timeframe = timeframe
+            strategy.symbols = [symbol]
+            strategy.timeframe = timeframe
 
-        engine = BacktestEngine(strategy=strategy, config=config)
-        report = engine.run({symbol: df})
+            engine = BacktestEngine(strategy=strategy, config=config)
+            report = engine.run({symbol: df.copy()})
 
-        return ScanResult(
-            strategy=strategy_name, symbol=symbol, timeframe=timeframe,
-            sharpe_ratio=report.sharpe_ratio,
-            total_return=report.total_return,
-            max_drawdown=report.max_drawdown,
-            win_rate=report.win_rate,
-            profit_factor=report.profit_factor,
-            total_trades=report.total_trades,
-            entry=entry, exit=exit_,
-        )
-    except Exception as e:
-        return ScanResult(
-            strategy=strategy_name, symbol=symbol, timeframe=timeframe,
-            sharpe_ratio=0, total_return=0, max_drawdown=0,
-            win_rate=0, profit_factor=0, total_trades=0,
-            entry=entry, exit=exit_, error=str(e),
-        )
+            results.append(ScanResult(
+                strategy=strategy_name, symbol=symbol, timeframe=timeframe,
+                sharpe_ratio=report.sharpe_ratio,
+                total_return=report.total_return,
+                max_drawdown=report.max_drawdown,
+                win_rate=report.win_rate,
+                profit_factor=report.profit_factor,
+                total_trades=report.total_trades,
+                entry=entry, exit=exit_,
+            ))
+        except Exception as e:
+            results.append(ScanResult(
+                strategy=strategy_name, symbol=symbol, timeframe=timeframe,
+                sharpe_ratio=0, total_return=0, max_drawdown=0,
+                win_rate=0, profit_factor=0, total_trades=0,
+                entry=entry, exit=exit_, error=str(e),
+            ))
+
+    return results

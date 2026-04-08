@@ -341,14 +341,10 @@ def walk_forward(
     """Run walk-forward validation."""
     setup_logging()
 
-    _, strategy_name, strategy_cls = _resolve_strategy(
+    strategy, strategy_name, strategy_cls = _resolve_strategy(
         strategy_name, symbol, timeframe,
     )
-    if strategy_cls is None:
-        console.print("[red]Combined templates cannot be walk-forward validated (no param_space). Use backtest instead.[/red]")
-        raise typer.Exit(1)
 
-    from tradingbot.backtest.walk_forward import WalkForwardValidator
     from tradingbot.data.storage import load_candles
 
     config = load_config(Path("config"), overrides={
@@ -361,12 +357,91 @@ def walk_forward(
         f"(train={train_months}m, test={test_months}m)[/bold]"
     )
 
-    validator = WalkForwardValidator(
-        strategy_cls=strategy_cls, config=config,
-        train_months=train_months, test_months=test_months,
+    if strategy_cls is not None:
+        # Registered strategy: optimize params per window
+        from tradingbot.backtest.walk_forward import WalkForwardValidator
+
+        validator = WalkForwardValidator(
+            strategy_cls=strategy_cls, config=config,
+            train_months=train_months, test_months=test_months,
+        )
+        with _progress_context() as progress:
+            report = validator.validate({symbol: df}, progress=progress)
+        report.print_summary()
+    else:
+        # Combined template: fixed filters, no optimization — test each window
+        _walk_forward_combined(
+            strategy, strategy_name, symbol, df, config,
+            train_months, test_months,
+        )
+
+
+def _walk_forward_combined(
+    strategy,
+    strategy_name: str,
+    symbol: str,
+    df,
+    config,
+    train_months: int,
+    test_months: int,
+) -> None:
+    """Walk-forward for combined strategies (no param optimization)."""
+    import copy
+
+    from tradingbot.backtest.engine import BacktestEngine
+    from tradingbot.backtest.walk_forward import (
+        WalkForwardReport,
+        WalkForwardWindow,
+        create_walk_forward_windows,
     )
+
+    wf_config = config.model_copy(deep=True)
+    wf_config.backtest.start_date = None
+    wf_config.backtest.end_date = None
+
+    windows = create_walk_forward_windows(df, train_months, test_months)
+    if not windows:
+        console.print("[red]Insufficient data for walk-forward windows.[/red]")
+        return
+
+    results: list[WalkForwardWindow] = []
+
     with _progress_context() as progress:
-        report = validator.validate({symbol: df}, progress=progress)
+        task = progress.add_task("Walk-Forward (combined)", total=len(windows))
+
+        for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
+            progress.update(task, description=f"WF {i+1}/{len(windows)}: {train_start.date()}~{test_end.date()}")
+
+            # Train window — run for in-sample Sharpe
+            train_df = df[(df.index >= train_start) & (df.index < train_end)].copy()
+            train_strategy = copy.deepcopy(strategy)
+            engine = BacktestEngine(strategy=train_strategy, config=wf_config)
+            train_report = engine.run({symbol: train_df})
+
+            # Test window — out-of-sample
+            test_df = df[(df.index >= test_start) & (df.index < test_end)].copy()
+            test_strategy = copy.deepcopy(strategy)
+            engine = BacktestEngine(strategy=test_strategy, config=wf_config)
+            test_report = engine.run({symbol: test_df})
+
+            results.append(WalkForwardWindow(
+                window_index=i,
+                train_start=train_start,
+                train_end=train_end,
+                test_start=test_start,
+                test_end=test_end,
+                best_params={"filters": "fixed"},
+                train_sharpe=train_report.sharpe_ratio,
+                train_return=train_report.total_return,
+                test_sharpe=test_report.sharpe_ratio,
+                test_return=test_report.total_return,
+                test_trades=test_report.total_trades,
+                test_max_drawdown=test_report.max_drawdown,
+            ))
+
+            progress.advance(task)
+
+    report = WalkForwardReport(windows=results, strategy_name=strategy_name)
     report.print_summary()
 
 
@@ -675,57 +750,60 @@ def scan(
     results: list[dict] = []
     failures: list[str] = []
 
-    # Build job list
-    jobs: list[tuple[str, str, str]] = []
+    # Build batched jobs: group by (symbol, timeframe) to load data once
+    batches: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+    total = 0
     for sym, timeframes in symbol_timeframes.items():
         for tf in timeframes:
-            for strat_name in strategies:
-                jobs.append((strat_name, sym, tf))
+            batch_jobs = [(strat_name, "", "") for strat_name in strategies]
+            batches[(sym, tf)] = batch_jobs
+            total += len(batch_jobs)
 
-    total = len(jobs)
     cpu = multiprocessing.cpu_count() or 4
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
     console.print(
         f"[bold]Scanning {len(strategies)} strategies × {len(symbol_timeframes)} symbols "
-        f"× timeframes ({total} combinations, {n_workers} workers)...[/bold]"
+        f"× timeframes ({total} combinations, {n_workers} workers, "
+        f"{len(batches)} batches)...[/bold]"
     )
 
-    from tradingbot.backtest.parallel import _run_backtest
+    from tradingbot.backtest.parallel import _run_batch
 
     with _progress_context() as progress:
         task = progress.add_task("Scanning strategies", total=total)
 
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
             futures = {
-                pool.submit(_run_backtest, strat, sym, tf, abs_data_dir, balance, "", "", abs_config_dir): (strat, sym, tf)
-                for strat, sym, tf in jobs
+                pool.submit(_run_batch, sym, tf, batch_jobs, abs_data_dir, balance, abs_config_dir): (sym, tf)
+                for (sym, tf), batch_jobs in batches.items()
             }
             for future in as_completed(futures):
-                strat, sym, tf = futures[future]
-                progress.update(task, description=f"{strat} · {sym} {tf}")
+                sym, tf = futures[future]
+                progress.update(task, description=f"{sym} {tf}")
                 try:
-                    r = future.result(timeout=300)
+                    batch_results = future.result(timeout=600)
                 except Exception as exc:
-                    failures.append(f"{strat}/{sym}/{tf}: worker crashed: {exc}")
-                    progress.advance(task)
+                    failures.append(f"{sym}/{tf}: worker crashed: {exc}")
+                    progress.advance(task, advance=len(batches[(sym, tf)]))
                     continue
-                if r.error:
-                    failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
-                else:
-                    results.append({
-                        "strategy": r.strategy,
-                        "symbol": r.symbol,
-                        "timeframe": r.timeframe,
-                        "sharpe_ratio": r.sharpe_ratio,
-                        "total_return": r.total_return,
-                        "max_drawdown": r.max_drawdown,
-                        "win_rate": r.win_rate,
-                        "profit_factor": r.profit_factor,
-                        "total_trades": r.total_trades,
-                    })
-                progress.advance(task)
+                for r in batch_results:
+                    if r.error:
+                        failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
+                    else:
+                        results.append({
+                            "strategy": r.strategy,
+                            "symbol": r.symbol,
+                            "timeframe": r.timeframe,
+                            "sharpe_ratio": r.sharpe_ratio,
+                            "total_return": r.total_return,
+                            "max_drawdown": r.max_drawdown,
+                            "win_rate": r.win_rate,
+                            "profit_factor": r.profit_factor,
+                            "total_trades": r.total_trades,
+                        })
+                    progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
         for f in failures[:5]:
@@ -928,62 +1006,65 @@ def combine_scan(
     for item in available:
         symbol_timeframes.setdefault(item["symbol"], []).append(item["timeframe"])
 
-    # Build job list
-    jobs: list[tuple[str, str, str, str, str]] = []
+    # Build batched jobs: group by (symbol, timeframe) to load data once
+    batches: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+    total = 0
     for sym, timeframes in symbol_timeframes.items():
         for tf in timeframes:
-            for tmpl in COMBINE_TEMPLATES:
-                jobs.append((tmpl["label"], sym, tf, tmpl["entry"], tmpl["exit"]))
+            batch_jobs = [(tmpl["label"], tmpl["entry"], tmpl["exit"]) for tmpl in COMBINE_TEMPLATES]
+            batches[(sym, tf)] = batch_jobs
+            total += len(batch_jobs)
 
-    total = len(jobs)
     cpu = multiprocessing.cpu_count() or 4
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
     console.print(
         f"[bold]Scanning {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols "
-        f"× timeframes ({total} combinations, {n_workers} workers)...[/bold]"
+        f"× timeframes ({total} combinations, {n_workers} workers, "
+        f"{len(batches)} batches)...[/bold]"
     )
 
     results: list[dict] = []
     failures: list[str] = []
 
-    from tradingbot.backtest.parallel import _run_backtest
+    from tradingbot.backtest.parallel import _run_batch
 
     with _progress_context() as progress:
         task = progress.add_task("Scanning combinations", total=total)
 
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
             futures = {
-                pool.submit(_run_backtest, label, sym, tf, abs_data_dir, balance, entry, exit_, abs_config_dir): (label, sym, tf)
-                for label, sym, tf, entry, exit_ in jobs
+                pool.submit(_run_batch, sym, tf, batch_jobs, abs_data_dir, balance, abs_config_dir): (sym, tf)
+                for (sym, tf), batch_jobs in batches.items()
             }
             for future in as_completed(futures):
-                label, sym, tf = futures[future]
-                progress.update(task, description=f"{label} · {sym} {tf}")
+                sym, tf = futures[future]
+                progress.update(task, description=f"{sym} {tf}")
                 try:
-                    r = future.result(timeout=300)
+                    batch_results = future.result(timeout=1800)
                 except Exception as exc:
-                    failures.append(f"{label}/{sym}/{tf}: worker crashed: {exc}")
-                    progress.advance(task)
+                    failures.append(f"{sym}/{tf}: worker crashed: {exc}")
+                    progress.advance(task, advance=len(batches[(sym, tf)]))
                     continue
-                if r.error:
-                    failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
-                else:
-                    results.append({
-                        "template": r.strategy,
-                        "entry": r.entry,
-                        "exit": r.exit,
-                        "symbol": r.symbol,
-                        "timeframe": r.timeframe,
-                        "sharpe_ratio": r.sharpe_ratio,
-                        "total_return": r.total_return,
-                        "max_drawdown": r.max_drawdown,
-                        "win_rate": r.win_rate,
-                        "profit_factor": r.profit_factor,
-                        "total_trades": r.total_trades,
-                    })
-                progress.advance(task)
+                for r in batch_results:
+                    if r.error:
+                        failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
+                    else:
+                        results.append({
+                            "template": r.strategy,
+                            "entry": r.entry,
+                            "exit": r.exit,
+                            "symbol": r.symbol,
+                            "timeframe": r.timeframe,
+                            "sharpe_ratio": r.sharpe_ratio,
+                            "total_return": r.total_return,
+                            "max_drawdown": r.max_drawdown,
+                            "win_rate": r.win_rate,
+                            "profit_factor": r.profit_factor,
+                            "total_trades": r.total_trades,
+                        })
+                    progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
         for f in failures[:5]:

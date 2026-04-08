@@ -48,14 +48,47 @@ ML Engineer + Quant Analyst 분석 결과, **ML 단독 전략 대신 veto 필터
 - AVAX(0.54), LINK(0.53)은 ML veto 효과 낮음
 - 4h/1d는 룰 기반만 사용 권장
 
-## 남은 작업
+## PR 3: 전략 검증 + 배포
 
-- [ ] **combine-scan으로 베스트 조합 찾기**
-  - `tradingbot combine-scan --top 20`으로 전체 스캔 (실행 중)
-  - ML 포함/미포함 성능 비교
-  - 베스트 2~3개 조합 선정
+### 스캔 결과 요약 (2026-04-08)
 
-- [ ] **Docker 컨테이너 재배포**: 베스트 조합으로 전환
+1d는 인샘플 과적합으로 제외. 1h/4h 기준:
+
+| 전략 | 심볼 | TF | Sharpe | Return | Trades | 비고 |
+|------|------|----|--------|--------|--------|------|
+| Breakout+ATR | BTC/KRW | 1h | 2.38 | 8.49% | 43 | 룰 기반, 1순위 후보 |
+| BB+Vol | BTC/KRW | 4h | 2.44 | 5.62% | 20 | 낮은 MaxDD(1.29%) |
+| Trend+RSI | BTC/KRW | 4h | 2.26 | 6.44% | 77 | 거래 수 충분 |
+| sma_cross | BTC/KRW | 4h | 2.58 | 7.94% | 21 | 단독 전략 중 최고 |
+
+ML veto(threshold 0.35) 조합은 거래 多 + 수익 거의 0 → threshold 조정 필요
+
+### Task A: 룰 기반 walk-forward 검증
+
+- [ ] Breakout+ATR BTC/KRW 1h walk-forward (3개월 train / 1개월 test)
+- [ ] BB+Vol BTC/KRW 4h walk-forward
+- [ ] Trend+RSI BTC/KRW 4h walk-forward
+- [ ] OOS Sharpe 1.2 이상인 전략 선정
+
+### Task B: ML threshold 조정 + 재스캔
+
+- [ ] ML veto threshold 0.35 → 0.55로 변경하여 combine-scan 재실행 (1h만)
+- [ ] threshold 0.60으로도 테스트
+- [ ] 룰 기반 대비 성능 비교
+- [ ] 4h/1d ML 템플릿 비활성화 또는 제거 검토
+
+### Task C: 배포
+
+- [ ] Task A/B 결과에서 베스트 2~3개 전략 선정
+- [ ] Docker 컨테이너 재배포
+- [ ] Paper trading 1주 모니터링
+
+### 보류
+
+- [ ] **ML 포지션 사이즈 부스터 전환** (선택)
+  - ML을 hard gate 대신 position size modifier로 전환
+  - 룰 기반 base size + ML 확신도에 따라 1.0x~1.5x 조절
+  - CombinedStrategy 수정 필요
 
 - [ ] **Percentile 기반 동적 threshold 구현** (선택)
   - LGBMStrategy에 rolling probability buffer (최근 500개) 추가
