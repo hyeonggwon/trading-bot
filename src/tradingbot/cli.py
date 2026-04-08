@@ -985,6 +985,7 @@ COMBINE_TEMPLATES = [
 @app.command(name="combine-scan")
 def combine_scan(
     top_n: int = typer.Option(10, "--top", help="Show top N results"),
+    verify_top: int = typer.Option(0, "--verify-top", help="Re-verify top N with full engine"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
@@ -1079,6 +1080,86 @@ def combine_scan(
     # Sort by Sharpe descending
     results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
 
+    # Phase 2: Re-verify top N with full engine
+    verified_set: set[tuple[str, str, str]] = set()
+    if verify_top > 0 and results:
+        n_verify = min(verify_top, len(results))
+        to_verify = results[:n_verify]
+
+        # ML templates already went through full engine — mark as verified, skip re-run
+        verify_jobs: list[dict] = []
+        for r in to_verify:
+            if "lgbm_prob" in r["entry"]:
+                verified_set.add((r["template"], r["symbol"], r["timeframe"]))
+            else:
+                verify_jobs.append(r)
+
+        if verify_jobs:
+            # Group by (symbol, timeframe)
+            verify_batches: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
+            for r in verify_jobs:
+                key = (r["symbol"], r["timeframe"])
+                verify_batches.setdefault(key, []).append(
+                    (r["template"], r["entry"], r["exit"])
+                )
+
+            console.print(
+                f"\n[bold]Re-verifying top {len(verify_jobs)} results "
+                f"with full engine ({len(verify_batches)} batches)...[/bold]"
+            )
+
+            verified_results: dict[tuple[str, str, str], dict] = {}
+            with _progress_context() as progress:
+                task = progress.add_task("Verifying", total=len(verify_jobs))
+
+                with ProcessPoolExecutor(
+                    max_workers=n_workers,
+                    mp_context=multiprocessing.get_context("spawn"),
+                ) as pool:
+                    futures = {
+                        pool.submit(
+                            _run_batch, sym, tf, batch_jobs,
+                            abs_data_dir, balance, abs_config_dir, True,
+                        ): (sym, tf)
+                        for (sym, tf), batch_jobs in verify_batches.items()
+                    }
+                    for future in as_completed(futures):
+                        sym, tf = futures[future]
+                        try:
+                            batch_results = future.result(timeout=1800)
+                        except Exception as exc:
+                            console.print(
+                                f"[yellow]Verify failed {sym}/{tf}: {exc}[/yellow]"
+                            )
+                            n_batch = len(verify_batches[(sym, tf)])
+                            progress.advance(task, advance=n_batch)
+                            continue
+                        for r in batch_results:
+                            if not r.error:
+                                verified_results[(r.strategy, r.symbol, r.timeframe)] = {
+                                    "sharpe_ratio": r.sharpe_ratio,
+                                    "total_return": r.total_return,
+                                    "max_drawdown": r.max_drawdown,
+                                    "win_rate": r.win_rate,
+                                    "profit_factor": r.profit_factor,
+                                    "total_trades": r.total_trades,
+                                }
+                                verified_set.add((r.strategy, r.symbol, r.timeframe))
+                            progress.advance(task)
+
+            # Replace results with verified metrics
+            for r in results:
+                key = (r["template"], r["symbol"], r["timeframe"])
+                if key in verified_results:
+                    r.update(verified_results[key])
+
+            # Re-sort after verification
+            results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
+
+            console.print(
+                f"[green]Verified {len(verified_set)} results.[/green]"
+            )
+
     table = Table(title=f"Best Filter Combinations (Top {min(top_n, len(results))})")
     table.add_column("#", justify="right")
     table.add_column("Template")
@@ -1090,10 +1171,12 @@ def combine_scan(
     table.add_column("Win%", justify="right")
     table.add_column("PF", justify="right")
     table.add_column("Trades", justify="right")
+    if verify_top > 0:
+        table.add_column("V", justify="center")
 
     for i, r in enumerate(results[:top_n], 1):
         sharpe_style = "green" if r["sharpe_ratio"] > 1.0 else ("yellow" if r["sharpe_ratio"] > 0 else "red")
-        table.add_row(
+        row = [
             str(i),
             r["template"],
             r["symbol"],
@@ -1104,7 +1187,11 @@ def combine_scan(
             f"{r['win_rate']:.1%}",
             f"{r['profit_factor']:.2f}",
             str(r["total_trades"]),
-        )
+        ]
+        if verify_top > 0:
+            key = (r["template"], r["symbol"], r["timeframe"])
+            row.append("[green]✓[/green]" if key in verified_set else "")
+        table.add_row(*row)
 
     console.print(table)
 

@@ -32,6 +32,7 @@ def _run_batch(
     data_dir: str,
     balance: float,
     config_dir: str = "config",
+    force_engine: bool = False,
 ) -> list[ScanResult]:
     """Run a batch of backtests sharing the same (symbol, timeframe) data.
 
@@ -68,30 +69,36 @@ def _run_batch(
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
     })
 
-    # Split jobs: vectorizable combined vs fallback (registered strategies + ML)
-    vectorizable_jobs = []
-    fallback_jobs = []
-    for name, entry, exit_ in jobs:
-        if not entry:
-            fallback_jobs.append((name, entry, exit_))  # registered strategy
-        elif "lgbm_prob" in entry:
-            fallback_jobs.append((name, entry, exit_))  # ML filter → fallback
-        else:
-            vectorizable_jobs.append((name, entry, exit_))
-
     results: list[ScanResult] = []
 
-    # --- Vectorized path: combined templates without ML ---
-    if vectorizable_jobs:
-        results.extend(_run_vectorized_batch(
-            df, symbol, timeframe, vectorizable_jobs, config, balance,
-        ))
-
-    # --- Fallback path: registered strategies + ML templates ---
-    if fallback_jobs:
+    if force_engine:
+        # Re-verification: all jobs go through full engine
         results.extend(_run_engine_batch(
-            df, symbol, timeframe, fallback_jobs, config, balance,
+            df, symbol, timeframe, jobs, config, balance,
         ))
+    else:
+        # Split jobs: vectorizable combined vs fallback (registered strategies + ML)
+        vectorizable_jobs = []
+        fallback_jobs = []
+        for name, entry, exit_ in jobs:
+            if not entry:
+                fallback_jobs.append((name, entry, exit_))  # registered strategy
+            elif "lgbm_prob" in entry:
+                fallback_jobs.append((name, entry, exit_))  # ML filter → fallback
+            else:
+                vectorizable_jobs.append((name, entry, exit_))
+
+        # --- Vectorized path: combined templates without ML ---
+        if vectorizable_jobs:
+            results.extend(_run_vectorized_batch(
+                df, symbol, timeframe, vectorizable_jobs, config, balance,
+            ))
+
+        # --- Fallback path: registered strategies + ML templates ---
+        if fallback_jobs:
+            results.extend(_run_engine_batch(
+                df, symbol, timeframe, fallback_jobs, config, balance,
+            ))
 
     return results
 

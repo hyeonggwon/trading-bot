@@ -332,3 +332,28 @@ class TestRunBatchRouting:
         """Jobs with empty entry string are registered strategies → fallback."""
         job = ("sma_cross", "", "")
         assert not job[1]  # empty entry → fallback
+
+    def test_force_engine_routes_all_to_engine(self, tmp_path):
+        """force_engine=True routes rule-only jobs through full engine."""
+        from tradingbot.backtest.parallel import _run_batch
+        from tradingbot.data.storage import save_candles
+
+        df = _make_ohlcv(500)
+        symbol = "TEST/KRW"
+        timeframe = "1h"
+        save_candles(df, symbol, timeframe, tmp_path)
+
+        config_dir = str(tmp_path / "config")
+        import os
+        os.makedirs(config_dir, exist_ok=True)
+
+        jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
+        results = _run_batch(
+            symbol, timeframe, jobs,
+            str(tmp_path), 1_000_000, config_dir,
+            force_engine=True,
+        )
+        assert len(results) == 1
+        assert results[0].error is None
+        assert results[0].total_trades >= 0
+        assert results[0].strategy == "Trend+RSI"
