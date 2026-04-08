@@ -35,6 +35,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | ML 학습 개선 | ✅ 완료 | Walk-forward early stopping 수정, 36 피처, 동적 scale_pos_weight |
 | CLI UX 개선 | ✅ 완료 | Rich Progress 바 (combine-scan, ml-train-all, scan, optimize, walk-forward) |
 | ML 병렬 학습 | ✅ 완료 | ml-train-all --workers N (심볼별 병렬 학습, ProcessPoolExecutor + spawn) |
+| 클라우드 배포 | ⏳ TODO | AWS/GCP에 Docker 배포 (24/7 무중단 페이퍼/실매매) |
 | 로깅 리팩토링 | ⏳ TODO | structlog → stdlib logging 전환 (Rich Progress와 호환, handler 레벨 제어 가능) |
 | Phase 6-4~6,8 | ⏳ 대기 | Bybit, 선물/마진, 레짐 감지 (HMM) |
 

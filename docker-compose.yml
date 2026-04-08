@@ -3,7 +3,7 @@ services:
     build: .
     env_file: .env
     volumes:
-      - ./data:/app/data:ro
+      - ./data:/app/data
       - ./models:/app/models
       - bot-logs:/app/logs
       - bot-state:/app/state
