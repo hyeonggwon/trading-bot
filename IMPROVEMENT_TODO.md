@@ -28,18 +28,34 @@ ML Engineer + Quant Analyst 분석 결과, **ML 단독 전략 대신 veto 필터
   - XRP/KRW 1h: 0.5877, DOGE/KRW 1h: 0.5734, ETH/KRW 1h: 0.5683
   - 4h/1d는 0.50~0.55 수준 (veto 필터로 충분)
 
-## PR 2: Veto 필터 전환 + 룰 기반 조합 탐색
+## PR 2: Veto 필터 전환 + 룰 기반 조합 탐색 ✅ (merged #14)
 
-- [ ] **좋은 룰 기반 조합 찾기** (ML보다 우선)
-  - `tradingbot combine-scan --top 15`로 walk-forward 생존 조합 탐색
+- [x] **paper/live/backtest에서 COMBINE_TEMPLATES 이름 지원**: `--strategy ML+TrendEMA`
+- [x] **paper/live에 --entry/--exit 옵션 추가**: 커스텀 조합 즉석 실행
+- [x] **ML veto 템플릿 12개 추가** (Trend 3, MeanRev 3, Breakout 3, Volume 1, Multi 2, 총 48개)
+- [x] **기존 ML 템플릿 threshold 0.55 → 0.35** (veto 모드)
+- [x] **멀티 심볼 + ML 조합 방어**: ML 모델이 per-symbol이므로 멀티 심볼 사용 차단
+
+### 타임프레임별 ML veto 적용 기준
+
+| TF | 평균 AUC | ML veto 권장 | threshold |
+|----|---------|-------------|-----------|
+| **1h** | 0.53~0.61 | O | 0.35 |
+| **4h** | 0.50~0.54 | △ (효과 미미) | 0.40 |
+| **1d** | 0.50~0.56 | X (샘플 부족) | 사용 안 함 |
+
+- AUC >= 0.55인 1h 심볼만 ML veto 적용: BTC, XRP, DOGE, ETH, ADA, SOL
+- AVAX(0.54), LINK(0.53)은 ML veto 효과 낮음
+- 4h/1d는 룰 기반만 사용 권장
+
+## 남은 작업
+
+- [ ] **combine-scan으로 베스트 조합 찾기**
+  - `tradingbot combine-scan --top 20`으로 전체 스캔 (실행 중)
+  - ML 포함/미포함 성능 비교
   - 베스트 2~3개 조합 선정
 
-- [ ] **combine 프레임워크에서 ML을 veto 필터로 사용**
-  - `lgbm_prob` threshold: 0.30~0.35 (하위 30% 거래만 거부)
-  - 베스트 조합에 ML veto 추가하여 성능 비교
-  - 예시: `tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" --exit "rsi_overbought:70"`
-
-- [ ] **Docker 컨테이너 재배포**: 기존 lgbm 단독 → combine+veto로 전환
+- [ ] **Docker 컨테이너 재배포**: 베스트 조합으로 전환
 
 - [ ] **Percentile 기반 동적 threshold 구현** (선택)
   - LGBMStrategy에 rolling probability buffer (최근 500개) 추가

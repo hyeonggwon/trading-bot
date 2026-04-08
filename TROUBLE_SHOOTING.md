@@ -116,3 +116,107 @@ Round 1 대비 대부분 심볼에서 precision 개선 (피처 추가 + 동적 s
 3. **simple split으로 먼저 검증** — walk-forward 문제인지 모델 자체 문제인지 분리
 4. **`best_iteration` 확인이 필수** — 1이면 모델이 학습하지 않은 것
 5. **최종 배포 모델은 fixed rounds가 안전** — walk-forward로 일반화 검증 후, 전체 데이터로 고정 iteration 학습
+
+---
+
+## 2026-04-08: Paper Trading 5일간 거래 0건 — ML 단독 전략의 한계
+
+### 증상
+
+Docker에서 lgbm 전략으로 paper trading 5일 운행 (SOL/KRW 1h, DOGE/KRW 4h):
+- 매수/매도 0건
+- 로그에 `new_candle`조차 안 보임 (DEBUG 레벨이라 INFO에서 필터링)
+- state 파일의 `saved_at`은 업데이트 → 봇은 정상 작동 중
+
+### 진단
+
+컨테이너에 접속하여 모델 예측값 직접 확인:
+```
+SOL/KRW 1h: 150캔들 예측, mean=0.30, max=0.54 → entry_threshold(0.60) 도달 0회
+DOGE/KRW 4h: 150캔들 예측, mean=0.39, max=0.49 → entry_threshold(0.60) 도달 0회
+```
+
+### 근본 원인
+
+**3가지 문제가 복합적으로 작용:**
+
+1. **entry_threshold(0.60)이 모델 최대 출력(~0.54)보다 높음**
+   - 모델 확률 분포: mean ~0.30, max ~0.54
+   - threshold 0.60을 넘는 캔들이 5일간 단 한 번도 없음
+
+2. **모델 AUC가 veto 필터 수준 (0.52~0.55)**
+   - OOS AUC: SOL 1h = 0.5552, DOGE 4h = 0.5266
+   - AUC 0.55는 랭킹은 가능하지만 단독 시그널로 부적합
+   - 가격/거래량 파생 feature만으로는 AUC 0.58이 현실적 한계
+
+3. **LOG_LEVEL 환경변수 미반영**
+   - `LOG_LEVEL=DEBUG` 설정했으나 `setup_logging()`이 환경변수를 읽지 않음
+   - `new_candle`이 DEBUG 레벨 → 로그에 안 보여서 봇 상태 파악 불가
+
+### 분석 과정
+
+1. **ML Engineer + Quant Analyst 에이전트 분석 의뢰**
+   - 둘 다 "ML 단독 전략 비추, veto 필터로 전환" 권장
+   - AUC 0.55 모델도 하위 30% 나쁜 거래 필터링에는 유효
+   - 예상 Sharpe: 단독 ML 0.3~0.8 vs veto 필터 0.8~1.5
+
+2. **Feature importance 분석 (24개 모델 평균)**
+   - 36개 feature 중 상위 15개가 전체 importance의 대부분 차지
+   - 하위 21개는 다중공선성 높고 기여도 미미 (bb_kc_squeeze: 0.0012)
+
+3. **Walk-forward 윈도우 분석**
+   - 72개 윈도우 중 67개(93%)가 early stopping 가능
+   - median best_iteration 사용 가능 → fixed_rounds=300 대체
+
+4. **Half-Kelly win/loss ratio 백테스트**
+   - 1h 평균: 1.52, 4h 평균: 2.07 → 하드코딩 1.5는 보수적으로 적절
+
+### 해결 — PR #13 + PR #14
+
+#### PR #13: ML 파이프라인 개선
+| 변경 | 효과 |
+|------|------|
+| Feature 36 → 15개 축소 | 노이즈 감소, BTC 1h AUC 0.55 → **0.61** |
+| fixed_rounds=300 → median best_iteration | 윈도우별 최적 iteration 사용 |
+| scale_pos_weight 2.0 → 1.0 | 확률 왜곡 제거, walk-forward에서 동적 override |
+| LOG_LEVEL 환경변수 지원 | Docker에서 DEBUG 로그 확인 가능 |
+
+#### PR #14: Veto 필터 전환
+| 변경 | 효과 |
+|------|------|
+| paper/live/backtest에서 COMBINE_TEMPLATES 이름 지원 | `--strategy ML+TrendEMA`로 즉시 사용 |
+| paper/live에 --entry/--exit 옵션 추가 | 커스텀 조합 즉석 실행 |
+| ML veto 템플릿 12개 추가 (총 48개) | Trend/MeanRev/Breakout/Volume/Multi 카테고리 |
+| lgbm_prob threshold 0.55 → 0.35 | veto 모드 (하위 30%만 거부) |
+| 멀티 심볼 + ML 조합 방어 | ML 모델이 per-symbol이므로 멀티 심볼 사용 차단 |
+
+### 재학습 결과 (PR #13 적용 후)
+
+| 심볼 | 1h AUC (before → after) |
+|------|------------------------|
+| BTC/KRW | 0.5552 → **0.6092** |
+| XRP/KRW | — → **0.5877** |
+| DOGE/KRW | 0.5857 → 0.5734 |
+| ETH/KRW | 0.5843 → 0.5683 |
+| SOL/KRW | 0.5552 → 0.5543 |
+
+### 타임프레임별 ML 유효성
+
+| TF | 평균 AUC | Precision | ML veto 권장 |
+|----|---------|-----------|-------------|
+| **1h** | 0.53~0.61 | 4~13% | O (threshold 0.35) |
+| **4h** | 0.50~0.54 | 18~37% | △ (효과 미미, threshold 0.40) |
+| **1d** | 0.50~0.56 | 42~49% | X (샘플 부족, 윈도우당 ~30개) |
+
+- 1h precision이 낮은 이유: target(4캔들 forward return > 0.6%)의 positive rate가 매우 낮아 확률 보정이 안 됨
+- 4h/1d는 AUC < 0.55인 심볼이 대부분 → 룰 기반만 사용 권장
+- AUC >= 0.55인 1h 심볼만 ML veto 적용: BTC, XRP, DOGE, ETH, ADA, SOL
+
+### 교훈
+
+1. **AUC 0.55는 단독 전략으로 쓸 수 없다** — 가격/거래량 feature만으로는 한계
+2. **threshold는 모델 확률 분포에 맞춰야 한다** — 모델 max가 0.54인데 threshold 0.60은 영원히 거래 불가
+3. **ML은 veto 필터로 더 효과적** — "좋은 거래 찾기"보다 "나쁜 거래 거르기"가 AUC 0.55에서 가능
+4. **Feature 축소가 AUC를 올릴 수 있다** — 다중공선성 제거로 BTC 1h AUC +0.054 개선
+5. **로그 레벨 설정은 운영 필수** — DEBUG 로그 없이는 봇 상태 파악 불가
+6. **Docker state는 bind mount 시 로컬 삭제에 주의** — git rm --cached로 tracking만 제거해도 로컬 파일 삭제 가능

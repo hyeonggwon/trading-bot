@@ -645,8 +645,12 @@ def scan(
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     sort_by: str = typer.Option("sharpe_ratio", "--sort-by", help="Sort metric"),
+    workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
 ) -> None:
     """Scan all strategy × timeframe × symbol combinations to find the best."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     setup_logging()
     _load_strategies()
 
@@ -656,72 +660,72 @@ def scan(
         console.print(f"Available: {', '.join(sorted(valid_metrics))}")
         raise typer.Exit(1)
 
-    from tradingbot.backtest.engine import BacktestEngine
     from tradingbot.data.storage import list_available_data
 
-    # Discover available data
     available = list_available_data(Path(data_dir))
     if not available:
         console.print("[red]No data found. Run tradingbot download first.[/red]")
         raise typer.Exit(1)
 
-    # Group by symbol → list of timeframes
     symbol_timeframes: dict[str, list[str]] = {}
     for item in available:
-        sym = item["symbol"]
-        tf = item["timeframe"]
-        symbol_timeframes.setdefault(sym, []).append(tf)
+        symbol_timeframes.setdefault(item["symbol"], []).append(item["timeframe"])
 
     strategies = list(STRATEGY_MAP.keys())
     results: list[dict] = []
     failures: list[str] = []
-    total = sum(len(tfs) for tfs in symbol_timeframes.values()) * len(strategies)
 
-    console.print(f"[bold]Scanning {len(strategies)} strategies × {len(symbol_timeframes)} symbols × timeframes ({total} combinations)...[/bold]")
+    # Build job list
+    jobs: list[tuple[str, str, str]] = []
+    for sym, timeframes in symbol_timeframes.items():
+        for tf in timeframes:
+            for strat_name in strategies:
+                jobs.append((strat_name, sym, tf))
 
-    from tradingbot.data.storage import load_candles
+    total = len(jobs)
+    cpu = multiprocessing.cpu_count() or 4
+    n_workers = workers if workers > 0 else min(cpu, 8)
+    abs_data_dir = str(Path(data_dir).resolve())
+    abs_config_dir = str(Path("config").resolve())
+    console.print(
+        f"[bold]Scanning {len(strategies)} strategies × {len(symbol_timeframes)} symbols "
+        f"× timeframes ({total} combinations, {n_workers} workers)...[/bold]"
+    )
+
+    from tradingbot.backtest.parallel import _run_backtest
 
     with _progress_context() as progress:
         task = progress.add_task("Scanning strategies", total=total)
 
-        for sym, timeframes in symbol_timeframes.items():
-            for tf in timeframes:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = {
+                pool.submit(_run_backtest, strat, sym, tf, abs_data_dir, balance, "", "", abs_config_dir): (strat, sym, tf)
+                for strat, sym, tf in jobs
+            }
+            for future in as_completed(futures):
+                strat, sym, tf = futures[future]
+                progress.update(task, description=f"{strat} · {sym} {tf}")
                 try:
-                    df = load_candles(sym, tf, Path(data_dir))
-                except FileNotFoundError:
-                    progress.advance(task, advance=len(strategies))
-                    continue
-
-                for strat_name in strategies:
-                    progress.update(task, description=f"{strat_name} · {sym} {tf}")
-
-                    try:
-                        config = load_config(Path("config"), overrides={
-                            "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
-                        })
-                        strategy_cls = STRATEGY_MAP[strat_name]
-                        strategy = strategy_cls()
-                        strategy.symbols = [sym]
-                        strategy.timeframe = tf
-
-                        engine = BacktestEngine(strategy=strategy, config=config)
-                        report = engine.run({sym: df})
-
-                        results.append({
-                            "strategy": strat_name,
-                            "symbol": sym,
-                            "timeframe": tf,
-                            "sharpe_ratio": report.sharpe_ratio,
-                            "total_return": report.total_return,
-                            "max_drawdown": report.max_drawdown,
-                            "win_rate": report.win_rate,
-                            "profit_factor": report.profit_factor,
-                            "total_trades": report.total_trades,
-                        })
-                    except Exception as e:
-                        failures.append(f"{strat_name}/{sym}/{tf}: {e}")
-
+                    r = future.result(timeout=300)
+                except Exception as exc:
+                    failures.append(f"{strat}/{sym}/{tf}: worker crashed: {exc}")
                     progress.advance(task)
+                    continue
+                if r.error:
+                    failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
+                else:
+                    results.append({
+                        "strategy": r.strategy,
+                        "symbol": r.symbol,
+                        "timeframe": r.timeframe,
+                        "sharpe_ratio": r.sharpe_ratio,
+                        "total_return": r.total_return,
+                        "max_drawdown": r.max_drawdown,
+                        "win_rate": r.win_rate,
+                        "profit_factor": r.profit_factor,
+                        "total_trades": r.total_trades,
+                    })
+                progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
         for f in failures[:5]:
@@ -905,14 +909,15 @@ def combine_scan(
     top_n: int = typer.Option(10, "--top", help="Show top N results"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
+    workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
 ) -> None:
     """Scan predefined filter combinations across all symbols and timeframes."""
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     setup_logging()
 
-    from tradingbot.backtest.engine import BacktestEngine
-    from tradingbot.data.storage import list_available_data, load_candles
-    from tradingbot.strategy.combined import CombinedStrategy
-    from tradingbot.strategy.filters.registry import parse_filter_string
+    from tradingbot.data.storage import list_available_data
 
     available = list_available_data(Path(data_dir))
     if not available:
@@ -923,65 +928,62 @@ def combine_scan(
     for item in available:
         symbol_timeframes.setdefault(item["symbol"], []).append(item["timeframe"])
 
-    total = len(COMBINE_TEMPLATES) * sum(len(tfs) for tfs in symbol_timeframes.values())
-    console.print(f"[bold]Scanning {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols × timeframes ({total} combinations)...[/bold]")
+    # Build job list
+    jobs: list[tuple[str, str, str, str, str]] = []
+    for sym, timeframes in symbol_timeframes.items():
+        for tf in timeframes:
+            for tmpl in COMBINE_TEMPLATES:
+                jobs.append((tmpl["label"], sym, tf, tmpl["entry"], tmpl["exit"]))
+
+    total = len(jobs)
+    cpu = multiprocessing.cpu_count() or 4
+    n_workers = workers if workers > 0 else min(cpu, 8)
+    abs_data_dir = str(Path(data_dir).resolve())
+    abs_config_dir = str(Path("config").resolve())
+    console.print(
+        f"[bold]Scanning {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols "
+        f"× timeframes ({total} combinations, {n_workers} workers)...[/bold]"
+    )
 
     results: list[dict] = []
     failures: list[str] = []
 
+    from tradingbot.backtest.parallel import _run_backtest
+
     with _progress_context() as progress:
         task = progress.add_task("Scanning combinations", total=total)
 
-        for sym, timeframes in symbol_timeframes.items():
-            for tf in timeframes:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+            futures = {
+                pool.submit(_run_backtest, label, sym, tf, abs_data_dir, balance, entry, exit_, abs_config_dir): (label, sym, tf)
+                for label, sym, tf, entry, exit_ in jobs
+            }
+            for future in as_completed(futures):
+                label, sym, tf = futures[future]
+                progress.update(task, description=f"{label} · {sym} {tf}")
                 try:
-                    df = load_candles(sym, tf, Path(data_dir))
-                except FileNotFoundError:
-                    progress.advance(task, advance=len(COMBINE_TEMPLATES))
-                    continue
-
-                for tmpl in COMBINE_TEMPLATES:
-                    progress.update(task, description=f"{tmpl['label']} · {sym} {tf}")
-
-                    try:
-                        entry_filters = parse_filter_string(tmpl["entry"], base_timeframe=tf)
-                        exit_filters = parse_filter_string(tmpl["exit"], base_timeframe=tf)
-
-                        # Pass symbol/timeframe to ML filters
-                        for f in entry_filters + exit_filters:
-                            if hasattr(f, "symbol"):
-                                f.symbol = sym
-                            if hasattr(f, "timeframe"):
-                                f.timeframe = tf
-
-                        strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
-                        strategy.symbols = [sym]
-                        strategy.timeframe = tf
-
-                        config = load_config(Path("config"), overrides={
-                            "trading": {"symbols": [sym], "timeframe": tf, "initial_balance": balance},
-                        })
-
-                        engine = BacktestEngine(strategy=strategy, config=config)
-                        report = engine.run({sym: df})
-
-                        results.append({
-                            "template": tmpl["label"],
-                            "entry": tmpl["entry"],
-                            "exit": tmpl["exit"],
-                            "symbol": sym,
-                            "timeframe": tf,
-                            "sharpe_ratio": report.sharpe_ratio,
-                            "total_return": report.total_return,
-                            "max_drawdown": report.max_drawdown,
-                            "win_rate": report.win_rate,
-                            "profit_factor": report.profit_factor,
-                            "total_trades": report.total_trades,
-                        })
-                    except Exception as e:
-                        failures.append(f"{tmpl['label']}/{sym}/{tf}: {e}")
-
+                    r = future.result(timeout=300)
+                except Exception as exc:
+                    failures.append(f"{label}/{sym}/{tf}: worker crashed: {exc}")
                     progress.advance(task)
+                    continue
+                if r.error:
+                    failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
+                else:
+                    results.append({
+                        "template": r.strategy,
+                        "entry": r.entry,
+                        "exit": r.exit,
+                        "symbol": r.symbol,
+                        "timeframe": r.timeframe,
+                        "sharpe_ratio": r.sharpe_ratio,
+                        "total_return": r.total_return,
+                        "max_drawdown": r.max_drawdown,
+                        "win_rate": r.win_rate,
+                        "profit_factor": r.profit_factor,
+                        "total_trades": r.total_trades,
+                    })
+                progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
         for f in failures[:5]:
