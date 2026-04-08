@@ -104,33 +104,32 @@ def _run_vectorized_batch(
     from tradingbot.strategy.combined import CombinedStrategy
     from tradingbot.strategy.filters.registry import parse_filter_string
 
-    # Compute union indicators once for all vectorizable jobs
-    all_filters = []
-    for _, entry, exit_ in jobs:
-        all_filters += parse_filter_string(entry, base_timeframe=timeframe)
-        all_filters += parse_filter_string(exit_, base_timeframe=timeframe)
-    for f in all_filters:
-        if hasattr(f, "symbol"):
-            f.symbol = symbol
-        if hasattr(f, "timeframe"):
-            f.timeframe = timeframe
+    # Parse filters once per job, reuse for both union and per-job backtest
+    def _set_symbol_tf(filters):
+        for f in filters:
+            if hasattr(f, "symbol"):
+                f.symbol = symbol
+            if hasattr(f, "timeframe"):
+                f.timeframe = timeframe
 
+    parsed_jobs: list[tuple[str, list, list, str, str]] = []
+    all_filters = []
+    for name, entry, exit_ in jobs:
+        entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
+        exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
+        _set_symbol_tf(entry_filters + exit_filters)
+        all_filters += entry_filters + exit_filters
+        parsed_jobs.append((name, entry_filters, exit_filters, entry, exit_))
+
+    # Compute union indicators once for all vectorizable jobs
     union_strategy = CombinedStrategy(entry_filters=all_filters, exit_filters=[])
     union_strategy.symbols = [symbol]
     union_strategy.timeframe = timeframe
     indicator_df = union_strategy.indicators(df.copy())
 
     results: list[ScanResult] = []
-    for name, entry, exit_ in jobs:
+    for name, entry_filters, exit_filters, entry, exit_ in parsed_jobs:
         try:
-            entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
-            exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
-            for f in entry_filters + exit_filters:
-                if hasattr(f, "symbol"):
-                    f.symbol = symbol
-                if hasattr(f, "timeframe"):
-                    f.timeframe = timeframe
-
             result = vectorized_backtest(
                 df=indicator_df,
                 entry_filters=entry_filters,

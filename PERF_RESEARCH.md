@@ -212,14 +212,18 @@ profit_factor = sum(wins) / abs(sum(losses))
 **해결 방법**: 거래 추출 루프(Step 3)에서 처리:
 ```python
 if atr_trailing_used:
-    # 포지션 보유 중 매 캔들에서:
-    highest_since_entry = max(high[entry_idx:current_idx+1])
+    # 포지션 진입 시:
+    highest_since_entry = high[entry_idx]
+
+    # 포지션 보유 중 매 캔들에서 (O(1) per iteration):
+    if high[current_idx] > highest_since_entry:
+        highest_since_entry = high[current_idx]
     trailing_stop = highest_since_entry - multiplier * atr[current_idx]
     if low[current_idx] <= trailing_stop:
         exit at trailing_stop
 ```
 
-이미 O(N) 루프이므로 추가 비용 미미. expanding max를 유지하면 O(1) per iteration.
+expanding max를 유지하므로 O(1) per iteration, 전체 O(N).
 
 ## LgbmProbFilter 처리
 
@@ -284,12 +288,19 @@ Sharpe 계산 시 차이 발생 가능 (거래 없는 기간의 수익률이 빠
 **해결**: 거래 기반 equity를 전체 타임라인으로 ffill하여 full equity curve 생성.
 
 ```python
-# 거래 발생 시점에 equity 기록 → 나머지는 forward fill
-equity_series = pd.Series(index=df.index, dtype=float)
-equity_series.iloc[0] = initial_balance
-for entry_idx, exit_idx, pnl in trades:
-    equity_series.iloc[exit_idx] = current_equity
-equity_series = equity_series.ffill()
+# 거래 발생 시점에 equity 기록 → 포지션 중 mark-to-market → 나머지 forward fill
+equity = np.full(len(df), np.nan)
+equity[0] = initial_balance
+current_equity = initial_balance
+for entry_idx, exit_idx, entry_p, exit_p, qty, e_fee, pnl in trades:
+    equity[entry_idx - 1] = current_equity  # flat equity before entry
+    for j in range(entry_idx, exit_idx + 1):
+        est_exit_fee = closes[j] * qty * fee_rate
+        equity[j] = current_equity + (closes[j] - entry_p) * qty - e_fee - est_exit_fee
+    current_equity += pnl
+    equity[exit_idx] = current_equity
+# Forward fill NaN gaps
+equity_series = pd.Series(equity, index=df.index).ffill()
 ```
 
 ## 등록된 전략(scan) 처리
