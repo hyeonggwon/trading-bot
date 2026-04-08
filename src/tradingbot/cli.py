@@ -189,6 +189,15 @@ def _resolve_strategy(
     """
     tmpl = _find_combine_template(strategy_name)
     if tmpl is not None:
+        # ML filters bind to a single symbol; reject multi-symbol + ML combos
+        has_ml = "lgbm_prob" in tmpl["entry"]
+        if has_ml and symbols and len(symbols) > 1:
+            console.print(
+                "[red]Combined templates with lgbm_prob cannot be used with "
+                "multiple symbols (ML model is per-symbol). "
+                "Use --symbol to specify a single symbol.[/red]"
+            )
+            raise typer.Exit(1)
         strategy = _build_combined_strategy(
             tmpl["entry"], tmpl["exit"], symbol, timeframe,
         )
@@ -234,6 +243,10 @@ def backtest(
     else:
         base_config = load_config(Path("config"))
         symbols = base_config.trading.symbols
+
+    if not symbols:
+        console.print("[red]No symbols found in config or --symbol flag.[/red]")
+        raise typer.Exit(1)
 
     config = load_config(Path("config"), overrides={
         "trading": {"symbols": symbols, "timeframe": timeframe, "initial_balance": balance},

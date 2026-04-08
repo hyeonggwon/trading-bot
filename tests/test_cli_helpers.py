@@ -100,6 +100,22 @@ class TestResolveStrategy:
         strategy, _, _ = _resolve_strategy("ML+TrendEMA", "BTC/KRW", "4h")
         assert strategy.timeframe == "4h"
 
+    def test_ml_template_rejects_multi_symbol(self):
+        from click.exceptions import Exit
+
+        with pytest.raises((SystemExit, Exit)):
+            _resolve_strategy(
+                "ML+TrendEMA", "BTC/KRW", "1h",
+                symbols=["BTC/KRW", "ETH/KRW"],
+            )
+
+    def test_non_ml_template_allows_multi_symbol(self):
+        strategy, _, _ = _resolve_strategy(
+            "Trend+RSI", "BTC/KRW", "1h",
+            symbols=["BTC/KRW", "ETH/KRW"],
+        )
+        assert strategy.symbols == ["BTC/KRW", "ETH/KRW"]
+
 
 class TestCombineTemplates:
     def test_all_templates_parse_successfully(self):
