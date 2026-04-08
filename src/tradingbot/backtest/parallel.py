@@ -37,6 +37,7 @@ def _run_batch(
 
     Each job is (strategy_name, entry, exit_).
     Data is loaded once and reused for all jobs in the batch.
+    Combined strategies share pre-computed indicators (computed once).
     """
     import logging
 
@@ -69,6 +70,31 @@ def _run_batch(
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
     })
 
+    # Pre-compute shared indicators for combined strategies (once per batch)
+    combined_jobs = [(n, e, x) for n, e, x in jobs if e]
+    precomputed = None
+    if combined_jobs:
+        from tradingbot.strategy.combined import CombinedStrategy
+        from tradingbot.strategy.filters.registry import parse_filter_string
+
+        all_filters = []
+        for _, entry, exit_ in combined_jobs:
+            all_filters += parse_filter_string(entry, base_timeframe=timeframe)
+            all_filters += parse_filter_string(exit_, base_timeframe=timeframe)
+        # Set symbol/timeframe on ML filters
+        for f in all_filters:
+            if hasattr(f, "symbol"):
+                f.symbol = symbol
+            if hasattr(f, "timeframe"):
+                f.timeframe = timeframe
+
+        union_strategy = CombinedStrategy(entry_filters=all_filters, exit_filters=[])
+        union_strategy.symbols = [symbol]
+        union_strategy.timeframe = timeframe
+        precomputed_df = union_strategy.indicators(df.copy())
+        precomputed_df.values.flags.writeable = False
+        precomputed = {symbol: precomputed_df}
+
     results: list[ScanResult] = []
     for strategy_name, entry, exit_ in jobs:
         try:
@@ -93,7 +119,11 @@ def _run_batch(
             strategy.timeframe = timeframe
 
             engine = BacktestEngine(strategy=strategy, config=config)
-            report = engine.run({symbol: df.copy()})
+            # Pass shared indicators for combined strategies, None for registered
+            report = engine.run(
+                {symbol: df.copy()},
+                precomputed_indicators=precomputed if entry else None,
+            )
 
             results.append(ScanResult(
                 strategy=strategy_name, symbol=symbol, timeframe=timeframe,

@@ -60,7 +60,11 @@ class BacktestEngine:
         self._entry_orders: dict[str, Order] = {}
         self._last_known_prices: dict[str, float] = {}
 
-    def run(self, data: dict[str, pd.DataFrame]) -> BacktestReport:
+    def run(
+        self,
+        data: dict[str, pd.DataFrame],
+        precomputed_indicators: dict[str, pd.DataFrame] | None = None,
+    ) -> BacktestReport:
         """Run backtest on historical data.
 
         Args:
@@ -134,8 +138,14 @@ class BacktestEngine:
         use_precompute = self.strategy.supports_precompute
         indicator_data: dict[str, pd.DataFrame] = {}
         if use_precompute:
-            for sym, df in symbol_data.items():
-                indicator_data[sym] = self.strategy.indicators(df.copy())
+            if precomputed_indicators:
+                # Use externally pre-computed indicators (shared across strategies)
+                indicator_data = precomputed_indicators
+            else:
+                for sym, df in symbol_data.items():
+                    indicator_data[sym] = self.strategy.indicators(df.copy())
+                    # Freeze to prevent accidental mutation — strategies only read
+                    indicator_data[sym].values.flags.writeable = False
 
         # Track per-symbol candle index (how many candles have been seen)
         symbol_indices: dict[str, int] = {sym: 0 for sym in symbol_data}
@@ -145,9 +155,21 @@ class BacktestEngine:
                 sym: set(df.columns) for sym, df in symbol_data.items()
             }
 
-        # Pre-build timestamp sets for O(1) membership checks
-        symbol_ts_sets: dict[str, set] = {
-            sym: set(df.index) for sym, df in symbol_data.items()
+        # Pre-build timestamp→index dicts and numpy arrays for fast lookup
+        symbol_ts_to_idx: dict[str, dict] = {
+            sym: {ts: i for i, ts in enumerate(df.index)}
+            for sym, df in symbol_data.items()
+        }
+        # Extract OHLCV as numpy arrays — avoids pandas iloc overhead in hot loop
+        ohlcv_arrays: dict[str, dict] = {
+            sym: {
+                "open": df["open"].values,
+                "high": df["high"].values,
+                "low": df["low"].values,
+                "close": df["close"].values,
+                "volume": df["volume"].values,
+            }
+            for sym, df in symbol_data.items()
         }
 
         # Main loop: iterate through unified timeline
@@ -157,26 +179,23 @@ class BacktestEngine:
 
             # Phase 1: Update indices and process fills/stop losses per symbol
             for sym in list(symbol_data.keys()):
-                if ts not in symbol_ts_sets[sym]:
+                idx = symbol_ts_to_idx[sym].get(ts)
+                if idx is None:
                     continue
 
-                df = symbol_data[sym]
-
-                # Find the position of this timestamp in the symbol's data
-                idx = df.index.get_loc(ts)
                 symbol_indices[sym] = idx
 
                 if idx == 0:
                     continue  # Need at least 1 prior candle
 
-                fill_row = df.iloc[idx]
+                arrays = ohlcv_arrays[sym]
                 fill_candle = Candle(
                     timestamp=ts.to_pydatetime(),
-                    open=float(fill_row["open"]),
-                    high=float(fill_row["high"]),
-                    low=float(fill_row["low"]),
-                    close=float(fill_row["close"]),
-                    volume=float(fill_row["volume"]),
+                    open=float(arrays["open"][idx]),
+                    high=float(arrays["high"][idx]),
+                    low=float(arrays["low"][idx]),
+                    close=float(arrays["close"][idx]),
+                    volume=float(arrays["volume"][idx]),
                 )
                 fill_candles[sym] = fill_candle
 
@@ -199,7 +218,8 @@ class BacktestEngine:
 
                 # Visible data: candles [0..idx-1] (anti-lookahead)
                 if use_precompute:
-                    visible_df = indicator_data[sym].iloc[:idx].copy()
+                    # Zero-copy view — anti-lookahead enforced by slice bounds
+                    visible_df = indicator_data[sym].iloc[:idx]
                 else:
                     visible_df = symbol_data[sym].iloc[:idx].copy()
                     visible_df = self.strategy.indicators(visible_df)
@@ -226,8 +246,9 @@ class BacktestEngine:
 
             # Phase 3: Update last known prices and record portfolio equity
             for sym in symbol_data:
-                if ts in symbol_ts_sets[sym]:
-                    self._last_known_prices[sym] = float(symbol_data[sym].loc[ts, "close"])
+                idx = symbol_ts_to_idx[sym].get(ts)
+                if idx is not None:
+                    self._last_known_prices[sym] = float(ohlcv_arrays[sym]["close"][idx])
 
             equity = self._calculate_equity(self._last_known_prices)
             self.risk_manager.update_peak_equity(equity)
