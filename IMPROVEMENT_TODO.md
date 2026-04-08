@@ -83,6 +83,16 @@ ML veto(threshold 0.35) 조합은 거래 多 + 수익 거의 0 → threshold 조
 - [ ] Docker 컨테이너 재배포
 - [ ] Paper trading 1주 모니터링
 
+### Task D: 벡터화 스크리닝 엔진 (scan/combine-scan 고속화)
+
+- [ ] **scan/combine-scan 전용 간소화 엔진 추가**
+  - 시그널만 벡터 계산 (pandas boolean mask), 거래 시뮬레이션은 간단히
+  - 기존 엔진은 그대로 유지 (정밀 백테스트, live/paper용)
+  - 상위 N개 결과만 기존 엔진으로 재검증
+  - 예상: combine-scan 12~15분 → **1~2분**
+- [ ] 벡터화 가능 필터: 27/31개 (AtrTrailingExit, LgbmProb 제외)
+- [ ] 벡터화 불가 필터는 기존 엔진 fallback
+
 ### 보류
 
 - [ ] **ML 포지션 사이즈 부스터 전환** (선택)

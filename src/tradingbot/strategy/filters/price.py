@@ -42,6 +42,16 @@ class PriceBreakoutFilter(BaseFilter):
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] > df[self._col_high()].shift(1)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
 
 class EmaAboveFilter(BaseFilter):
     """Price above EMA → confirms uptrend."""
@@ -78,6 +88,16 @@ class EmaAboveFilter(BaseFilter):
         if pd.isna(curr_ema):
             return False
         return curr_close < curr_ema
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] > df[f"ema_{self.period}"]
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] < df[f"ema_{self.period}"]
 
 
 class BbUpperBreakFilter(BaseFilter):
@@ -121,6 +141,18 @@ class BbUpperBreakFilter(BaseFilter):
             return False
         return curr_close < curr_mid
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        col = f"bb_upper_{self.period}_{self.std}"
+        return (df["close"].shift(1) <= df[col].shift(1)) & (df["close"] > df[col])
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        mid_col = f"bb_middle_{self.period}_{self.std}"
+        return df["close"] < df[mid_col]
+
 
 class EmaCrossUpFilter(BaseFilter):
     """Fast EMA crosses above slow EMA → entry signal."""
@@ -153,6 +185,18 @@ class EmaCrossUpFilter(BaseFilter):
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        fast = df[f"ema_{self.fast}"]
+        slow = df[f"ema_{self.slow}"]
+        return (fast.shift(1) <= slow.shift(1)) & (fast > slow)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
 
 
 class DonchianBreakFilter(BaseFilter):
@@ -192,3 +236,13 @@ class DonchianBreakFilter(BaseFilter):
         if pd.isna(curr_mid):
             return False
         return curr_close < curr_mid
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] > df[f"dc_upper_{self.period}"].shift(1)
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df["close"] < df[f"dc_middle_{self.period}"]

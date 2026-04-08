@@ -44,6 +44,16 @@ class VolumeSpikeFilter(BaseFilter):
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df[self._col_ratio()] >= self.threshold
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
 
 class ObvRisingFilter(BaseFilter):
     """OBV above its SMA → accumulation in progress."""
@@ -86,6 +96,16 @@ class ObvRisingFilter(BaseFilter):
             return False
         return obv < sma
 
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df["obv"] > df[self._col_sma()]
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df["obv"] < df[self._col_sma()]
+
 
 class MfiConfirmFilter(BaseFilter):
     """MFI above threshold → money flow confirms entry."""
@@ -121,3 +141,13 @@ class MfiConfirmFilter(BaseFilter):
         if pd.isna(val):
             return False
         return val < (100 - self.threshold)
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"mfi_{self.period}"] > self.threshold
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"mfi_{self.period}"] < (100 - self.threshold)

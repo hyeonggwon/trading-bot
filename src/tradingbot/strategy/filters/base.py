@@ -39,3 +39,18 @@ class BaseFilter(ABC):
                          Most filters ignore this parameter.
         """
         ...
+
+    # -- Vectorized interface (for scan/combine-scan screening) --
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        """Return boolean Series for entry condition across all rows."""
+        raise NotImplementedError
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        """Return boolean Series for exit condition across all rows."""
+        raise NotImplementedError
+
+    @property
+    def supports_vectorized(self) -> bool:
+        """Whether this filter supports vectorized evaluation."""
+        return False
