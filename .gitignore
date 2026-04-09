@@ -44,3 +44,9 @@ Thumbs.db
 htmlcov/
 .pytest_cache/
 .mypy_cache/
+
+# Markdown
+SCAN_RESULT.md
+STRATEGY_SELECTION.md
+TROUBLE_SHOOTING.md
+
