@@ -9,15 +9,97 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 - **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생, 벡터화 스크리닝 엔진으로 combine-scan 1152조합 3분대
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **7가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파, LightGBM ML
-- **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹 + Rich 프로그레스바
-- **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 48개 템플릿, 5가지 역할 태깅, AND 진입 / OR 청산)
-- **ML 전략 (LightGBM)** — 15개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징, 병렬 학습
+- **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹
+- **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 48개 템플릿, 5가지 역할 태깅)
+- **ML 전략 (LightGBM)** — 15개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
-- **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결 + 쿨다운
-- **페이퍼 트레이딩** — 실시간 데이터 + 모의 체결
-- **실매매** — Upbit API 연동, 주문 관리, 안전 장치 (일일 손실 한도, 주문 크기 제한)
+- **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결
+- **페이퍼/실매매** — 모의 체결 및 Upbit API 연동 실매매 (주문 관리, 안전 장치)
 - **웹 대시보드** — Streamlit 기반 실시간 모니터링 + 백테스트 시각화
 - **텔레그램 알림** — 시그널, 체결, 에러 실시간 알림
+
+## 아키텍처
+
+### 전체 구조
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         CLI (typer)                         │
+│  download │ backtest │ scan │ optimize │ paper │ live │ ... │
+└─────┬───────────┬───────────┬───────────┬───────────┬───────┘
+      │           │           │           │           │
+      ▼           ▼           ▼           ▼           ▼
+┌──────────┐ ┌──────────────────────┐ ┌──────────────────────┐
+│   Data   │ │    Backtest Engine   │ │     Live Engine      │
+│ Layer    │ │                      │ │                      │
+│          │ │ ┌──────────────────┐ │ │ ┌──────────────────┐ │
+│ Fetcher  │ │ │  Candle-by-     │ │ │ │  Async Polling   │ │
+│ (CCXT)   │ │ │  Candle Loop    │ │ │ │  Loop            │ │
+│          │ │ │  (anti-look-    │ │ │ │                  │ │
+│ Storage  │ │ │   ahead)        │ │ │ │  Order Manager   │ │
+│ (Parquet)│ │ ├──────────────────┤ │ │ │  State Persist   │ │
+│          │ │ │  Vectorized     │ │ │ └──────────────────┘ │
+│ Indica-  │ │ │  Engine (scan)  │ │ │                      │
+│ tors(19) │ │ ├──────────────────┤ │ │ ┌──────────────────┐ │
+│          │ │ │  Optimizer      │ │ │ │  Notifications   │ │
+│          │ │ │  Walk-Forward   │ │ │ │  (Telegram)      │ │
+│          │ │ │  Parallel       │ │ │ └──────────────────┘ │
+└──────────┘ └──────────┬───────────┘ └──────────┬───────────┘
+                        │                        │
+              ┌─────────▼────────────────────────▼──────────┐
+              │              Strategy Layer                  │
+              │                                             │
+              │  ┌───────────┐  ┌────────────┐  ┌────────┐ │
+              │  │  7 Built- │  │  Combined   │  │  LGBM  │ │
+              │  │  in       │  │  Strategy   │  │  ML    │ │
+              │  │  Strats   │  │  (31 Fil-   │  │  Model │ │
+              │  │           │  │   ters)     │  │        │ │
+              │  └───────────┘  └────────────┘  └────────┘ │
+              └─────────────────────┬───────────────────────┘
+                                    │
+              ┌─────────────────────▼───────────────────────┐
+              │           Infrastructure Layer               │
+              │                                             │
+              │  ┌──────────┐  ┌──────────┐  ┌───────────┐ │
+              │  │ Exchange  │  │   Risk   │  │ Dashboard │ │
+              │  │ (CCXT /   │  │ Manager  │  │(Streamlit)│ │
+              │  │  Paper /  │  │ + Valid- │  │           │ │
+              │  │  WS)      │  │  ators   │  │           │ │
+              │  └──────────┘  └──────────┘  └───────────┘ │
+              └─────────────────────────────────────────────┘
+```
+
+### Anti-Lookahead 백테스트 루프 (핵심 원칙)
+
+백테스트 엔진은 캔들을 하나씩 순회하며, 전략에는 **확정된(닫힌) 캔들만** 전달합니다. 현재 미완성 캔들이나 미래 데이터에 접근할 수 없으며, 이는 `backtest/engine.py`에서 구조적으로 강제됩니다.
+
+```
+사전 계산: strategy.indicators(full_df) per symbol  ← O(N), 1회
+
+통합 타임라인 구성 (전 심볼 타임스탬프)
+
+각 타임스탬프 ts에 대해:
+  Phase 1 — 체결:    fill_candle = symbol_candles[idx]
+                     손절 확인, 대기 주문 체결
+  Phase 2 — 전략:    visible_df = indicator_df[0..idx-1]  ← 과거만 참조
+                     should_exit → should_entry
+                     리스크 매니저 검증 → fill_candle의 시가 + 슬리피지로 체결
+  Phase 3 — 기록:    가격 갱신, 자산 스냅샷 저장
+```
+
+### 모듈 의존 관계
+
+```
+cli.py ─┬─→ data/{fetcher, storage, indicators}
+        ├─→ backtest/{engine, vectorized, optimizer, walk_forward, parallel}
+        ├─→ strategy/{base, registry, combined, lgbm_strategy, examples/*, filters/*}
+        ├─→ live/{engine, state, order_manager}
+        ├─→ exchange/{ccxt_exchange, paper, ws_client}
+        ├─→ risk/{manager, validators}
+        ├─→ ml/{trainer, features, targets, walk_forward, parallel}
+        ├─→ notifications/telegram
+        └─→ dashboard/app
+```
 
 ## 설치
 
@@ -60,30 +142,19 @@ tradingbot backtest --strategy sma_cross --symbol BTC/KRW
 # 기간/잔고 지정
 tradingbot backtest --strategy sma_cross --symbol BTC/KRW \
   --start 2024-06-01 --end 2024-12-31 --balance 5000000
-
-# 다른 전략들
-tradingbot backtest --strategy rsi_mean_reversion
-tradingbot backtest --strategy macd_momentum
-tradingbot backtest --strategy bollinger_breakout
 ```
 
-### 3. 전략 최적화
+### 3. 전략 최적화 & Walk-Forward 검증
 
 ```bash
-# 기본 파라미터 공간으로 최적화
+# 그리드 서치 최적화
 tradingbot optimize --strategy sma_cross --symbol BTC/KRW --top 10
 
 # 커스텀 파라미터 그리드
 tradingbot optimize --strategy sma_cross --symbol BTC/KRW \
   --param-grid '{"fast_period": [5, 10, 15, 20], "slow_period": [30, 40, 50, 60]}'
-```
 
-### 4. Walk-Forward 검증
-
-오버피팅 여부를 확인하는 가장 중요한 단계.
-
-```bash
-# 3개월 훈련 → 1개월 테스트 롤링
+# Walk-Forward 검증 (3개월 훈련 → 1개월 테스트 롤링)
 tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW \
   --train-months 3 --test-months 1
 ```
@@ -93,21 +164,17 @@ tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW \
 | WF Efficiency | > 50% | 파라미터가 미래 데이터에서도 유효 |
 | Overfitting Ratio | < 50% | 과최적화되지 않음 |
 
-### 4-1. 전략 자동 스캔
-
-모든 전략 × 심볼 × 타임프레임 조합을 자동으로 백테스트하고 랭킹:
+### 4. 전략 자동 스캔
 
 ```bash
-# Sharpe 기준 상위 15개 조합 찾기
+# 전 전략 × 심볼 × 타임프레임 조합 랭킹
 tradingbot scan --top 15
 
 # 수익률 기준 정렬
 tradingbot scan --sort-by total_return --top 10
 ```
 
-### 4-2. 필터 조합 (코드 없이 전략 만들기)
-
-여러 필터를 레고처럼 조합하여 커스텀 전략을 만들 수 있습니다:
+### 5. 필터 조합 (코드 없이 전략 만들기)
 
 ```bash
 # 추세 상승 + RSI 과매도 진입 → RSI 과매수 청산
@@ -116,42 +183,31 @@ tradingbot combine \
   --exit "rsi_overbought:70" \
   --symbol BTC/KRW
 
-# 거래량 급등 + 가격 돌파 → EMA 이탈 청산
-tradingbot combine \
-  --entry "volume_spike:2.5 + price_breakout:10" \
-  --exit "ema_above:20" \
-  --symbol BTC/KRW
-
-# 48개 사전정의 조합 자동 스캔
-tradingbot combine-scan --top 10
-
 # ML + Rule 조합 (ML 모델이 veto 필터 역할)
 tradingbot combine \
   --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" \
   --exit "rsi_overbought:70" \
   --symbol BTC/KRW
+
+# 48개 사전정의 조합 자동 스캔
+tradingbot combine-scan --top 10
 ```
 
 **사용 가능한 필터 (31종, 역할별 분류):**
 
 | 역할 | 필터 | 예시 |
 |------|------|------|
-| **Entry Signal** | `rsi_oversold`, `macd_cross_up`, `stoch_oversold`, `cci_oversold`, `roc_positive`, `mfi_oversold`, `ema_cross_up`, `donchian_break`, `price_breakout`, `bb_upper_break`, `lgbm_prob` | `rsi_oversold:30`, `lgbm_prob:0.35` |
-| **Trend Filter** | `trend_up`, `trend_down`, `ema_above`, `adx_strong`, `ichimoku_above`, `aroon_up` | `adx_strong:25`, `ichimoku_above` |
-| **Volatility Filter** | `atr_breakout`, `keltner_break`, `bb_squeeze`, `bb_bandwidth_low` | `atr_breakout:14:2.0`, `bb_squeeze` |
-| **Volume Confirm** | `volume_spike`, `obv_rising`, `mfi_confirm` | `volume_spike:2.5`, `obv_rising:20` |
-| **Exit Signal** | `rsi_overbought`, `stoch_overbought`, `cci_overbought`, `mfi_overbought`, `zscore_extreme`, `pct_from_ma_exit`, `atr_trailing_exit` | `atr_trailing_exit:14:2.5` |
+| **Entry** | `rsi_oversold`, `macd_cross_up`, `stoch_oversold`, `cci_oversold`, `roc_positive`, `mfi_oversold`, `ema_cross_up`, `donchian_break`, `price_breakout`, `bb_upper_break`, `lgbm_prob` | `rsi_oversold:30` |
+| **Trend** | `trend_up`, `trend_down`, `ema_above`, `adx_strong`, `ichimoku_above`, `aroon_up` | `adx_strong:25` |
+| **Volatility** | `atr_breakout`, `keltner_break`, `bb_squeeze`, `bb_bandwidth_low` | `atr_breakout:14:2.0` |
+| **Volume** | `volume_spike`, `obv_rising`, `mfi_confirm` | `volume_spike:2.5` |
+| **Exit** | `rsi_overbought`, `stoch_overbought`, `cci_overbought`, `mfi_overbought`, `zscore_extreme`, `pct_from_ma_exit`, `atr_trailing_exit` | `atr_trailing_exit:14:2.5` |
 
-조합 규칙: `Entry + Trend Filter + Volume Confirm → Exit`
-진입: 모든 필터 AND 충족 시 매수 / 청산: 하나라도 OR 충족 시 매도
-`lgbm_prob` 필터 사용 시 ML 확률 기반 Half-Kelly 포지션 사이징 자동 적용
+조합 규칙: 진입은 모든 필터 AND 충족 시 매수 / 청산은 하나라도 OR 충족 시 매도
 
-### 4-3. ML 전략 (LightGBM)
-
-기존 19개 인디케이터 값을 피처로 사용하는 LightGBM 메타 모델:
+### 6. ML 전략 (LightGBM)
 
 ```bash
-# ML 의존성 설치
 pip install -e ".[ml]"
 
 # 모델 학습 (Walk-Forward 검증 포함)
@@ -160,65 +216,40 @@ tradingbot ml-train --symbol BTC/KRW --timeframe 1h --train-months 3 --test-mont
 # ML 전략으로 백테스트
 tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h
 
-# 모든 다운로드된 심볼×타임프레임 일괄 학습
-tradingbot ml-train-all
-
-# 병렬 학습 (워커 수 지정, 0=자동)
+# 전체 심볼×타임프레임 일괄 병렬 학습
 tradingbot ml-train-all --workers 4
-
-# 특정 타임프레임만 학습
-tradingbot ml-train-all --timeframe 1h
-
-# 개별 심볼 학습
-tradingbot ml-train --symbol ETH/KRW --timeframe 1h
 ```
 
-기존 전략과 동일하게 `--strategy lgbm`으로도 실행 가능:
-```bash
-tradingbot backtest --strategy lgbm --symbol BTC/KRW
-tradingbot paper --strategy lgbm --symbol BTC/KRW
-```
-
-### 5. 페이퍼 트레이딩
+### 7. 페이퍼 트레이딩
 
 ```bash
-# 실시간 데이터로 모의 매매 (Ctrl+C로 중지)
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --balance 1000000
 
-# WebSocket 모드 (Upbit 실시간 가격, REST API 호출 최소화)
+# WebSocket 모드 (REST API 호출 최소화)
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --websocket
 
-# Combined 템플릿 이름으로 실행
-tradingbot paper --strategy ML+TrendEMA --symbol BTC/KRW --websocket
-
-# 커스텀 필터 조합으로 실행
-tradingbot paper --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" \
+# 필터 조합으로 실행
+tradingbot paper --entry "trend_up:4 + rsi_oversold:30" \
   --exit "rsi_overbought:70" --symbol BTC/KRW
 
-# 다른 터미널에서 상태 확인
+# 상태 확인
 tradingbot status
 ```
 
-### 6. 실매매
+### 8. 실매매
 
 ```bash
-# 1) API 키 설정
+# API 키 설정
 cp .env.example .env
-# .env 파일 편집: UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY 입력
+# .env 편집: UPBIT_ACCESS_KEY, UPBIT_SECRET_KEY 입력
 
-# 2) 잔고 확인
-tradingbot balance
+tradingbot balance  # 잔고 확인
 
-# 3) 실매매 시작 (소액부터)
 tradingbot live --strategy sma_cross --symbol BTC/KRW \
   --max-order 100000 --daily-loss-limit 50000
 
-# Combined 템플릿으로 실매매
+# WebSocket + Combined 템플릿
 tradingbot live --strategy ML+ADXTrend --symbol BTC/KRW \
-  --max-order 100000 --daily-loss-limit 50000 --websocket
-
-# WebSocket 모드로 실매매 (실시간 가격, REST 호출 최소화)
-tradingbot live --strategy sma_cross --symbol BTC/KRW \
   --max-order 100000 --daily-loss-limit 50000 --websocket
 ```
 
@@ -229,7 +260,7 @@ tradingbot live --strategy sma_cross --symbol BTC/KRW \
 → 페이퍼 트레이딩 (1~2주) → 소액 실매매 (10만원) → 단계적 증액
 ```
 
-백테스트에서 **Sharpe > 1.5, Max Drawdown < 15%** 인 전략을 찾은 후 페이퍼로 넘어가는 것을 권장합니다.
+**Sharpe > 1.5, Max Drawdown < 15%** 인 전략을 찾은 후 페이퍼로 넘어가는 것을 권장합니다.
 
 ## 내장 전략
 
@@ -239,9 +270,9 @@ tradingbot live --strategy sma_cross --symbol BTC/KRW \
 | `rsi_mean_reversion` | RSI 과매도 진입 / 과매수 청산 | `rsi_period`, `oversold`, `overbought` |
 | `macd_momentum` | MACD 히스토그램 제로크로스 | `fast`, `slow`, `signal` |
 | `bollinger_breakout` | 볼린저밴드 상단 돌파 / 중간밴드 이탈 | `period`, `std` |
-| `multi_tf` | 상위 TF 추세 필터 + 하위 TF RSI 진입 | `higher_tf_factor`, `trend_sma_period`, `rsi_period` |
-| `volume_breakout` | 거래량 급등 + 최근 고점 돌파 | `volume_spike_threshold`, `price_lookback`, `exit_ema_period` |
-| `lgbm` | LightGBM ML 메타 모델 (15 피처 → 확률 → Half-Kelly) | `entry_threshold`, `exit_threshold` |
+| `multi_tf` | 상위 TF 추세 필터 + 하위 TF RSI 진입 | `higher_tf_factor`, `trend_sma_period` |
+| `volume_breakout` | 거래량 급등 + 최근 고점 돌파 | `volume_spike_threshold`, `price_lookback` |
+| `lgbm` | LightGBM ML 메타 모델 (15 피처 → Half-Kelly) | `entry_threshold`, `exit_threshold` |
 
 ## 커스텀 전략 작성
 
@@ -258,12 +289,10 @@ class MyStrategy(Strategy):
     symbols = ["BTC/KRW"]
 
     def indicators(self, df):
-        # 지표 컬럼 추가
         df["sma_20"] = df["close"].rolling(20).mean()
         return df
 
     def should_entry(self, df, symbol):
-        # 진입 조건 → Signal 반환 또는 None
         if df["close"].iloc[-1] > df["sma_20"].iloc[-1]:
             return Signal(
                 timestamp=df.index[-1].to_pydatetime(),
@@ -274,7 +303,6 @@ class MyStrategy(Strategy):
         return None
 
     def should_exit(self, df, symbol, position):
-        # 청산 조건 → Signal 반환 또는 None
         if df["close"].iloc[-1] < df["sma_20"].iloc[-1]:
             return Signal(
                 timestamp=df.index[-1].to_pydatetime(),
@@ -285,20 +313,95 @@ class MyStrategy(Strategy):
         return None
 ```
 
-## 텔레그램 알림 설정
-
-`.env` 파일에 추가:
+## 프로젝트 구조
 
 ```
-TELEGRAM_BOT_TOKEN=your_bot_token
-TELEGRAM_CHAT_ID=your_chat_id
+trading-bot/
+├── pyproject.toml                    # 패키지 메타데이터 & 의존성
+├── Dockerfile / docker-compose.yml   # 컨테이너 배포
+├── config/default.yaml               # 기본 설정 (심볼, 리스크, 수수료)
+├── strategies/                       # 사용자 정의 전략 디렉토리
+│
+├── src/tradingbot/                   # 메인 패키지 (66개 모듈, ~7,400 라인)
+│   ├── cli.py                        # CLI 진입점 (typer)
+│   ├── config.py                     # Pydantic 설정 로더
+│   │
+│   ├── core/                         # 도메인 모델
+│   │   ├── models.py                 #   Candle, Signal, Order, Trade, Position
+│   │   ├── enums.py                  #   OrderSide, SignalType, PositionSide
+│   │   └── events.py                 #   이벤트 시스템
+│   │
+│   ├── data/                         # 데이터 레이어
+│   │   ├── fetcher.py                #   CCXT 기반 OHLCV 다운로드
+│   │   ├── storage.py                #   Parquet 저장/로드/병합
+│   │   └── indicators.py             #   기술적 지표 19종
+│   │
+│   ├── strategy/                     # 전략 프레임워크
+│   │   ├── base.py                   #   Strategy ABC (indicators, entry, exit)
+│   │   ├── registry.py               #   전략 레지스트리 (동적 로딩)
+│   │   ├── combined.py               #   필터 조합 전략 (AND 진입 / OR 청산)
+│   │   ├── lgbm_strategy.py          #   LightGBM ML 전략
+│   │   ├── examples/                 #   내장 전략 7종
+│   │   │   ├── sma_cross.py
+│   │   │   ├── rsi_mean_reversion.py
+│   │   │   ├── macd_momentum.py
+│   │   │   ├── bollinger_breakout.py
+│   │   │   ├── volume_breakout.py
+│   │   │   └── multi_timeframe.py
+│   │   └── filters/                  #   재사용 필터 31종
+│   │       ├── base.py               #     BaseFilter ABC + 역할 태깅
+│   │       ├── registry.py           #     48개 조합 템플릿
+│   │       ├── trend.py              #     TrendUp, AdxStrong, IchimokuAbove ...
+│   │       ├── momentum.py           #     RsiOversold, MacdCrossUp, StochOversold ...
+│   │       ├── price.py              #     PriceBreakout, EmaAbove, DonchianBreak ...
+│   │       ├── volatility.py         #     AtrBreakout, BbSqueeze, KeltnerBreak ...
+│   │       ├── volume.py             #     VolumeSpike, ObvRising, MfiConfirm
+│   │       ├── exit.py               #     AtrTrailingExit, ZscoreExtreme ...
+│   │       └── ml.py                 #     LgbmProbFilter (ML veto + Half-Kelly)
+│   │
+│   ├── backtest/                     # 백테스트 엔진
+│   │   ├── engine.py                 #   캔들별 루프 (anti-lookahead 핵심)
+│   │   ├── vectorized.py             #   벡터화 스크리닝 (~100x 빠름)
+│   │   ├── simulator.py              #   주문 체결 시뮬레이션 (슬리피지, 수수료)
+│   │   ├── report.py                 #   성과 지표 (Sharpe, Sortino, MDD, ...)
+│   │   ├── optimizer.py              #   그리드 서치 최적화
+│   │   ├── walk_forward.py           #   Walk-Forward 검증
+│   │   └── parallel.py               #   병렬 백테스트 워커
+│   │
+│   ├── ml/                           # 머신러닝
+│   │   ├── features.py               #   피처 엔지니어링 (15개 피처)
+│   │   ├── targets.py                #   4h 순방향 수익률 이진 분류 타겟
+│   │   ├── trainer.py                #   LightGBM 학습/평가/저장
+│   │   ├── walk_forward.py           #   퍼지드 확장 윈도우 + 엠바고
+│   │   └── parallel.py               #   병렬 학습 워커
+│   │
+│   ├── exchange/                     # 거래소 추상화
+│   │   ├── base.py                   #   BaseExchange ABC
+│   │   ├── ccxt_exchange.py          #   Upbit CCXT (재시도 + 레이트 리밋)
+│   │   ├── paper.py                  #   페이퍼 트레이딩 (모의 체결)
+│   │   └── ws_client.py              #   Upbit WebSocket (실시간, 자동 재연결)
+│   │
+│   ├── live/                         # 라이브 트레이딩
+│   │   ├── engine.py                 #   비동기 폴링 루프
+│   │   ├── order_manager.py          #   주문 수명주기 관리
+│   │   └── state.py                  #   JSON 상태 영속화 (크래시 복구)
+│   │
+│   ├── risk/                         # 리스크 관리
+│   │   ├── manager.py                #   포지션 사이징, 드로다운 서킷브레이커
+│   │   └── validators.py             #   최대 주문, 일일 손실 한도
+│   │
+│   ├── notifications/telegram.py     # 텔레그램 알림
+│   ├── dashboard/app.py              # Streamlit 웹 대시보드
+│   └── utils/                        # 유틸리티
+│       ├── logging.py                #   콘솔 + JSON 파일 로테이션
+│       └── time.py                   #   타임존/날짜 파싱
+│
+└── tests/                            # 테스트 (212개, 17개 모듈)
 ```
-
-설정하면 paper/live 모드에서 시그널, 체결, 에러를 자동으로 알림받습니다.
 
 ## 설정
 
-`config/default.yaml`에서 기본 설정을 변경할 수 있습니다:
+`config/default.yaml`:
 
 ```yaml
 exchange:
@@ -307,12 +410,10 @@ exchange:
 
 trading:
   symbols:
-    # 대형
     - BTC/KRW
     - ETH/KRW
     - XRP/KRW
     - SOL/KRW
-    # 중형
     - DOGE/KRW
     - ADA/KRW
     - AVAX/KRW
@@ -322,102 +423,42 @@ trading:
 
 risk:
   max_position_size_pct: 0.1      # 포지션당 최대 10%
-  max_open_positions: 5           # 8종목 중 최대 5개 동시
-  max_drawdown_pct: 0.20           # 20% 드로다운 서킷브레이커
-  default_stop_loss_pct: 0.02      # 2% 손절
-  risk_per_trade_pct: 0.01         # 거래당 1% 리스크
+  max_open_positions: 5           # 최대 5개 동시
+  max_drawdown_pct: 0.20          # 20% 드로다운 서킷브레이커
+  default_stop_loss_pct: 0.02     # 2% 손절
+  risk_per_trade_pct: 0.01        # 거래당 1% 리스크
 
 backtest:
-  fee_rate: 0.0005                 # Upbit 0.05%
-  slippage_pct: 0.001              # 0.1% 슬리피지
+  fee_rate: 0.0005                # Upbit 0.05%
+  slippage_pct: 0.001             # 0.1% 슬리피지
 ```
+
+텔레그램 알림: `.env`에 `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID` 추가.
 
 ## Docker 배포
 
 ```bash
-# 빌드
 docker build -t trading-bot .
-
-# 페이퍼 트레이딩 시작
-docker-compose up -d
-
-# 로그 확인
-docker-compose logs -f
-
-# 실매매로 전환 (docker-compose.yml의 command 주석 해제 후)
-docker-compose up -d
-
-# 중지
-docker-compose down
-
-# 상태 확인
-docker-compose ps
+docker-compose up -d        # 페이퍼 트레이딩 시작
+docker-compose logs -f       # 로그 확인
+docker-compose down          # 중지
 ```
 
-`docker-compose.yml`에서 `command`를 변경하여 전략/심볼/모드를 조정합니다:
+`docker-compose.yml`에서 `command`를 변경하여 전략/모드 조정:
 ```yaml
-# 페이퍼 트레이딩 (기본)
 command: ["tradingbot", "paper", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
-
-# Combined 템플릿으로 페이퍼 트레이딩
-command: ["tradingbot", "paper", "--strategy", "ML+TrendEMA", "--symbol", "BTC/KRW", "--websocket"]
-
-# 실매매
 command: ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
 ```
 
 ## 웹 대시보드
 
 ```bash
-# 대시보드 의존성 설치
 pip install -e ".[dashboard]"
-
-# 대시보드 실행
-tradingbot dashboard
+tradingbot dashboard          # http://localhost:8501
 ```
-
-브라우저에서 http://localhost:8501 접속. 두 가지 모드:
 
 - **Live Monitor**: state.json 기반 실시간 equity curve, 오픈 포지션, 자동 새로고침
 - **Backtest Viewer**: 전략/심볼 선택 → 백테스트 실행 → equity chart + 드로다운 + 거래 내역
-
-## 개발
-
-```bash
-# 테스트 실행
-pytest tests/ -v
-
-# 린트
-ruff check src/ tests/
-
-# 포맷팅
-ruff format src/ tests/
-
-# 타입 체크
-mypy src/
-```
-
-## 프로젝트 구조
-
-```
-trading-bot/
-├── Dockerfile              # 컨테이너 빌드
-├── docker-compose.yml      # 서비스 오케스트레이션
-├── scripts/healthcheck.py  # Docker 헬스체크
-├── config/                 # YAML 설정
-├── src/tradingbot/
-│   ├── core/           # 도메인 모델 (Candle, Order, Trade, Position)
-│   ├── data/           # 데이터 다운로드, 저장(Parquet), 기술적 지표
-│   ├── strategy/       # 전략 프레임워크 + 내장 전략 7종 + 31종 필터 + 48개 조합 템플릿
-│   ├── backtest/       # 백테스트 엔진, 옵티마이저, Walk-Forward
-│   ├── risk/           # 리스크 매니저, 사전 거래 검증
-│   ├── exchange/       # 거래소 추상화 (Upbit CCXT, 페이퍼)
-│   ├── live/           # 라이브 엔진, 주문 관리, 상태 영속화 (원자적 쓰기)
-│   ├── notifications/  # 텔레그램 알림
-│   ├── dashboard/      # Streamlit 웹 대시보드
-│   └── utils/          # 로깅 (콘솔 + JSON 파일 로테이션), 시간 유틸리티
-└── tests/              # 211개 테스트
-```
 
 ## 기술 스택
 
@@ -429,7 +470,18 @@ trading-bot/
 | 설정 | pydantic + pyyaml |
 | 데이터 | pyarrow (Parquet) |
 | CLI | typer + rich |
-| 실시간 | websockets (Upbit WebSocket) |
+| 실시간 | websockets |
+| ML | lightgbm + scikit-learn |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (211개) |
+| 테스트 | pytest (212개) |
+| 린트 | ruff + mypy |
+
+## 개발
+
+```bash
+pytest tests/ -v              # 테스트
+ruff check src/ tests/        # 린트
+ruff format src/ tests/       # 포맷팅
+mypy src/                     # 타입 체크
+```
