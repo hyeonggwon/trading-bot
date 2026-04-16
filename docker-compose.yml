@@ -1,16 +1,16 @@
 services:
-  bot:
+  paper-kc-eth:
     build: .
     env_file: .env
     volumes:
       - ./data:/app/data
       - ./models:/app/models
       - bot-logs:/app/logs
-      - bot-state:/app/state
+      - ./state:/app/state
       - ./config:/app/config:ro
     environment:
       - LOG_DIR=/app/logs
-      - STATE_FILE=/app/state/state.json
+      - STATE_FILE=/app/state/paper_kc_eth.json
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python", "/app/scripts/healthcheck.py"]
@@ -18,9 +18,28 @@ services:
       timeout: 10s
       retries: 3
       start_period: 180s
-    # Override CMD for live trading:
-    # command: ["tradingbot", "live", "--strategy", "sma_cross", "--symbol", "BTC/KRW"]
+    command: ["tradingbot", "paper", "--strategy", "KC+Trend+Vol", "--symbol", "ETH/KRW", "--timeframe", "4h", "--balance", "1000000", "--state-file", "/app/state/paper_kc_eth.json", "--websocket"]
+
+  paper-bb-btc:
+    build: .
+    env_file: .env
+    volumes:
+      - ./data:/app/data
+      - ./models:/app/models
+      - bot-logs:/app/logs
+      - ./state:/app/state
+      - ./config:/app/config:ro
+    environment:
+      - LOG_DIR=/app/logs
+      - STATE_FILE=/app/state/paper_bb_btc.json
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      retries: 3
+      start_period: 180s
+    command: ["tradingbot", "paper", "--strategy", "bollinger_breakout", "--symbol", "BTC/KRW", "--timeframe", "4h", "--balance", "1000000", "--state-file", "/app/state/paper_bb_btc.json", "--websocket"]
 
 volumes:
   bot-logs:
-  bot-state:

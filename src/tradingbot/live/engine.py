@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import signal as signal_module
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import structlog
@@ -166,6 +166,9 @@ class LiveEngine:
                 sym: {"last": price}
                 for sym, price in ws_prices.items()
             }
+            # Sync WS prices to PaperExchange cache for accurate fills
+            if hasattr(self.exchange, 'update_prices'):
+                self.exchange.update_prices(ws_prices)
         else:
             ticker_tasks = [self.exchange.fetch_ticker(sym) for sym in symbols]
             ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
@@ -177,6 +180,7 @@ class LiveEngine:
         # Update equity using pre-fetched tickers (avoids redundant API calls)
         equity = await self._calculate_equity(tickers)
         self.risk_manager.update_peak_equity(equity)
+        self.state.record_equity(equity)
 
         # Process each symbol
         for sym, result in zip(symbols, ohlcv_results):
@@ -220,12 +224,36 @@ class LiveEngine:
         ticker_price = ticker.get("last") if ticker else None
         current_price = float(ticker_price) if ticker_price else float(df["close"].iloc[-1])
 
-        # Check exit signals for open positions
+        # Check stop loss first, then strategy exit signals
         position = self.state.positions.get(symbol)
         if position is not None:
-            exit_signal = self.strategy.should_exit(confirmed_df, symbol, position)
-            if exit_signal:
-                await self._handle_exit(exit_signal, symbol, position)
+            if position.stop_loss and current_price <= position.stop_loss:
+                logger.info(
+                    "stop_loss_triggered",
+                    symbol=symbol,
+                    current_price=f"{current_price:,.0f}",
+                    stop_loss=f"{position.stop_loss:,.0f}",
+                )
+                stop_signal = Signal(
+                    timestamp=datetime.now(UTC),
+                    symbol=symbol,
+                    signal_type=SignalType.LONG_EXIT,
+                    price=current_price,
+                    strength=1.0,
+                )
+                await self._handle_exit(stop_signal, symbol, position)
+                if symbol not in self.state.positions:
+                    if self.notifier and hasattr(self.notifier, 'send_signal'):
+                        await self.notifier.send_signal(
+                            f"STOP LOSS {symbol}: price={current_price:,.0f}, "
+                            f"stop={position.stop_loss:,.0f}"
+                        )
+                else:
+                    logger.error("stop_loss_exit_failed", symbol=symbol)
+            else:
+                exit_signal = self.strategy.should_exit(confirmed_df, symbol, position)
+                if exit_signal:
+                    await self._handle_exit(exit_signal, symbol, position)
 
         # Check entry signals (only if no position in this symbol)
         if symbol not in self.state.positions:
@@ -244,7 +272,7 @@ class LiveEngine:
         # Validate with risk manager using actual cash balance
         from tradingbot.core.models import PortfolioState
         portfolio = PortfolioState(
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
             cash=cash,
             positions=list(self.state.positions.values()),
         )
@@ -253,17 +281,21 @@ class LiveEngine:
             logger.info("signal_rejected_by_risk_manager", symbol=symbol)
             return
 
-        # Calculate position size
-        stop_loss = self.risk_manager.calculate_stop_loss(current_price)
+        # Estimate fill price with slippage for conservative sizing
+        slippage_pct = getattr(self.exchange, '_slippage_pct', 0.001)
+        expected_price = current_price * (1 + slippage_pct)
+
+        # Calculate position size using expected fill price
+        stop_loss = self.risk_manager.calculate_stop_loss(expected_price)
         quantity = self.risk_manager.calculate_position_size(
-            current_price, stop_loss, equity
+            expected_price, stop_loss, equity
         )
         if quantity <= 0:
             return
 
-        # Pre-trade validation (live mode safety)
+        # Pre-trade validation with expected fill price
         if self.trade_validator is not None:
-            if not self.trade_validator.validate_all(quantity, current_price):
+            if not self.trade_validator.validate_all(quantity, expected_price):
                 logger.info("signal_rejected_by_validator", symbol=symbol)
                 return
 
@@ -287,13 +319,16 @@ class LiveEngine:
             if self.trade_validator is not None:
                 self.trade_validator.record_order()
 
+            actual_price = order.filled_price or current_price
+            actual_stop_loss = self.risk_manager.calculate_stop_loss(actual_price)
+
             self.state.positions[symbol] = Position(
                 symbol=symbol,
                 side=PositionSide.LONG,
                 size=order.quantity,
-                entry_price=order.filled_price or current_price,
-                entry_time=datetime.now(timezone.utc),
-                stop_loss=stop_loss,
+                entry_price=actual_price,
+                entry_time=datetime.now(UTC),
+                stop_loss=actual_stop_loss,
             )
             # Track entry fee for accurate PnL on exit
             self.state.entry_fees[symbol] = order.fee or 0
