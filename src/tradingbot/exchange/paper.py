@@ -8,12 +8,11 @@ in memory with optional state persistence.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import structlog
 
-from tradingbot.config import BacktestConfig
 from tradingbot.core.enums import OrderSide, OrderStatus, OrderType
 from tradingbot.core.models import Order
 from tradingbot.exchange.base import BaseExchange
@@ -70,6 +69,10 @@ class PaperExchange(BaseExchange):
         self._last_prices[symbol] = ticker["last"]
         return ticker
 
+    def update_prices(self, prices: dict[str, float]) -> None:
+        """Update cached prices from external source (e.g., WebSocket)."""
+        self._last_prices.update(prices)
+
     async def create_order(
         self,
         symbol: str,
@@ -87,7 +90,7 @@ class PaperExchange(BaseExchange):
             quantity=quantity,
             price=price,
             status=OrderStatus.PENDING,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
         if order_type == OrderType.MARKET:
@@ -151,7 +154,7 @@ class PaperExchange(BaseExchange):
                 del self._holdings[base_currency]
 
         order.status = OrderStatus.FILLED
-        order.filled_at = datetime.now(timezone.utc)
+        order.filled_at = datetime.now(UTC)
         order.filled_price = fill_price
         order.fee = fee
         self._filled_orders.append(order)
