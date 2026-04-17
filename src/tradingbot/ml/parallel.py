@@ -27,6 +27,7 @@ def train_pair(
     train_months: int,
     test_months: int,
     num_threads: int,
+    external_data_dir: str | None = None,
 ) -> PairTrainResult:
     """Train a single symbol x timeframe pair.
 
@@ -56,6 +57,13 @@ def train_pair(
         )
 
     try:
+        # Load external features if available
+        external_df = None
+        if external_data_dir:
+            from tradingbot.data.external_fetcher import build_external_df
+
+            external_df = build_external_df(df, Path(external_data_dir))
+
         trainer = MLWalkForwardTrainer(
             symbol=symbol,
             timeframe=timeframe,
@@ -64,7 +72,7 @@ def train_pair(
             model_dir=Path(model_dir),
             lgbm_params={"num_threads": num_threads},
         )
-        report = trainer.run(df)
+        report = trainer.run(df, external_df=external_df)
         return PairTrainResult(
             symbol=symbol,
             timeframe=timeframe,

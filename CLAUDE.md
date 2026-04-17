@@ -60,6 +60,9 @@ tradingbot combine --entry "trend_up:4 + rsi_oversold:30" --exit "rsi_overbought
 tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" --exit "rsi_overbought:70"
 tradingbot combine-scan --top 15
 
+# External data (for ML features: kimchi premium, funding rate, FNG, USD/KRW)
+tradingbot download-external --since 2024-01-01
+
 # ML
 tradingbot ml-train --symbol BTC/KRW --timeframe 1h --train-months 3 --test-months 1
 tradingbot ml-train-all --workers 4
@@ -134,12 +137,14 @@ Strategies inherit from `Strategy` and implement three methods:
 - `backtest/report.py` — Performance metrics: Sharpe, Sortino, max drawdown, win rate, profit factor
 - `backtest/optimizer.py` — Grid search parameter optimization with parallel execution, optional `progress` parameter
 - `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling), optional `progress` parameter
-- `ml/features.py` — 15 features from 8 indicators (top by gain importance, reduced from 36)
+- `ml/features.py` — 10 technical features + 6 optional external features (kimchi premium, funding rate, FNG, USD/KRW)
 - `ml/targets.py` — 4h forward return binary classification target (offline only)
-- `ml/trainer.py` — LGBMTrainer: train, evaluate, save/load (.lgb + _meta.json)
-- `ml/walk_forward.py` — MLWalkForwardTrainer: purged expanding window + embargo
+- `ml/trainer.py` — LGBMTrainer: train, evaluate, calibrate (isotonic), save/load (.lgb + _meta.json + _cal.json)
+- `ml/walk_forward.py` — MLWalkForwardTrainer: purged expanding window + embargo (150 candles) + 20% holdout (half eval, half calibrator fit)
 - `ml/parallel.py` — Spawn-safe parallel training worker (ProcessPoolExecutor)
+- `ml/utils.py` — Shared ML helpers (e.g., Half-Kelly position sizing)
 - `data/fetcher.py` — CCXT-based OHLCV download with Upbit rate limiting
+- `data/external_fetcher.py` — External data: Binance OHLCV, funding rate, FRED USD/KRW, Fear & Greed Index
 - `data/storage.py` — Parquet file I/O with auto-merge on save
 - `data/indicators.py` — 19 technical indicator wrappers (SMA, EMA, RSI, MACD, BB, ATR, Stochastic, ADX, Ichimoku, Aroon, CCI, ROC, MFI, OBV, Keltner, Donchian, Z-score, PctFromMA, Volume SMA)
 - `exchange/base.py` — Abstract exchange interface (BaseExchange ABC)

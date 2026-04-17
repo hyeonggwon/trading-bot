@@ -1,6 +1,7 @@
 """Feature engineering for LightGBM model.
 
-Builds 15 features from 8 indicators (top by gain importance).
+Builds 10 technical features from 8 indicators (reduced from 15 to remove
+multicollinearity: ADX 3→2, MACD 2→1, ROC 2→1).
 All operations use only past data (no lookahead).
 """
 
@@ -21,35 +22,45 @@ from tradingbot.data.indicators import (
 
 WARMUP_CANDLES = 52  # Ichimoku window3 — longest lookback
 
-# Feature column names — top 15 by gain importance across 24 models.
-# Reduced from 36 to remove multicollinear/low-importance features.
+# External feature columns (optional — present when external data is provided).
+EXTERNAL_FEATURE_COLS = [
+    "kimchi_pct",
+    "kimchi_zscore_20",
+    "funding_rate",
+    "funding_rate_zscore_20",
+    "fng_value",
+    "usd_krw_change",
+]
+
+# Technical feature columns — 10 features (reduced from 15).
+# Removed multicollinear features: adx_pos/neg (→ adx_diff), macd_hist (kept macd_norm),
+# close_roc_5 (kept roc_12), close_std_20, atr_rank_50.
 FEATURE_COLS = [
     # Raw indicators
     "adx_14",
-    "adx_pos_14",
-    "adx_neg_14",
+    "adx_diff",  # adx_pos_14 - adx_neg_14 (directional strength)
     "mfi_14",
     "roc_12",
-    "macd_hist_12_26_9",
     # Derived
     "obv_roc_10",
     "atr_pct_14",
     "macd_norm",
     "ichi_dist",
     "volume_ratio",
-    "close_roc_5",
     "hl_range_pct",
-    # Rolling stats
-    "close_std_20",
-    "atr_rank_50",
 ]
 
 
-def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
-    """Build feature matrix from OHLCV DataFrame.
+def build_feature_matrix(
+    df: pd.DataFrame,
+    external_df: pd.DataFrame | None = None,
+) -> tuple[pd.DataFrame, list[str]]:
+    """Build feature matrix from OHLCV DataFrame with optional external features.
 
     Args:
         df: OHLCV DataFrame with DatetimeIndex. Should include warmup candles.
+        external_df: Optional DataFrame with external data (kimchi_pct, funding_rate,
+            fng_value, usd_krw). Merged via merge_asof(direction='backward').
 
     Returns:
         Tuple of (DataFrame with feature columns added, list of feature column names).
@@ -62,8 +73,9 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
                 df[col] = float("nan")
         return df, FEATURE_COLS
 
-    # Step 1: Compute base indicators (only those needed for top-15 features)
+    # Step 1: Compute base indicators
     df = add_adx(df, period=14)
+    df["adx_diff"] = df["adx_pos_14"] - df["adx_neg_14"]
     df = add_mfi(df, period=14)
     df = add_roc(df, period=12)
     df = add_macd(df, fast=12, slow=26, signal=9)
@@ -92,17 +104,51 @@ def build_feature_matrix(df: pd.DataFrame) -> tuple[pd.DataFrame, list[str]]:
     # Volume ratio
     df["volume_ratio"] = df["volume"] / df["volume_sma_20"].replace(0, _nan)
 
-    # Price momentum
-    df["close_roc_5"] = df["close"].pct_change(5)
-
     # Intra-candle range
     df["hl_range_pct"] = (df["high"] - df["low"]) / df["close"]
 
-    # Step 3: Rolling statistical features
-    df["close_std_20"] = df["close"].pct_change().rolling(20).std()
-    df["atr_rank_50"] = df["atr_14"].rolling(50).rank(pct=True)
-
-    # Step 4: Replace any inf values with NaN
+    # Step 3: Replace any inf values with NaN
     df[FEATURE_COLS] = df[FEATURE_COLS].replace([float("inf"), float("-inf")], float("nan"))
 
-    return df, FEATURE_COLS
+    # Step 4: External features (optional)
+    active_cols = list(FEATURE_COLS)
+
+    if external_df is not None and len(external_df) > 0:
+        # Merge external data using backward lookup (anti-lookahead)
+        _raw_ext = ("kimchi_pct", "funding_rate", "fng_value", "usd_krw")
+        ext_cols_present = [c for c in external_df.columns if c in _raw_ext]
+        if ext_cols_present:
+            df = pd.merge_asof(
+                df,
+                external_df[ext_cols_present],
+                left_index=True,
+                right_index=True,
+                direction="backward",
+            )
+
+        # Compute rolling z-scores from raw values
+        _nan = float("nan")
+        if "kimchi_pct" in df.columns and df["kimchi_pct"].notna().any():
+            mu = df["kimchi_pct"].rolling(20, min_periods=5).mean()
+            std = df["kimchi_pct"].rolling(20, min_periods=5).std().replace(0, _nan)
+            df["kimchi_zscore_20"] = (df["kimchi_pct"] - mu) / std
+
+        if "funding_rate" in df.columns and df["funding_rate"].notna().any():
+            mu = df["funding_rate"].rolling(20, min_periods=5).mean()
+            std = df["funding_rate"].rolling(20, min_periods=5).std().replace(0, _nan)
+            df["funding_rate_zscore_20"] = (df["funding_rate"] - mu) / std
+
+        if "usd_krw" in df.columns and df["usd_krw"].notna().any():
+            df["usd_krw_change"] = df["usd_krw"].pct_change()
+
+        # Add available external features to active columns
+        for col in EXTERNAL_FEATURE_COLS:
+            if col in df.columns and df[col].notna().any():
+                active_cols.append(col)
+
+        # Clean inf values in external features
+        ext_in_df = [c for c in EXTERNAL_FEATURE_COLS if c in df.columns]
+        if ext_in_df:
+            df[ext_in_df] = df[ext_in_df].replace([float("inf"), float("-inf")], float("nan"))
+
+    return df, active_cols

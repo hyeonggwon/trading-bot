@@ -6,7 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tradingbot.ml.features import FEATURE_COLS, WARMUP_CANDLES, build_feature_matrix
+from tradingbot.ml.features import (
+    EXTERNAL_FEATURE_COLS,
+    FEATURE_COLS,
+    WARMUP_CANDLES,
+    build_feature_matrix,
+)
 from tradingbot.ml.targets import build_target
 
 
@@ -31,7 +36,7 @@ class TestFeatures:
         df = _make_data(200)
         df_feat, feature_cols = build_feature_matrix(df)
         assert feature_cols == FEATURE_COLS
-        assert len(feature_cols) == 15
+        assert len(feature_cols) == 10
         for col in feature_cols:
             assert col in df_feat.columns, f"Missing column: {col}"
 
@@ -61,7 +66,37 @@ class TestFeatures:
                     assert abs(val_full - val_partial) < 1e-6, f"Leakage in {col}"
                     compared += 1
         # Ensure a meaningful number of columns were actually compared
-        assert compared >= 10, f"Only {compared} columns compared — too many NaN"
+        assert compared >= 7, f"Only {compared} columns compared — too many NaN"
+
+    def test_build_feature_matrix_with_external(self):
+        """External features should be merged and z-scores computed."""
+        df = _make_data(200)
+        external_df = pd.DataFrame(
+            {
+                "kimchi_pct": np.random.normal(0.02, 0.01, 200),
+                "funding_rate": np.random.normal(0.0001, 0.00005, 200),
+                "fng_value": np.random.uniform(20, 80, 200),
+                "usd_krw": 1300 + np.random.normal(0, 10, 200),
+            },
+            index=df.index,
+        )
+        df_feat, feature_cols = build_feature_matrix(df, external_df=external_df)
+
+        # Should have 10 technical + 6 external = 16
+        assert len(feature_cols) == 16
+        for col in FEATURE_COLS:
+            assert col in feature_cols
+        # Z-scores and derived features
+        assert "kimchi_zscore_20" in feature_cols
+        assert "funding_rate_zscore_20" in feature_cols
+        assert "usd_krw_change" in feature_cols
+
+    def test_build_feature_matrix_without_external(self):
+        """Without external data, should return only technical features."""
+        df = _make_data(200)
+        df_feat, feature_cols = build_feature_matrix(df, external_df=None)
+        assert len(feature_cols) == 10
+        assert feature_cols == FEATURE_COLS
 
 
 class TestTargets:
@@ -127,6 +162,43 @@ class TestTrainer:
         assert "recall" in metrics
         assert "f1" in metrics
         assert 0 <= metrics["auc"] <= 1
+        # Baseline comparison fields
+        assert "auc_p_value" in metrics
+        assert "auc_significant" in metrics
+        assert isinstance(metrics["auc_significant"], bool)
+
+    def test_calibration(self, tmp_path):
+        """Calibrator should fit and transform probabilities."""
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        df = _make_data(500)
+        df_feat, feature_cols = build_feature_matrix(df)
+        target = build_target(df_feat)
+
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+        split = int(len(X) * 0.7)
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X.iloc[:split], y.iloc[:split])
+
+        # Calibrate on test set
+        calibrator = trainer.calibrate(model, X.iloc[split:], y.iloc[split:])
+        assert calibrator is not None
+
+        # Save and load calibrator
+        trainer.save(
+            model, "BTC/KRW", "1h", {}, feature_cols,
+            model_dir=tmp_path, calibrator=calibrator,
+        )
+        loaded_cal = LGBMTrainer.load_calibrator("BTC/KRW", "1h", model_dir=tmp_path)
+        assert loaded_cal is not None
+
+        # Calibrated probabilities should be valid
+        raw = model.predict(X.iloc[split:split + 5])
+        calibrated = loaded_cal.transform(raw)
+        assert len(calibrated) == 5
+        assert all(0 <= p <= 1 for p in calibrated)
 
     def test_save_and_load(self, tmp_path):
         from tradingbot.ml.trainer import LGBMTrainer
@@ -155,6 +227,35 @@ class TestTrainer:
         assert meta is not None
         assert meta["symbol"] == "BTC/KRW"
         assert meta["test"] is True
+
+
+class TestWalkForward:
+    def test_holdout_report(self, tmp_path):
+        """Walk-forward should produce holdout metrics."""
+        from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+
+        df = _make_data(4000)  # Need enough for holdout split + embargo=150 + windows
+        trainer = MLWalkForwardTrainer(
+            symbol="BTC/KRW",
+            timeframe="1h",
+            train_months=1,
+            test_months=1,
+            model_dir=tmp_path,
+        )
+        report = trainer.run(df)
+
+        assert len(report.windows) > 0, "Expected at least 1 walk-forward window"
+        # Holdout metrics should be populated
+        assert report.holdout_auc >= 0
+        assert report.holdout_precision >= 0
+        # Model should be saved with calibrator
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        meta = LGBMTrainer.load_meta("BTC/KRW", "1h", model_dir=tmp_path)
+        assert meta is not None
+        assert "holdout_auc" in meta
+        assert "has_calibrator" in meta
+        assert meta["has_calibrator"] is True
 
 
 class TestLGBMStrategy:
@@ -268,3 +369,182 @@ class TestLGBMStrategy:
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
         assert report.total_trades == 0
+
+    def test_backtest_with_external_data_dir(self, tmp_path):
+        """End-to-end: train 16-feature model, backtest with external_data_dir configured.
+
+        Regression test for a bug where ``build_external_df(external_data_dir)``
+        was called with a Path instead of (upbit_df, data_dir), silently
+        disabling external features.
+        """
+        from tradingbot.backtest.engine import BacktestEngine
+        from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+        from tradingbot.data.external_fetcher import save_external
+        from tradingbot.ml.trainer import LGBMTrainer
+        from tradingbot.strategy.base import StrategyParams
+        from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+
+        df = _make_data(500)
+
+        # Persist synthetic external components so build_external_df can load them
+        external_dir = tmp_path / "external"
+        external_dir.mkdir()
+        rng = np.random.default_rng(7)
+        # binance BTC/USDT aligned to the upbit cadence
+        save_external(
+            pd.DataFrame({"close": 45000 + rng.normal(0, 500, len(df))}, index=df.index),
+            "binance_btc_usdt",
+            external_dir,
+        )
+        save_external(
+            pd.DataFrame({"usd_krw": 1300 + rng.normal(0, 5, len(df))}, index=df.index),
+            "usd_krw",
+            external_dir,
+        )
+        save_external(
+            pd.DataFrame({"funding_rate": rng.normal(0.0001, 0.00005, len(df))}, index=df.index),
+            "funding_rate",
+            external_dir,
+        )
+        save_external(
+            pd.DataFrame({"fng_value": rng.uniform(20, 80, len(df))}, index=df.index),
+            "fear_greed",
+            external_dir,
+        )
+
+        # Train 16-feature model (technical + external)
+        from tradingbot.data.external_fetcher import build_external_df
+        ext_df = build_external_df(df, external_dir)
+        assert ext_df is not None and len(ext_df.columns) >= 3
+
+        df_feat, feature_cols = build_feature_matrix(df.copy(), external_df=ext_df)
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+        assert len(feature_cols) > 10, "Expected external features in training set"
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+
+        # Backtest with external_data_dir — must match the 16-column model
+        strategy = LGBMStrategy(StrategyParams(values={
+            "model_dir": str(tmp_path),
+            "external_data_dir": str(external_dir),
+            "entry_threshold": 0.30,
+            "exit_threshold": 0.25,
+        }))
+        strategy.timeframe = "1h"
+
+        config = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
+                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+        engine = BacktestEngine(strategy=strategy, config=config)
+        report = engine.run({"BTC/KRW": df})
+        assert report.final_balance > 0
+        # External components must have loaded — if C1 regression returns, stays None
+        assert strategy._external_load_tried is True
+        assert strategy._external_components is not None
+        assert strategy._external_components.get("binance") is not None
+        # Feature cols from meta should include the external features
+        assert len(strategy._feature_cols.get("BTC/KRW", [])) > 10
+
+    def test_multi_symbol_external_alignment(self, tmp_path):
+        """Each symbol must receive external features aligned to its own index.
+
+        Regression test for H1: previously the strategy cached an external_df
+        aligned to the first symbol's timestamps and reused it for all symbols,
+        silently misaligning external features on subsequent symbols.
+        """
+        from tradingbot.data.external_fetcher import (
+            align_external_to,
+            load_external_components,
+            save_external,
+        )
+        from tradingbot.strategy.base import StrategyParams
+        from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+
+        # Two symbols with *disjoint* date ranges — worst case for a shared cache
+        idx_a = pd.date_range("2024-01-01", periods=200, freq="h", tz="UTC")
+        idx_b = pd.date_range("2024-03-01", periods=200, freq="h", tz="UTC")
+        full_idx = idx_a.union(idx_b)
+        rng = np.random.default_rng(11)
+
+        external_dir = tmp_path / "external"
+        external_dir.mkdir()
+        # External data spanning both date ranges
+        save_external(
+            pd.DataFrame({"close": 45000 + rng.normal(0, 500, len(full_idx))}, index=full_idx),
+            "binance_btc_usdt",
+            external_dir,
+        )
+        save_external(
+            pd.DataFrame({"usd_krw": 1300 + rng.normal(0, 5, len(full_idx))}, index=full_idx),
+            "usd_krw",
+            external_dir,
+        )
+        save_external(
+            pd.DataFrame({"funding_rate": rng.normal(0.0001, 0.00005, len(full_idx))}, index=full_idx),
+            "funding_rate",
+            external_dir,
+        )
+        save_external(
+            pd.DataFrame({"fng_value": rng.uniform(20, 80, len(full_idx))}, index=full_idx),
+            "fear_greed",
+            external_dir,
+        )
+
+        strategy = LGBMStrategy(StrategyParams(values={
+            "model_dir": str(tmp_path),
+            "external_data_dir": str(external_dir),
+        }))
+        strategy.timeframe = "1h"
+
+        # Call indicators() for each symbol (as BacktestEngine does)
+        df_a = _make_data(200)
+        df_a.index = idx_a
+        df_b = _make_data(200)
+        df_b.index = idx_b
+
+        out_a = strategy.indicators(df_a.copy())
+        out_b = strategy.indicators(df_b.copy())
+
+        # Each output's index must match its own symbol's timestamps
+        assert out_a.index.equals(df_a.index)
+        assert out_b.index.equals(df_b.index)
+
+        # Each output must carry kimchi_pct populated from its OWN date range.
+        # Shared-cache regression would leave the later symbol with mostly NaN.
+        assert "kimchi_pct" in out_a.columns
+        assert "kimchi_pct" in out_b.columns
+        assert out_a["kimchi_pct"].notna().sum() > 100, (
+            "Symbol A missing kimchi_pct — external alignment broken"
+        )
+        assert out_b["kimchi_pct"].notna().sum() > 100, (
+            "Symbol B missing kimchi_pct — shared-cache regression"
+        )
+
+        # Sanity: the two symbols' kimchi series should differ (different underlying
+        # upbit close values on different dates → different premium)
+        common_len = min(len(out_a), len(out_b))
+        a_vals = out_a["kimchi_pct"].dropna().iloc[:common_len].values
+        b_vals = out_b["kimchi_pct"].dropna().iloc[:common_len].values
+        if len(a_vals) > 0 and len(b_vals) > 0:
+            n = min(len(a_vals), len(b_vals))
+            assert not np.allclose(a_vals[:n], b_vals[:n]), (
+                "Symbols A and B produced identical kimchi_pct — shared aligned df reused"
+            )
+
+        # Components cache untouched by alignment (raw only)
+        components = strategy._external_components
+        assert components is not None
+        assert components.get("binance") is not None
+        aligned_a = align_external_to(df_a, components)
+        aligned_b = align_external_to(df_b, components)
+        assert aligned_a is not None and aligned_b is not None
+        assert aligned_a.index.equals(df_a.index)
+        assert aligned_b.index.equals(df_b.index)

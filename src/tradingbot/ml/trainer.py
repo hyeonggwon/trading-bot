@@ -16,15 +16,15 @@ DEFAULT_LGBM_PARAMS = {
     "objective": "binary",
     "metric": ["auc", "binary_logloss"],
     "verbose": -1,
-    # Tree structure
-    "num_leaves": 31,
-    "max_depth": 6,
-    "min_data_in_leaf": 20,
+    # Tree structure — conservative to prevent overfitting
+    "num_leaves": 15,
+    "max_depth": 4,
+    "min_data_in_leaf": 50,
     "min_sum_hessian_in_leaf": 1.0,
-    # Regularization
-    "reg_alpha": 0.1,
-    "reg_lambda": 0.5,
-    "feature_fraction": 0.7,
+    # Regularization — stronger than before
+    "reg_alpha": 0.5,
+    "reg_lambda": 2.0,
+    "feature_fraction": 0.6,
     "bagging_fraction": 0.8,
     "bagging_freq": 5,
     # Class imbalance — walk_forward.py dynamically computes scale_pos_weight
@@ -32,7 +32,7 @@ DEFAULT_LGBM_PARAMS = {
     "scale_pos_weight": 1.0,
     # Learning
     "learning_rate": 0.05,
-    "n_estimators": 500,
+    "n_estimators": 300,
     # Speed
     "num_threads": -1,
     "seed": 42,
@@ -96,7 +96,8 @@ class LGBMTrainer:
     def evaluate(self, model, X_test: pd.DataFrame, y_test: pd.Series) -> dict:
         """Evaluate model on test data.
 
-        Returns dict with auc, precision, recall, f1, n_test, positive_rate.
+        Returns dict with auc, precision, recall, f1, n_test, positive_rate,
+        auc_p_value (vs random 0.5), and auc_significant (p < 0.05).
         """
         from sklearn.metrics import (
             f1_score,
@@ -113,6 +114,21 @@ class LGBMTrainer:
         recall = float(recall_score(y_test, y_pred, zero_division=0))
         f1 = float(f1_score(y_test, y_pred, zero_division=0))
 
+        # Baseline comparison: p-value for AUC vs random (0.5)
+        # Uses Hanley-McNeil SE approximation for AUC
+        n_pos = int(y_test.sum())
+        n_neg = len(y_test) - n_pos
+        p_value = 1.0
+        if n_pos > 0 and n_neg > 0 and auc != 0.5:
+            from scipy.stats import norm
+
+            q1 = auc / (2 - auc)
+            q2 = 2 * auc**2 / (1 + auc)
+            se = ((auc * (1 - auc) + (n_pos - 1) * (q1 - auc**2) + (n_neg - 1) * (q2 - auc**2))
+                  / (n_pos * n_neg)) ** 0.5
+            z = (auc - 0.5) / se if se > 0 else 0.0
+            p_value = float(1 - norm.cdf(z))
+
         return {
             "auc": round(auc, 4),
             "precision": round(precision, 4),
@@ -120,7 +136,36 @@ class LGBMTrainer:
             "f1": round(f1, 4),
             "n_test": len(y_test),
             "positive_rate": round(float(y_test.mean()), 4),
+            "auc_p_value": round(p_value, 6),
+            "auc_significant": p_value < 0.05,
         }
+
+    def calibrate(self, model, X_cal: pd.DataFrame, y_cal: pd.Series):
+        """Fit isotonic calibrator on calibration data.
+
+        Args:
+            model: Trained LightGBM Booster.
+            X_cal: Calibration feature matrix.
+            y_cal: Calibration target.
+
+        Returns:
+            Fitted IsotonicRegression calibrator, or None if the calibration
+            set has fewer than 2 classes (a constant mapping would silently
+            crush all predictions to the majority class).
+        """
+        from sklearn.isotonic import IsotonicRegression
+
+        if y_cal.nunique() < 2:
+            log.warning(
+                f"Calibrator skipped: calibration set has single class "
+                f"(n={len(y_cal)}, pos_rate={float(y_cal.mean()):.4f})"
+            )
+            return None
+
+        raw_proba = model.predict(X_cal)
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.fit(raw_proba, y_cal)
+        return calibrator
 
     def save(
         self,
@@ -130,8 +175,9 @@ class LGBMTrainer:
         meta: dict,
         feature_cols: list[str],
         model_dir: Path = Path("models"),
+        calibrator=None,
     ) -> Path:
-        """Save model (.lgb) and metadata (_meta.json).
+        """Save model (.lgb), metadata (_meta.json), and optional calibrator (_cal.json).
 
         Returns path to saved model file.
         """
@@ -142,6 +188,17 @@ class LGBMTrainer:
 
         model.save_model(str(model_path))
 
+        has_calibrator = False
+        if calibrator is not None:
+            cal_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_cal.json"
+            cal_data = {
+                "x": calibrator.X_thresholds_.tolist(),
+                "y": calibrator.y_thresholds_.tolist(),
+            }
+            cal_path.write_text(json.dumps(cal_data))
+            has_calibrator = True
+            log.info(f"Calibrator saved: {cal_path}")
+
         full_meta = {
             "trained_at": datetime.now(timezone.utc).isoformat(),
             "symbol": symbol,
@@ -149,6 +206,7 @@ class LGBMTrainer:
             "n_features": len(feature_cols),
             "feature_names": feature_cols,
             "best_iteration": model.best_iteration,
+            "has_calibrator": has_calibrator,
             **meta,
         }
         meta_path.write_text(json.dumps(full_meta, indent=2, default=str))
@@ -169,6 +227,32 @@ class LGBMTrainer:
             return None
 
         return lgb.Booster(model_file=str(model_path))
+
+    @staticmethod
+    def load_calibrator(symbol: str, timeframe: str, model_dir: Path = Path("models")):
+        """Load a saved calibrator. Returns IsotonicRegression or None if not found."""
+        from scipy.interpolate import interp1d
+        from sklearn.isotonic import IsotonicRegression
+
+        symbol_key = symbol.replace("/", "_")
+        cal_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_cal.json"
+
+        if not cal_path.exists():
+            return None
+
+        cal_data = json.loads(cal_path.read_text())
+        x = np.array(cal_data["x"])
+        y = np.array(cal_data["y"])
+
+        calibrator = IsotonicRegression(out_of_bounds="clip")
+        calibrator.X_thresholds_ = x
+        calibrator.y_thresholds_ = y
+        calibrator.X_min_ = float(x[0])
+        calibrator.X_max_ = float(x[-1])
+        calibrator.increasing_ = True
+        calibrator.f_ = interp1d(x, y, kind="linear", bounds_error=False,
+                                 fill_value=(y[0], y[-1]))
+        return calibrator
 
     @staticmethod
     def load_meta(symbol: str, timeframe: str, model_dir: Path = Path("models")) -> dict | None:
