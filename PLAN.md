@@ -29,9 +29,10 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase 6-7 | ✅ 완료 | Docker 배포 (Dockerfile, compose, healthcheck, 로그 관리) |
 | 고급 전략 | ✅ 완료 | multi_tf, volume_breakout, scan CLI |
 | 조합 엔진 | ✅ 완료 | 31종 필터 (역할 태깅 + ML), CombinedStrategy, combine/combine-scan CLI, 48 템플릿 |
-| ML 전략 | ✅ 완료 | LightGBM 메타 모델 (15 피처, Walk-Forward 학습, Half-Kelly), ml-train/ml-backtest CLI |
+| ML 전략 | ✅ 완료 | LightGBM 메타 모델 (10 기술 피처, Walk-Forward 학습, Half-Kelly), ml-train/ml-backtest CLI |
 | ML+Rule 조합 | ✅ 완료 | LgbmProbFilter — ML 확률을 veto 필터로 사용 (threshold 0.35), Half-Kelly strength |
 | ML 파이프라인 개선 | ✅ 완료 | Feature 36→15 축소, median best_iteration, scale_pos_weight 1.0, LOG_LEVEL 지원 |
+| ML 품질 개선 | ✅ 완료 | Feature 15→10 축소 (다중공선성 제거) + 외부 피처 6종 (김프/funding/FNG/USD_KRW), 정규화 강화, 아이소토닉 보정, embargo 52→150, 20% 홀드아웃 분리 (평가/보정 반반), Hanley-McNeil p-value |
 | Combined 전략 배포 | ✅ 완료 | paper/live/backtest에서 템플릿 이름으로 실행, --entry/--exit 커스텀 조합 |
 | 성능 최적화 | ✅ 완료 | 인디케이터 사전 계산 (O(N²)→O(N)), 벡터화 스크리닝 엔진 (combine-scan 1.5h→3.5min) |
 | CLI UX 개선 | ✅ 완료 | Rich Progress 바 (combine-scan, ml-train-all, scan, optimize, walk-forward) |
@@ -41,7 +42,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 | Phase 6-5 | ⏳ 대기 | 선물/마진 트레이딩 |
 | Phase 6-8 | ⏳ 대기 | 레짐 감지 (HMM) |
 
-**현재 테스트: 212개 (17개 모듈)**
+**현재 테스트: 225개 (17개 모듈)**
 
 ---
 
@@ -99,7 +100,7 @@ CCXT 주문 생성/취소/조회, OrderManager (미체결 → 체결 추적, 타
 - **6-3. 웹 대시보드**: Streamlit (Live Monitor + Backtest Viewer), plotly 차트
 - **6-7. Docker 배포**: python:3.11-slim, non-root user, healthcheck, volume 마운트 (data/logs/state/models)
 - **조합 엔진**: 31종 필터 (5가지 역할 태깅), CombinedStrategy (AND 진입 / OR 청산), 48개 사전정의 템플릿, combine-scan CLI
-- **ML 전략**: LightGBM 15 피처 (8 인디케이터에서 추출), Walk-Forward 학습 (purged expanding window + embargo), Half-Kelly 포지션 사이징
+- **ML 전략**: LightGBM 10 기술 피처 + 6 외부 피처(김프/funding/FNG/USD_KRW), Walk-Forward 학습 (purged expanding window + embargo 150 + 20% 홀드아웃), 아이소토닉 확률 보정, Half-Kelly 포지션 사이징
 - **성능 최적화**: 인디케이터 사전 계산 O(N), 벡터화 스크리닝 엔진 (~100x), combine-scan 1152조합 3분대
 
 ---
@@ -121,7 +122,7 @@ Sharpe > 1.5, Max Drawdown < 15% 인 전략을 찾은 후 페이퍼로 넘어가
 |------|--------|
 | 클라우드 배포 | 24/7 무중단 운영 필요 시 |
 | 조합 생성기 | combine-scan 결과 부족 시 (`combine-generate` → 자동 조합 생성) |
-| Bybit 추가 (6-4) | USDT 마켓 필요 시 (CCXT 추상화로 용이) |
+| Bybit/Binance 추가 (6-4) | USDT 마켓/선물 필요 시 (CCXT 추상화로 용이). 현재 ML 피처는 업비트(KRW) 최적화 — 전환 시 김프/USD_KRW 제거하고 재학습 |
 | 선물/마진 (6-5) | 현물 경험 충분히 쌓은 후, 숏/레버리지 필요 시 |
 | 레짐 감지 (6-8) | HMM 기반 시장 상태 분류, 기본 전략 한계 체감 시 |
 | 성능 추가 최적화 | 대규모 파라미터 그리드 시 Numba/Cython 가속 검토 |

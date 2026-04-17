@@ -1263,6 +1263,37 @@ def combine_scan(
         console.print(f"     Exit:  {r['exit']}")
 
 
+@app.command(name="download-external")
+def download_external(
+    since: str = typer.Option(..., "--since", help="Start date (YYYY-MM-DD)"),
+    until: str = typer.Option(None, "--until", help="End date (default: now)"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+) -> None:
+    """Download external data (Binance OHLCV, funding rate, FNG, USD/KRW)."""
+    setup_logging()
+
+    from tradingbot.data.external_fetcher import fetch_all_external
+
+    since_dt = parse_date(since)
+    until_dt = parse_date(until) if until else None
+
+    console.print("[bold]Downloading external data...[/bold]")
+    console.print(f"  Since: {since_dt.date()}")
+    if until_dt:
+        console.print(f"  Until: {until_dt.date()}")
+
+    ext_dir = Path(data_dir) / "external"
+    results = fetch_all_external(since_dt, until_dt, ext_dir)
+
+    if not results:
+        console.print("[red]No external data fetched.[/red]")
+        raise typer.Exit(1)
+
+    for name, count in results.items():
+        console.print(f"  [green]{name}: {count} rows[/green]")
+    console.print(f"[green]External data saved to {ext_dir}[/green]")
+
+
 @app.command(name="ml-train")
 def ml_train(
     symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol to train"),
@@ -1275,6 +1306,7 @@ def ml_train(
     """Train a LightGBM model with walk-forward validation."""
     setup_logging()
 
+    from tradingbot.data.external_fetcher import build_external_df
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.walk_forward import MLWalkForwardTrainer
 
@@ -1284,9 +1316,15 @@ def ml_train(
         console.print(f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]")
         raise typer.Exit(1)
 
+    # Load external features if available
+    ext_dir = Path(data_dir) / "external"
+    external_df = build_external_df(df, ext_dir)
+    ext_count = len([c for c in (external_df.columns if external_df is not None else [])]) if external_df is not None else 0
+
     console.print(f"[bold]Training LightGBM model for {symbol} {timeframe}...[/bold]")
     console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
     console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
+    console.print(f"  External features: {ext_count} sources loaded")
 
     trainer = MLWalkForwardTrainer(
         symbol=symbol,
@@ -1295,7 +1333,7 @@ def ml_train(
         test_months=test_months,
         model_dir=Path(model_dir),
     )
-    report = trainer.run(df)
+    report = trainer.run(df, external_df=external_df)
 
     if not report.windows:
         console.print("[red]Training failed — insufficient data or no valid windows.[/red]")
@@ -1306,6 +1344,8 @@ def ml_train(
     console.print(f"  Walk-Forward windows: {len(report.windows)}")
     console.print(f"  Avg AUC: {report.avg_auc:.4f}")
     console.print(f"  Avg Precision: {report.avg_precision:.4f}")
+    console.print(f"  Holdout AUC: {report.holdout_auc:.4f}")
+    console.print(f"  Holdout Precision: {report.holdout_precision:.4f}")
     console.print(f"  Model saved: {report.model_path}")
 
     # Per-window details
@@ -1437,8 +1477,11 @@ def ml_train_all(
 
     if workers == 1:
         # Sequential — zero subprocess overhead
+        from tradingbot.data.external_fetcher import build_external_df
         from tradingbot.data.storage import load_candles
         from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+
+        ext_dir = Path(data_dir) / "external"
 
         with _progress_context() as progress:
             task = progress.add_task("Training models", total=len(pairs))
@@ -1454,6 +1497,7 @@ def ml_train_all(
                     continue
 
                 try:
+                    external_df = build_external_df(df, ext_dir)
                     trainer = MLWalkForwardTrainer(
                         symbol=sym,
                         timeframe=tf,
@@ -1462,12 +1506,13 @@ def ml_train_all(
                         model_dir=Path(model_dir),
                         lgbm_params={"num_threads": threads_per_worker},
                     )
-                    report = trainer.run(df)
+                    report = trainer.run(df, external_df=external_df)
 
                     if report.windows:
                         progress.log(
                             f"[green]{sym} {tf}: AUC={report.avg_auc:.4f} "
                             f"precision={report.avg_precision:.4f} "
+                            f"holdout={report.holdout_auc:.4f} "
                             f"windows={len(report.windows)}[/green]"
                         )
                         results.append({
@@ -1475,6 +1520,8 @@ def ml_train_all(
                             "timeframe": tf,
                             "avg_auc": report.avg_auc,
                             "avg_precision": report.avg_precision,
+                            "holdout_auc": report.holdout_auc,
+                            "holdout_precision": report.holdout_precision,
                             "n_windows": len(report.windows),
                             "model_path": str(report.model_path),
                         })
@@ -1493,6 +1540,8 @@ def ml_train_all(
         ctx = mp.get_context("spawn")
         data_dir_abs = str(Path(data_dir).resolve())
         model_dir_abs = str(Path(model_dir).resolve())
+        ext_dir = Path(data_dir) / "external"
+        ext_dir_abs = str(ext_dir.resolve()) if ext_dir.exists() else None
 
         with _progress_context() as progress:
             task = progress.add_task("Training models", total=len(pairs))
@@ -1502,6 +1551,7 @@ def ml_train_all(
                     executor.submit(
                         train_pair, sym, tf, data_dir_abs, model_dir_abs,
                         train_months, test_months, threads_per_worker,
+                        ext_dir_abs,
                     ): (sym, tf)
                     for sym, tf in pairs
                 }
@@ -1525,6 +1575,7 @@ def ml_train_all(
                             progress.log(
                                 f"[green]{sym} {tf}: AUC={r.avg_auc:.4f} "
                                 f"precision={r.avg_precision:.4f} "
+                                f"holdout={r.holdout_auc:.4f} "
                                 f"windows={r.n_windows}[/green]"
                             )
                             results.append({
@@ -1532,6 +1583,8 @@ def ml_train_all(
                                 "timeframe": tf,
                                 "avg_auc": r.avg_auc,
                                 "avg_precision": r.avg_precision,
+                                "holdout_auc": r.holdout_auc,
+                                "holdout_precision": r.holdout_precision,
                                 "n_windows": r.n_windows,
                                 "model_path": r.model_path,
                             })
@@ -1552,15 +1605,19 @@ def ml_train_all(
     table.add_column("TF")
     table.add_column("AUC", justify="right")
     table.add_column("Precision", justify="right")
+    table.add_column("Holdout AUC", justify="right")
     table.add_column("Windows", justify="right")
 
     for r in sorted(results, key=lambda x: x["avg_auc"], reverse=True):
         auc_style = "green" if r["avg_auc"] > 0.55 else ("yellow" if r["avg_auc"] > 0.50 else "red")
+        holdout = r.get("holdout_auc", 0.0)
+        holdout_style = "green" if holdout > 0.55 else ("yellow" if holdout > 0.50 else "red")
         table.add_row(
             r["symbol"],
             r["timeframe"],
             f"[{auc_style}]{r['avg_auc']:.4f}[/{auc_style}]",
             f"{r['avg_precision']:.4f}",
+            f"[{holdout_style}]{holdout:.4f}[/{holdout_style}]",
             str(r["n_windows"]),
         )
 

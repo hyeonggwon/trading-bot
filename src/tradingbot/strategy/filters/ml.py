@@ -16,14 +16,6 @@ from tradingbot.strategy.filters.base import BaseFilter
 log = logging.getLogger(__name__)
 
 
-def _half_kelly(p: float, avg_win_loss_ratio: float = 1.5) -> float:
-    """Half-Kelly criterion. Default 1.5 from backtest (1h=1.52, 4h=2.07)."""
-    q = 1.0 - p
-    b = avg_win_loss_ratio
-    full_kelly = (p * b - q) / b if b > 0 else 0.0
-    return max(0.0, full_kelly * 0.5)
-
-
 class LgbmProbFilter(BaseFilter):
     """LightGBM probability filter — entry veto based on model confidence.
 
@@ -41,20 +33,27 @@ class LgbmProbFilter(BaseFilter):
         symbol: str = "BTC/KRW",
         timeframe: str = "1h",
         model_dir: str = "models",
+        external_data_dir: str | None = None,
     ):
         super().__init__(threshold=threshold)
         self.threshold = threshold
         self.symbol = symbol
         self.timeframe = timeframe
         self.model_dir = Path(model_dir)
+        self.external_data_dir = Path(external_data_dir) if external_data_dir else None
 
         self._model = None
+        self._calibrator = None
+        self._feature_names: list[str] | None = None
         self._loaded = False
+        self._external_components: dict | None = None
+        self._external_load_tried: bool = False
+        self._warned_missing = False
         self.last_prob: float | None = None
         self.last_strength: float | None = None
 
     def _load_model(self):
-        """Lazy-load LightGBM model. Only attempts once."""
+        """Lazy-load LightGBM model and calibrator. Only attempts once."""
         if self._loaded:
             return self._model
 
@@ -65,6 +64,15 @@ class LgbmProbFilter(BaseFilter):
             model = LGBMTrainer.load(self.symbol, self.timeframe, self.model_dir)
             if model is not None:
                 self._model = model
+                self._calibrator = LGBMTrainer.load_calibrator(
+                    self.symbol, self.timeframe, self.model_dir
+                )
+                # Load feature names from metadata (may include external features)
+                meta = LGBMTrainer.load_meta(
+                    self.symbol, self.timeframe, self.model_dir
+                )
+                if meta and "feature_names" in meta:
+                    self._feature_names = meta["feature_names"]
                 log.info(f"LgbmProbFilter: model loaded for {self.symbol} {self.timeframe}")
             else:
                 log.warning(f"LgbmProbFilter: no model found for {self.symbol} {self.timeframe}")
@@ -73,15 +81,39 @@ class LgbmProbFilter(BaseFilter):
         return self._model
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
-        """Add ML feature columns to DataFrame."""
+        """Add ML feature columns to DataFrame.
+
+        Merges external features when ``external_data_dir`` is configured
+        so models trained with kimchi/funding/etc. see those columns here.
+        """
         try:
             from tradingbot.ml.features import FEATURE_COLS, build_feature_matrix
 
-            # Skip if features already computed
-            if all(col in df.columns for col in FEATURE_COLS):
+            # Load model first so we can check the full set of required feature
+            # names (10 for pure-technical models, 16 for external-feature models)
+            self._load_model()
+            required_cols = self._feature_names or FEATURE_COLS
+
+            # Skip if all required features already computed
+            if all(col in df.columns for col in required_cols):
                 return df
 
-            df, _ = build_feature_matrix(df)
+            if not self._external_load_tried and self.external_data_dir is not None:
+                self._external_load_tried = True
+                try:
+                    from tradingbot.data.external_fetcher import load_external_components
+
+                    self._external_components = load_external_components(self.external_data_dir)
+                except Exception as e:
+                    log.warning(f"LgbmProbFilter: failed to load external data: {e}")
+
+            external_df = None
+            if self._external_components is not None:
+                from tradingbot.data.external_fetcher import align_external_to
+
+                external_df = align_external_to(df, self._external_components)
+
+            df, _ = build_feature_matrix(df, external_df=external_df)
         except ImportError:
             log.warning("LgbmProbFilter: lightgbm/ml not installed — skipping compute")
         return df
@@ -103,15 +135,33 @@ class LgbmProbFilter(BaseFilter):
         if len(df) < WARMUP_CANDLES + 2:
             return False
 
-        X = df[FEATURE_COLS].iloc[[-1]]
+        # Use model's trained feature names if available (may include external features)
+        cols = self._feature_names if self._feature_names else FEATURE_COLS
+        # Skip if required columns are missing from DataFrame
+        missing = [c for c in cols if c not in df.columns]
+        if missing:
+            if not self._warned_missing:
+                log.warning(
+                    f"LgbmProbFilter: model expects {missing} but not in features — "
+                    f"filter will always return False. Set external_data_dir or retrain."
+                )
+                self._warned_missing = True
+            return False
+
+        X = df[cols].iloc[[-1]]
         if X.isna().any(axis=1).iloc[0]:
             return False
 
-        prob = float(model.predict(X)[0])
+        raw_prob = float(model.predict(X)[0])
+        prob = raw_prob
+        if self._calibrator is not None:
+            prob = float(self._calibrator.transform([raw_prob])[0])
         self.last_prob = prob
 
         if prob >= self.threshold:
-            self.last_strength = min(_half_kelly(prob), 1.0)
+            from tradingbot.ml.utils import half_kelly
+
+            self.last_strength = min(half_kelly(prob), 1.0)
             return True
 
         return False

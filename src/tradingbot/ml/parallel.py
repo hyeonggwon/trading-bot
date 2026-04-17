@@ -14,6 +14,8 @@ class PairTrainResult:
     timeframe: str
     avg_auc: float
     avg_precision: float
+    holdout_auc: float
+    holdout_precision: float
     n_windows: int
     model_path: str
     error: str | None = None
@@ -27,6 +29,7 @@ def train_pair(
     train_months: int,
     test_months: int,
     num_threads: int,
+    external_data_dir: str | None = None,
 ) -> PairTrainResult:
     """Train a single symbol x timeframe pair.
 
@@ -51,11 +54,20 @@ def train_pair(
     except FileNotFoundError:
         return PairTrainResult(
             symbol=symbol, timeframe=timeframe,
-            avg_auc=0.0, avg_precision=0.0, n_windows=0,
+            avg_auc=0.0, avg_precision=0.0,
+            holdout_auc=0.0, holdout_precision=0.0,
+            n_windows=0,
             model_path="", error="no data",
         )
 
     try:
+        # Load external features if available
+        external_df = None
+        if external_data_dir:
+            from tradingbot.data.external_fetcher import build_external_df
+
+            external_df = build_external_df(df, Path(external_data_dir))
+
         trainer = MLWalkForwardTrainer(
             symbol=symbol,
             timeframe=timeframe,
@@ -64,18 +76,22 @@ def train_pair(
             model_dir=Path(model_dir),
             lgbm_params={"num_threads": num_threads},
         )
-        report = trainer.run(df)
+        report = trainer.run(df, external_df=external_df)
         return PairTrainResult(
             symbol=symbol,
             timeframe=timeframe,
             avg_auc=report.avg_auc,
             avg_precision=report.avg_precision,
+            holdout_auc=report.holdout_auc,
+            holdout_precision=report.holdout_precision,
             n_windows=len(report.windows),
             model_path=str(report.model_path) if report.model_path else "",
         )
     except Exception as exc:
         return PairTrainResult(
             symbol=symbol, timeframe=timeframe,
-            avg_auc=0.0, avg_precision=0.0, n_windows=0,
+            avg_auc=0.0, avg_precision=0.0,
+            holdout_auc=0.0, holdout_precision=0.0,
+            n_windows=0,
             model_path="", error=str(exc),
         )

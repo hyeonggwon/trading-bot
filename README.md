@@ -11,7 +11,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 - **7가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파, LightGBM ML
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹
 - **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 48개 템플릿, 5가지 역할 태깅)
-- **ML 전략 (LightGBM)** — 15개 피처 자동 생성, Walk-Forward 학습, Half-Kelly 포지션 사이징
+- **ML 전략 (LightGBM)** — 10 기술 피처 + 6 외부 피처(김프/funding/FNG/USD_KRW), Walk-Forward 학습 + 아이소토닉 확률 보정, Half-Kelly 포지션 사이징
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결
 - **페이퍼/실매매** — 모의 체결 및 Upbit API 연동 실매매 (주문 관리, 안전 장치)
@@ -90,13 +90,13 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 ### 모듈 의존 관계
 
 ```
-cli.py ─┬─→ data/{fetcher, storage, indicators}
+cli.py ─┬─→ data/{fetcher, external_fetcher, storage, indicators}
         ├─→ backtest/{engine, vectorized, optimizer, walk_forward, parallel}
         ├─→ strategy/{base, registry, combined, lgbm_strategy, examples/*, filters/*}
         ├─→ live/{engine, state, order_manager}
         ├─→ exchange/{ccxt_exchange, paper, ws_client}
         ├─→ risk/{manager, validators}
-        ├─→ ml/{trainer, features, targets, walk_forward, parallel}
+        ├─→ ml/{trainer, features, targets, walk_forward, parallel, utils}
         ├─→ notifications/telegram
         └─→ dashboard/app
 ```
@@ -210,7 +210,11 @@ tradingbot combine-scan --top 10
 ```bash
 pip install -e ".[ml]"
 
-# 모델 학습 (Walk-Forward 검증 포함)
+# 외부 데이터 다운로드 (선택) — Binance OHLCV, funding rate, FNG, USD/KRW
+# 다운받으면 ml-train이 자동 감지하여 16 피처 모델로 학습. 없으면 10 기술 피처만 사용.
+tradingbot download-external --since 2024-01-01
+
+# 모델 학습 (Walk-Forward + 20% 홀드아웃 + 아이소토닉 보정)
 tradingbot ml-train --symbol BTC/KRW --timeframe 1h --train-months 3 --test-months 1
 
 # ML 전략으로 백테스트
@@ -272,7 +276,7 @@ tradingbot live --strategy ML+ADXTrend --symbol BTC/KRW \
 | `bollinger_breakout` | 볼린저밴드 상단 돌파 / 중간밴드 이탈 | `period`, `std` |
 | `multi_tf` | 상위 TF 추세 필터 + 하위 TF RSI 진입 | `higher_tf_factor`, `trend_sma_period` |
 | `volume_breakout` | 거래량 급등 + 최근 고점 돌파 | `volume_spike_threshold`, `price_lookback` |
-| `lgbm` | LightGBM ML 메타 모델 (15 피처 → Half-Kelly) | `entry_threshold`, `exit_threshold` |
+| `lgbm` | LightGBM ML 메타 모델 (10 기술 + 6 외부 피처 → Half-Kelly) | `entry_threshold`, `exit_threshold`, `external_data_dir` |
 
 ## 커스텀 전략 작성
 
@@ -322,7 +326,7 @@ trading-bot/
 ├── config/default.yaml               # 기본 설정 (심볼, 리스크, 수수료)
 ├── strategies/                       # 사용자 정의 전략 디렉토리
 │
-├── src/tradingbot/                   # 메인 패키지 (66개 모듈, ~7,400 라인)
+├── src/tradingbot/                   # 메인 패키지 (68개 모듈, ~7,400 라인)
 │   ├── cli.py                        # CLI 진입점 (typer)
 │   ├── config.py                     # Pydantic 설정 로더
 │   │
@@ -333,6 +337,7 @@ trading-bot/
 │   │
 │   ├── data/                         # 데이터 레이어
 │   │   ├── fetcher.py                #   CCXT 기반 OHLCV 다운로드
+│   │   ├── external_fetcher.py       #   외부 데이터 (Binance OHLCV, funding, FRED USD/KRW, FNG)
 │   │   ├── storage.py                #   Parquet 저장/로드/병합
 │   │   └── indicators.py             #   기술적 지표 19종
 │   │
@@ -369,11 +374,12 @@ trading-bot/
 │   │   └── parallel.py               #   병렬 백테스트 워커
 │   │
 │   ├── ml/                           # 머신러닝
-│   │   ├── features.py               #   피처 엔지니어링 (15개 피처)
+│   │   ├── features.py               #   피처 엔지니어링 (10 기술 + 6 외부 피처)
 │   │   ├── targets.py                #   4h 순방향 수익률 이진 분류 타겟
-│   │   ├── trainer.py                #   LightGBM 학습/평가/저장
-│   │   ├── walk_forward.py           #   퍼지드 확장 윈도우 + 엠바고
-│   │   └── parallel.py               #   병렬 학습 워커
+│   │   ├── trainer.py                #   LightGBM 학습/평가/아이소토닉 보정/저장
+│   │   ├── walk_forward.py           #   퍼지드 확장 윈도우 + 엠바고 150 + 20% 홀드아웃
+│   │   ├── parallel.py               #   병렬 학습 워커
+│   │   └── utils.py                  #   공용 헬퍼 (Half-Kelly)
 │   │
 │   ├── exchange/                     # 거래소 추상화
 │   │   ├── base.py                   #   BaseExchange ABC
@@ -396,7 +402,7 @@ trading-bot/
 │       ├── logging.py                #   콘솔 + JSON 파일 로테이션
 │       └── time.py                   #   타임존/날짜 파싱
 │
-└── tests/                            # 테스트 (212개, 17개 모듈)
+└── tests/                            # 테스트 (225개, 17개 모듈)
 ```
 
 ## 설정
@@ -474,7 +480,7 @@ tradingbot dashboard          # http://localhost:8501
 | ML | lightgbm + scikit-learn |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (212개) |
+| 테스트 | pytest (225개) |
 | 린트 | ruff + mypy |
 
 ## 개발
