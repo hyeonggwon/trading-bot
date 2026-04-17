@@ -188,10 +188,12 @@ def fetch_usd_krw(since: datetime | None = None) -> pd.DataFrame:
     rows = []
     for row in reader:
         val = row.get("DEXKOUS", "").strip()
-        if val and val != ".":
+        # FRED renamed DATE → observation_date; accept either.
+        date_str = row.get("observation_date") or row.get("DATE") or ""
+        if val and val != "." and date_str:
             try:
                 rows.append({
-                    "timestamp": pd.Timestamp(row["DATE"], tz="UTC") + pd.Timedelta(days=1),
+                    "timestamp": pd.Timestamp(date_str, tz="UTC") + pd.Timedelta(days=1),
                     "usd_krw": float(val),
                 })
             except (ValueError, KeyError):
@@ -201,6 +203,7 @@ def fetch_usd_krw(since: datetime | None = None) -> pd.DataFrame:
         return pd.DataFrame(columns=["usd_krw"])
 
     df = pd.DataFrame(rows).set_index("timestamp").sort_index()
+    df.index = df.index.astype("datetime64[ms, UTC]")
     return df
 
 
@@ -251,6 +254,7 @@ def fetch_fear_greed(limit: int = 0) -> pd.DataFrame:
 
     df = pd.DataFrame(rows).set_index("timestamp").sort_index()
     df = df[~df.index.duplicated(keep="last")]
+    df.index = df.index.astype("datetime64[ms, UTC]")
     return df
 
 
@@ -323,6 +327,11 @@ def save_external(
         existing = pd.read_parquet(path, engine="pyarrow")
         df = pd.concat([existing, df])
         df = df[~df.index.duplicated(keep="last")].sort_index()
+
+    # Normalize index precision so merge_asof in align_external_to never hits
+    # mixed datetime64[us]/datetime64[ms] keys (pandas rejects that merge).
+    if isinstance(df.index, pd.DatetimeIndex):
+        df.index = df.index.astype("datetime64[ms, UTC]")
 
     df.to_parquet(path, engine="pyarrow")
     log.info(f"External data saved: {path} ({len(df)} rows)")
