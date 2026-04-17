@@ -1520,6 +1520,8 @@ def ml_train_all(
                             "timeframe": tf,
                             "avg_auc": report.avg_auc,
                             "avg_precision": report.avg_precision,
+                            "holdout_auc": report.holdout_auc,
+                            "holdout_precision": report.holdout_precision,
                             "n_windows": len(report.windows),
                             "model_path": str(report.model_path),
                         })
@@ -1573,6 +1575,7 @@ def ml_train_all(
                             progress.log(
                                 f"[green]{sym} {tf}: AUC={r.avg_auc:.4f} "
                                 f"precision={r.avg_precision:.4f} "
+                                f"holdout={r.holdout_auc:.4f} "
                                 f"windows={r.n_windows}[/green]"
                             )
                             results.append({
@@ -1580,6 +1583,8 @@ def ml_train_all(
                                 "timeframe": tf,
                                 "avg_auc": r.avg_auc,
                                 "avg_precision": r.avg_precision,
+                                "holdout_auc": r.holdout_auc,
+                                "holdout_precision": r.holdout_precision,
                                 "n_windows": r.n_windows,
                                 "model_path": r.model_path,
                             })
@@ -1600,15 +1605,19 @@ def ml_train_all(
     table.add_column("TF")
     table.add_column("AUC", justify="right")
     table.add_column("Precision", justify="right")
+    table.add_column("Holdout AUC", justify="right")
     table.add_column("Windows", justify="right")
 
     for r in sorted(results, key=lambda x: x["avg_auc"], reverse=True):
         auc_style = "green" if r["avg_auc"] > 0.55 else ("yellow" if r["avg_auc"] > 0.50 else "red")
+        holdout = r.get("holdout_auc", 0.0)
+        holdout_style = "green" if holdout > 0.55 else ("yellow" if holdout > 0.50 else "red")
         table.add_row(
             r["symbol"],
             r["timeframe"],
             f"[{auc_style}]{r['avg_auc']:.4f}[/{auc_style}]",
             f"{r['avg_precision']:.4f}",
+            f"[{holdout_style}]{holdout:.4f}[/{holdout_style}]",
             str(r["n_windows"]),
         )
 

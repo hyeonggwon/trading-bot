@@ -139,7 +139,10 @@ def build_feature_matrix(
             df["funding_rate_zscore_20"] = (df["funding_rate"] - mu) / std
 
         if "usd_krw" in df.columns and df["usd_krw"].notna().any():
-            df["usd_krw_change"] = df["usd_krw"].pct_change()
+            # 24-period rolling change — USD/KRW is daily data merged into
+            # hourly candles, so pct_change(1) is 0 for 23/24 rows. Using
+            # pct_change(24) gives each hourly candle the day-over-day change.
+            df["usd_krw_change"] = df["usd_krw"].pct_change(24)
 
         # Add available external features to active columns
         for col in EXTERNAL_FEATURE_COLS:

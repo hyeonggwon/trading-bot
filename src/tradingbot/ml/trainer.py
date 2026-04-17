@@ -250,8 +250,19 @@ class LGBMTrainer:
         calibrator.X_min_ = float(x[0])
         calibrator.X_max_ = float(x[-1])
         calibrator.increasing_ = True
-        calibrator.f_ = interp1d(x, y, kind="linear", bounds_error=False,
-                                 fill_value=(y[0], y[-1]))
+        # interp1d requires >=2 distinct points. In a low-signal regime the
+        # model can predict a constant raw probability, so the saved isotonic
+        # fit collapses to a single (x, y) pair — fall back to a constant map.
+        if len(x) > 1:
+            calibrator.f_ = interp1d(
+                x, y, kind="linear", bounds_error=False,
+                fill_value=(y[0], y[-1]),
+            )
+        else:
+            const_y = float(y[0])
+            calibrator.f_ = lambda val, _c=const_y: np.full_like(
+                np.asarray(val, dtype=float), _c, dtype=float,
+            )
         return calibrator
 
     @staticmethod

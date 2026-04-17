@@ -404,9 +404,11 @@ def align_external_to(
 
     result = upbit_df[[]].copy()
     for frame in frames:
+        # Source frames are already sorted (load_external sorts on load,
+        # compute_kimchi_premium preserves Upbit's monotonic order).
         result = pd.merge_asof(
             result,
-            frame.sort_index(),
+            frame,
             left_index=True,
             right_index=True,
             direction="backward",
