@@ -40,18 +40,8 @@ class LgbmProbFilter(BaseFilter):
         self.symbol = symbol
         self.timeframe = timeframe
         self.model_dir = Path(model_dir)
-        # external_data_dir semantics:
-        #   None  → auto-detect (DEFAULT_EXTERNAL_DIR if it exists)
-        #   False → explicit opt-out (bypass auto-detect)
-        #   str   → explicit path
-        if external_data_dir is False:
-            resolved = None
-        elif external_data_dir:
-            resolved = external_data_dir
-        else:
-            from tradingbot.data.external_fetcher import auto_detect_external_dir
-            resolved = auto_detect_external_dir()
-        self.external_data_dir = Path(resolved) if resolved else None
+        from tradingbot.data.external_fetcher import resolve_external_data_dir
+        self.external_data_dir = resolve_external_data_dir(external_data_dir)
 
         self._model = None
         self._calibrator = None

@@ -37,6 +37,22 @@ def auto_detect_external_dir() -> str | None:
     return None
 
 
+def resolve_external_data_dir(value: str | Path | bool | None) -> Path | None:
+    """Resolve caller-provided ``external_data_dir`` to a concrete path.
+
+    Semantics:
+        - ``False``        → explicit opt-out, returns None
+        - ``str`` / ``Path`` (truthy) → use as-is
+        - ``None`` / falsy → auto-detect via :func:`auto_detect_external_dir`
+    """
+    if value is False:
+        return None
+    if isinstance(value, (str, Path)) and value:
+        return Path(value)
+    detected = auto_detect_external_dir()
+    return Path(detected) if detected else None
+
+
 # ---------------------------------------------------------------------------
 # Binance BTC/USDT OHLCV (for kimchi premium calculation)
 # ---------------------------------------------------------------------------
