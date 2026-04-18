@@ -35,6 +35,7 @@ class LGBMStrategy(Strategy):
         self.exit_threshold: float = self.params.get("exit_threshold", 0.45)
         self.model_dir = Path(self.params.get("model_dir", "models"))
         from tradingbot.data.external_fetcher import resolve_external_data_dir
+
         self.external_data_dir = resolve_external_data_dir(
             self.params.get("external_data_dir", None)
         )
@@ -81,10 +82,7 @@ class LGBMStrategy(Strategy):
         ``self._external_components``) then aligned per-df so multi-symbol
         backtests get correctly-aligned external features per symbol.
         """
-        if (
-            not self._external_load_tried
-            and self.external_data_dir is not None
-        ):
+        if not self._external_load_tried and self.external_data_dir is not None:
             self._external_load_tried = True
             try:
                 from tradingbot.data.external_fetcher import load_external_components
@@ -154,9 +152,7 @@ class LGBMStrategy(Strategy):
             strength=strength,
         )
 
-    def should_exit(
-        self, df: pd.DataFrame, symbol: str, position: Position
-    ) -> Signal | None:
+    def should_exit(self, df: pd.DataFrame, symbol: str, position: Position) -> Signal | None:
         prob = self._predict(df, symbol)
         if prob is None:
             return None

@@ -41,6 +41,7 @@ class LgbmProbFilter(BaseFilter):
         self.timeframe = timeframe
         self.model_dir = Path(model_dir)
         from tradingbot.data.external_fetcher import resolve_external_data_dir
+
         self.external_data_dir = resolve_external_data_dir(external_data_dir)
 
         self._model = None
@@ -69,9 +70,7 @@ class LgbmProbFilter(BaseFilter):
                     self.symbol, self.timeframe, self.model_dir
                 )
                 # Load feature names from metadata (may include external features)
-                meta = LGBMTrainer.load_meta(
-                    self.symbol, self.timeframe, self.model_dir
-                )
+                meta = LGBMTrainer.load_meta(self.symbol, self.timeframe, self.model_dir)
                 if meta and "feature_names" in meta:
                     self._feature_names = meta["feature_names"]
                 log.info(f"LgbmProbFilter: model loaded for {self.symbol} {self.timeframe}")

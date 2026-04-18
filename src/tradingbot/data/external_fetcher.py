@@ -79,7 +79,9 @@ def fetch_binance_ohlcv(
     until_ms = int(until.timestamp() * 1000) if until else None
 
     tf_ms_map = {
-        "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000,
+        "1h": 3_600_000,
+        "4h": 14_400_000,
+        "1d": 86_400_000,
     }
     tf_ms = tf_ms_map.get(timeframe, 3_600_000)
 
@@ -148,9 +150,7 @@ def fetch_funding_rate(
     max_pages = 5000
     for _ in range(max_pages):
         try:
-            rates = exchange.fetch_funding_rate_history(
-                "BTC/USDT:USDT", since=since_ms, limit=500
-            )
+            rates = exchange.fetch_funding_rate_history("BTC/USDT:USDT", since=since_ms, limit=500)
         except ccxt.BaseError as e:
             log.warning(f"Funding rate fetch error: {e}")
             break
@@ -173,10 +173,9 @@ def fetch_funding_rate(
     if not all_rows:
         return pd.DataFrame(columns=["funding_rate"])
 
-    df = pd.DataFrame([
-        {"timestamp": r["timestamp"], "funding_rate": r["fundingRate"]}
-        for r in all_rows
-    ])
+    df = pd.DataFrame(
+        [{"timestamp": r["timestamp"], "funding_rate": r["fundingRate"]} for r in all_rows]
+    )
     df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
     df = df.set_index("timestamp")
     df = df[~df.index.duplicated(keep="last")].sort_index()
@@ -222,10 +221,12 @@ def fetch_usd_krw(since: datetime | None = None) -> pd.DataFrame:
         date_str = row.get("observation_date") or row.get("DATE") or ""
         if val and val != "." and date_str:
             try:
-                rows.append({
-                    "timestamp": pd.Timestamp(date_str, tz="UTC") + pd.Timedelta(days=1),
-                    "usd_krw": float(val),
-                })
+                rows.append(
+                    {
+                        "timestamp": pd.Timestamp(date_str, tz="UTC") + pd.Timedelta(days=1),
+                        "usd_krw": float(val),
+                    }
+                )
             except (ValueError, KeyError):
                 continue
 
@@ -272,10 +273,12 @@ def fetch_fear_greed(limit: int = 0) -> pd.DataFrame:
     for entry in entries:
         try:
             raw_ts = pd.Timestamp(int(entry["timestamp"]), unit="s", tz="UTC")
-            rows.append({
-                "timestamp": raw_ts + pd.Timedelta(days=1),
-                "fng_value": float(entry["value"]),
-            })
+            rows.append(
+                {
+                    "timestamp": raw_ts + pd.Timedelta(days=1),
+                    "fng_value": float(entry["value"]),
+                }
+            )
         except (ValueError, KeyError):
             continue
 
