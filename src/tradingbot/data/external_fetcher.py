@@ -23,6 +23,20 @@ log = logging.getLogger(__name__)
 DEFAULT_EXTERNAL_DIR = Path("data/external")
 
 
+def auto_detect_external_dir() -> str | None:
+    """Return ``DEFAULT_EXTERNAL_DIR`` as a string if the directory exists, else None.
+
+    Resolves ``Path('data/external')`` against the current working directory;
+    returns None if missing. Intended for CLI entry points invoked from project
+    root, but works from any caller whose CWD contains the directory.
+    """
+    if DEFAULT_EXTERNAL_DIR.is_dir():
+        log.debug("auto-detected external data dir: %s", DEFAULT_EXTERNAL_DIR)
+        return str(DEFAULT_EXTERNAL_DIR)
+    log.debug("external data dir not found (CWD=%s); auto-detect skipped", Path.cwd())
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Binance BTC/USDT OHLCV (for kimchi premium calculation)
 # ---------------------------------------------------------------------------
@@ -384,6 +398,14 @@ def align_external_to(
     # merge_asof requires the left side sorted on the key
     if not upbit_df.index.is_monotonic_increasing:
         upbit_df = upbit_df.sort_index()
+
+    # Normalize upbit index precision to match saved external data ([ms, UTC]);
+    # merge_asof rejects mixed datetime64[us]/[ms] keys.
+    if isinstance(upbit_df.index, pd.DatetimeIndex):
+        target_dtype = pd.DatetimeTZDtype(unit="ms", tz="UTC")
+        if upbit_df.index.dtype != target_dtype:
+            upbit_df = upbit_df.copy()
+            upbit_df.index = upbit_df.index.astype(target_dtype)
 
     binance_df = components.get("binance")
     usd_krw_df = components.get("usd_krw")

@@ -34,8 +34,19 @@ class LGBMStrategy(Strategy):
         self.entry_threshold: float = self.params.get("entry_threshold", 0.60)
         self.exit_threshold: float = self.params.get("exit_threshold", 0.45)
         self.model_dir = Path(self.params.get("model_dir", "models"))
+        # external_data_dir semantics:
+        #   None  → auto-detect (DEFAULT_EXTERNAL_DIR if it exists)
+        #   False → explicit opt-out (bypass auto-detect)
+        #   str   → explicit path
         external_data_dir = self.params.get("external_data_dir", None)
-        self.external_data_dir = Path(external_data_dir) if external_data_dir else None
+        if external_data_dir is False:
+            resolved = None
+        elif external_data_dir:
+            resolved = external_data_dir
+        else:
+            from tradingbot.data.external_fetcher import auto_detect_external_dir
+            resolved = auto_detect_external_dir()
+        self.external_data_dir = Path(resolved) if resolved else None
 
         # Models, calibrators, and feature lists loaded lazily per symbol.
         # Feature lists must be per-symbol because different models can have

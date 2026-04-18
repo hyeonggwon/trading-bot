@@ -118,6 +118,15 @@ def build_feature_matrix(
         _raw_ext = ("kimchi_pct", "funding_rate", "fng_value", "usd_krw")
         ext_cols_present = [c for c in external_df.columns if c in _raw_ext]
         if ext_cols_present:
+            # Normalize datetime index precision — merge_asof rejects mixed
+            # datetime64[us]/[ms] keys (external parquets are saved as [ms, UTC]).
+            if (
+                isinstance(df.index, pd.DatetimeIndex)
+                and isinstance(external_df.index, pd.DatetimeIndex)
+                and df.index.dtype != external_df.index.dtype
+            ):
+                df = df.copy()
+                df.index = df.index.astype(external_df.index.dtype)
             df = pd.merge_asof(
                 df,
                 external_df[ext_cols_present],
