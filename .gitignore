@@ -47,3 +47,6 @@ htmlcov/
 
 # Markdown
 sequence.md
+
+# Docker
+docker-compose.yml
