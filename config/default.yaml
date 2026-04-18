@@ -18,7 +18,7 @@ trading:
   initial_balance: 1000000  # 100만 KRW
 
 risk:
-  max_position_size_pct: 0.1     # 포지션당 최대 10%
+  max_position_size_pct: 1.0     # 포지션당 최대 100% (컨테이너=심볼 1개 구조 기준)
   max_open_positions: 5          # 8종목 중 최대 5개 동시 포지션
   max_drawdown_pct: 0.20          # 20% 드로다운 서킷브레이커
   default_stop_loss_pct: 0.02     # 2% 손절
