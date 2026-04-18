@@ -16,7 +16,7 @@ from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.ml.features import FEATURE_COLS, WARMUP_CANDLES, build_feature_matrix
 from tradingbot.ml.trainer import LGBMTrainer
-from tradingbot.ml.utils import half_kelly
+from tradingbot.ml.utils import KELLY_FRACTION, kelly_size
 from tradingbot.strategy.base import Strategy, StrategyParams
 
 log = logging.getLogger(__name__)
@@ -149,7 +149,9 @@ class LGBMStrategy(Strategy):
             return None
 
         ratio = self._win_loss_ratios.get(symbol, 1.5)
-        strength = min(half_kelly(prob, avg_win_loss_ratio=ratio), 1.0)
+        strength = min(
+            kelly_size(prob, avg_win_loss_ratio=ratio, fraction=KELLY_FRACTION), 1.0
+        )
 
         return Signal(
             timestamp=df.index[-1].to_pydatetime(),

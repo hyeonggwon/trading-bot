@@ -165,10 +165,15 @@ class LgbmProbFilter(BaseFilter):
         self.last_prob = prob
 
         if prob >= self.threshold:
-            from tradingbot.ml.utils import half_kelly
+            from tradingbot.ml.utils import KELLY_FRACTION, kelly_size
 
             self.last_strength = min(
-                half_kelly(prob, avg_win_loss_ratio=self._win_loss_ratio), 1.0
+                kelly_size(
+                    prob,
+                    avg_win_loss_ratio=self._win_loss_ratio,
+                    fraction=KELLY_FRACTION,
+                ),
+                1.0,
             )
             return True
 

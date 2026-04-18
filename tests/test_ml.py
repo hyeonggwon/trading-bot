@@ -13,6 +13,7 @@ from tradingbot.ml.features import (
     build_feature_matrix,
 )
 from tradingbot.ml.targets import build_target
+from tradingbot.ml.utils import KELLY_FRACTION, half_kelly, kelly_size
 
 
 def _make_data(n: int = 300) -> pd.DataFrame:
@@ -97,6 +98,50 @@ class TestFeatures:
         df_feat, feature_cols = build_feature_matrix(df, external_df=None)
         assert len(feature_cols) == 10
         assert feature_cols == FEATURE_COLS
+
+
+class TestKellySize:
+    def test_default_fraction_is_half(self):
+        # Default fraction=0.5 must equal half of full Kelly
+        # full_kelly(p=0.6, b=1.5) = (0.6*1.5 - 0.4)/1.5 = 0.333..., * 0.5 = 0.1667
+        assert kelly_size(0.6, 1.5) == pytest.approx(0.1667, abs=1e-4)
+
+    def test_three_quarter_kelly(self):
+        # fraction=0.75 must be 1.5x of fraction=0.5
+        half = kelly_size(0.6, 1.5, fraction=0.5)
+        three_q = kelly_size(0.6, 1.5, fraction=0.75)
+        assert three_q == pytest.approx(half * 1.5, rel=1e-6)
+
+    def test_negative_edge_clamps_to_zero(self):
+        # p=0.3, b=1.0 → expected loss → full_kelly negative → clamp to 0
+        assert kelly_size(0.3, 1.0, fraction=0.5) == 0.0
+
+    def test_zero_or_negative_ratio_returns_zero(self):
+        assert kelly_size(0.6, 0.0) == 0.0
+        assert kelly_size(0.6, -1.0) == 0.0
+
+    def test_fraction_zero_returns_zero(self):
+        assert kelly_size(0.9, 5.0, fraction=0.0) == 0.0
+
+    def test_fraction_one_is_full_kelly(self):
+        # Full Kelly: (p*b - q)/b
+        # p=0.6, b=2.0 → (1.2 - 0.4)/2.0 = 0.4
+        assert kelly_size(0.6, 2.0, fraction=1.0) == pytest.approx(0.4, abs=1e-6)
+
+    def test_fraction_out_of_range_raises(self):
+        with pytest.raises(ValueError):
+            kelly_size(0.6, 1.5, fraction=-0.1)
+        with pytest.raises(ValueError):
+            kelly_size(0.6, 1.5, fraction=1.1)
+
+    def test_half_kelly_alias_matches_kelly_size(self):
+        # Backward-compat: half_kelly() must equal kelly_size() with same args
+        assert half_kelly(0.65, 2.5, 0.5) == kelly_size(0.65, 2.5, 0.5)
+        assert half_kelly(0.65, 2.5, 0.75) == kelly_size(0.65, 2.5, 0.75)
+
+    def test_kelly_fraction_constant(self):
+        # Production constant — guards against accidental change
+        assert KELLY_FRACTION == 0.75
 
 
 class TestTargets:
