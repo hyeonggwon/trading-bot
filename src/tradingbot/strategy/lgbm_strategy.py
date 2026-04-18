@@ -46,6 +46,7 @@ class LGBMStrategy(Strategy):
         self._models: dict = {}
         self._calibrators: dict = {}
         self._feature_cols: dict[str, list[str]] = {}
+        self._win_loss_ratios: dict[str, float] = {}
         # Raw external components loaded once, aligned per symbol/df
         self._external_components: dict | None = None
         self._external_load_tried: bool = False
@@ -67,7 +68,12 @@ class LGBMStrategy(Strategy):
                     self._feature_cols[symbol] = meta["feature_names"]
                 else:
                     self._feature_cols[symbol] = FEATURE_COLS
-                log.info(f"LightGBM model loaded: {symbol} {self.timeframe}")
+                # Empirical avg_win/avg_loss ratio from training (Kelly sizing)
+                self._win_loss_ratios[symbol] = (meta or {}).get("avg_win_loss_ratio", 1.5)
+                log.info(
+                    f"LightGBM model loaded: {symbol} {self.timeframe} "
+                    f"(win_loss_ratio={self._win_loss_ratios[symbol]})"
+                )
             else:
                 self._models[symbol] = None
                 self._calibrators[symbol] = None
@@ -142,7 +148,8 @@ class LGBMStrategy(Strategy):
         if prob is None or prob < self.entry_threshold:
             return None
 
-        strength = min(half_kelly(prob), 1.0)
+        ratio = self._win_loss_ratios.get(symbol, 1.5)
+        strength = min(half_kelly(prob, avg_win_loss_ratio=ratio), 1.0)
 
         return Signal(
             timestamp=df.index[-1].to_pydatetime(),

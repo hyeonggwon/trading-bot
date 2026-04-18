@@ -72,10 +72,14 @@ class MLWalkForwardTrainer:
         df_feat, feature_cols = build_feature_matrix(df.copy(), external_df=external_df)
         target = build_target(df_feat, self.forward_candles, self.threshold)
 
+        # Forward return per candle — needed later for empirical win/loss ratio
+        fwd_return = df_feat["close"].pct_change(self.forward_candles).shift(-self.forward_candles)
+
         # Valid rows: features not NaN and target not NaN
         valid_mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
         df_valid = df_feat[valid_mask]
         target_valid = target[valid_mask]
+        fwd_return_valid = fwd_return[valid_mask]
 
         if len(df_valid) < 200:
             log.warning(f"ML WF: insufficient data ({len(df_valid)} valid rows)")
@@ -98,8 +102,25 @@ class MLWalkForwardTrainer:
         boundary_gap = EMBARGO_CANDLES + self.forward_candles
         df_train_pool = df_valid.iloc[:holdout_split]
         target_train_pool = target_valid.iloc[:holdout_split]
+        fwd_return_train_pool = fwd_return_valid.iloc[:holdout_split]
         df_holdout = df_valid.iloc[holdout_split + boundary_gap:]
         target_holdout = target_valid.iloc[holdout_split + boundary_gap:]
+
+        # Empirical avg_win/avg_loss for Kelly sizing — uses train_pool only
+        # so the ratio shipped with the model never sees holdout data.
+        # "Loss" here means "non-win per target definition" (return <= threshold),
+        # so it includes small positive returns below the fee/profit threshold.
+        wins = fwd_return_train_pool[fwd_return_train_pool > self.threshold]
+        losses = fwd_return_train_pool[fwd_return_train_pool <= self.threshold]
+        if len(wins) > 0 and len(losses) > 0:
+            avg_win = float(wins.mean())
+            avg_loss = float(abs(losses.mean()))
+            avg_win_loss_ratio = round(avg_win / avg_loss, 3) if avg_loss > 0 else 1.5
+            # Cap to avoid overconfident Kelly when distribution is skewed by outliers
+            avg_win_loss_ratio = max(0.5, min(avg_win_loss_ratio, 5.0))
+        else:
+            avg_win_loss_ratio = 1.5
+        log.info(f"ML WF: empirical avg_win_loss_ratio={avg_win_loss_ratio}")
 
         log.info(
             f"ML WF: train_pool={len(df_train_pool)}, holdout={len(df_holdout)} "
@@ -221,6 +242,7 @@ class MLWalkForwardTrainer:
             "n_total_samples": len(df_valid),
             "forward_candles": self.forward_candles,
             "threshold": self.threshold,
+            "avg_win_loss_ratio": avg_win_loss_ratio,
             "train_start": str(df_valid.index[0]),
             "train_end": str(df_valid.index[-1]),
         }

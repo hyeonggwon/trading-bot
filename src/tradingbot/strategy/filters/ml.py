@@ -47,6 +47,7 @@ class LgbmProbFilter(BaseFilter):
         self._model = None
         self._calibrator = None
         self._feature_names: list[str] | None = None
+        self._win_loss_ratio: float = 1.5
         self._loaded = False
         self._external_components: dict | None = None
         self._external_load_tried: bool = False
@@ -73,7 +74,12 @@ class LgbmProbFilter(BaseFilter):
                 meta = LGBMTrainer.load_meta(self.symbol, self.timeframe, self.model_dir)
                 if meta and "feature_names" in meta:
                     self._feature_names = meta["feature_names"]
-                log.info(f"LgbmProbFilter: model loaded for {self.symbol} {self.timeframe}")
+                if meta and "avg_win_loss_ratio" in meta:
+                    self._win_loss_ratio = meta["avg_win_loss_ratio"]
+                log.info(
+                    f"LgbmProbFilter: model loaded for {self.symbol} {self.timeframe} "
+                    f"(win_loss_ratio={self._win_loss_ratio})"
+                )
             else:
                 log.warning(f"LgbmProbFilter: no model found for {self.symbol} {self.timeframe}")
         except ImportError:
@@ -161,7 +167,9 @@ class LgbmProbFilter(BaseFilter):
         if prob >= self.threshold:
             from tradingbot.ml.utils import half_kelly
 
-            self.last_strength = min(half_kelly(prob), 1.0)
+            self.last_strength = min(
+                half_kelly(prob, avg_win_loss_ratio=self._win_loss_ratio), 1.0
+            )
             return True
 
         return False
