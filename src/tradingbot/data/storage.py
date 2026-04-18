@@ -8,6 +8,7 @@ import structlog
 logger = structlog.get_logger()
 
 DEFAULT_DATA_DIR = Path("data")
+EXTERNAL_SUBDIR = "external"
 
 
 def _symbol_to_dirname(symbol: str) -> str:
@@ -119,6 +120,8 @@ def list_available_data(data_dir: Path = DEFAULT_DATA_DIR) -> list[dict[str, str
 
     for symbol_dir in sorted(data_dir.iterdir()):
         if not symbol_dir.is_dir() or symbol_dir.name.startswith("."):
+            continue
+        if symbol_dir.name == EXTERNAL_SUBDIR:
             continue
         symbol = symbol_dir.name.replace("_", "/")
         for parquet_file in sorted(symbol_dir.glob("*.parquet")):

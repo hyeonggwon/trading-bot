@@ -18,9 +18,11 @@ from pathlib import Path
 import ccxt
 import pandas as pd
 
+from tradingbot.data.storage import DEFAULT_DATA_DIR, EXTERNAL_SUBDIR
+
 log = logging.getLogger(__name__)
 
-DEFAULT_EXTERNAL_DIR = Path("data/external")
+DEFAULT_EXTERNAL_DIR = DEFAULT_DATA_DIR / EXTERNAL_SUBDIR
 
 
 def auto_detect_external_dir() -> str | None:

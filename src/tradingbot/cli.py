@@ -19,7 +19,7 @@ from rich.table import Table
 
 from tradingbot.config import ExchangeConfig, load_config
 from tradingbot.data.fetcher import DataFetcher
-from tradingbot.data.storage import list_available_data, save_candles
+from tradingbot.data.storage import EXTERNAL_SUBDIR, list_available_data, save_candles
 from tradingbot.utils.logging import setup_logging
 from tradingbot.utils.time import parse_date
 
@@ -1282,7 +1282,7 @@ def download_external(
     if until_dt:
         console.print(f"  Until: {until_dt.date()}")
 
-    ext_dir = Path(data_dir) / "external"
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
     results = fetch_all_external(since_dt, until_dt, ext_dir)
 
     if not results:
@@ -1317,7 +1317,7 @@ def ml_train(
         raise typer.Exit(1)
 
     # Load external features if available
-    ext_dir = Path(data_dir) / "external"
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
     external_df = build_external_df(df, ext_dir)
     ext_count = len([c for c in (external_df.columns if external_df is not None else [])]) if external_df is not None else 0
 
@@ -1481,7 +1481,7 @@ def ml_train_all(
         from tradingbot.data.storage import load_candles
         from tradingbot.ml.walk_forward import MLWalkForwardTrainer
 
-        ext_dir = Path(data_dir) / "external"
+        ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
 
         with _progress_context() as progress:
             task = progress.add_task("Training models", total=len(pairs))
@@ -1540,7 +1540,7 @@ def ml_train_all(
         ctx = mp.get_context("spawn")
         data_dir_abs = str(Path(data_dir).resolve())
         model_dir_abs = str(Path(model_dir).resolve())
-        ext_dir = Path(data_dir) / "external"
+        ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
         ext_dir_abs = str(ext_dir.resolve()) if ext_dir.exists() else None
 
         with _progress_context() as progress:

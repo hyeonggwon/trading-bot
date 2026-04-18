@@ -57,6 +57,17 @@ class TestListData:
         assert result[0]["symbol"] == "BTC/KRW"
         assert result[0]["timeframe"] == "1h"
 
+    def test_list_excludes_external(self, sample_df, tmp_data_dir):
+        """external/ holds ML feature data (FNG, funding rate, etc.), not tradeable symbols."""
+        save_candles(sample_df, "BTC/KRW", "1h", tmp_data_dir)
+        ext_dir = tmp_data_dir / "external"
+        ext_dir.mkdir()
+        pd.DataFrame({"fng_value": [30.0, 15.0]}).to_parquet(ext_dir / "fear_greed.parquet")
+
+        result = list_available_data(tmp_data_dir)
+        symbols = {r["symbol"] for r in result}
+        assert symbols == {"BTC/KRW"}
+
 
 class TestDetectGaps:
     def test_no_gaps(self):
