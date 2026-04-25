@@ -52,6 +52,26 @@ class LGBMStrategy(Strategy):
         self._external_load_tried: bool = False
         self._warned_missing: set[str] = set()
 
+    def set_model(
+        self,
+        symbol: str,
+        model: Any,
+        calibrator: Any,
+        feature_cols: list[str],
+        win_loss_ratio: float,
+    ) -> None:
+        """Inject a pre-trained model, bypassing file I/O.
+
+        Used by ml-walk-forward to swap a fresh per-window model into the
+        strategy without writing to disk. ``_load_model`` checks membership in
+        ``self._models``, so populating these dicts short-circuits any later
+        lazy load for the same symbol.
+        """
+        self._models[symbol] = model
+        self._calibrators[symbol] = calibrator
+        self._feature_cols[symbol] = feature_cols
+        self._win_loss_ratios[symbol] = win_loss_ratio
+
     def _load_model(self, symbol: str):
         """Lazy-load model, calibrator, and feature names for a specific symbol."""
         if symbol not in self._models:
