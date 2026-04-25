@@ -1384,8 +1384,8 @@ def ml_walk_forward(
     test_months: int = typer.Option(2, "--test-months", help="Test window months"),
     forward_candles: int = typer.Option(4, "--forward-candles", help="Target horizon"),
     threshold: float = typer.Option(0.006, "--threshold", help="Target return threshold"),
-    entry_threshold: float = typer.Option(0.60, "--entry-threshold", help="Entry probability"),
-    exit_threshold: float = typer.Option(0.45, "--exit-threshold", help="Exit probability"),
+    entry_threshold: float = typer.Option(0.45, "--entry-threshold", help="Entry probability threshold"),
+    exit_threshold: float = typer.Option(0.30, "--exit-threshold", help="Exit probability threshold"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     output_dir: str = typer.Option(
@@ -1546,8 +1546,8 @@ def ml_backtest(
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model directory"),
-    entry_threshold: float = typer.Option(0.60, "--entry-threshold", help="Entry probability threshold"),
-    exit_threshold: float = typer.Option(0.45, "--exit-threshold", help="Exit probability threshold"),
+    entry_threshold: float = typer.Option(0.45, "--entry-threshold", help="Entry probability threshold"),
+    exit_threshold: float = typer.Option(0.30, "--exit-threshold", help="Exit probability threshold"),
     start: str = typer.Option(
         None,
         "--start",
