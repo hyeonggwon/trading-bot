@@ -774,6 +774,23 @@ def dashboard(
     )
 
 
+def _validate_date_range(start: str | None, end: str | None) -> None:
+    """Reject malformed --start/--end before workers spawn.
+
+    Workers parse these inside spawned processes; an invalid string would
+    crash the worker with an opaque ValueError. Validating up-front gives
+    the user a clean Typer-style error message.
+    """
+    for label, value in (("--start", start), ("--end", end)):
+        if value is None:
+            continue
+        try:
+            parse_date(value)
+        except ValueError as exc:
+            console.print(f"[red]Invalid {label} ({value!r}): {exc}[/red]")
+            raise typer.Exit(1) from exc
+
+
 @app.command()
 def scan(
     top_n: int = typer.Option(10, "--top", help="Show top N results"),
@@ -790,6 +807,7 @@ def scan(
 
     setup_logging()
     _load_strategies()
+    _validate_date_range(start, end)
 
     valid_metrics = {"sharpe_ratio", "total_return", "max_drawdown", "win_rate", "profit_factor", "total_trades"}
     if sort_by not in valid_metrics:
@@ -1065,6 +1083,7 @@ def combine_scan(
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     setup_logging()
+    _validate_date_range(start, end)
 
     from tradingbot.data.storage import list_available_data
 

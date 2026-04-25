@@ -78,14 +78,18 @@ def _run_batch(
         "backtest": {"start_date": start, "end_date": end},
     })
 
-    # Slice df once for the vectorized path (engine path slices from config).
-    df_sliced = df
-    if start is not None:
-        df_sliced = df_sliced[df_sliced.index >= pd.Timestamp(start, tz="UTC")]
-    if end is not None:
-        df_sliced = df_sliced[df_sliced.index <= pd.Timestamp(end, tz="UTC")]
-
-    if df_sliced.empty:
+    # Empty-range short-circuit. Indicators are still computed on the full df
+    # below so the eval window keeps proper warmup; this check just avoids
+    # wasted work + surfaces a clean error when the user picks a range that
+    # doesn't overlap the data.
+    start_ts = pd.Timestamp(start, tz="UTC") if start is not None else None
+    end_ts = pd.Timestamp(end, tz="UTC") if end is not None else None
+    df_in_range = df
+    if start_ts is not None:
+        df_in_range = df_in_range[df_in_range.index >= start_ts]
+    if end_ts is not None:
+        df_in_range = df_in_range[df_in_range.index <= end_ts]
+    if df_in_range.empty:
         return [
             ScanResult(
                 strategy=name, symbol=symbol, timeframe=timeframe,
@@ -118,7 +122,8 @@ def _run_batch(
         # --- Vectorized path: combined templates without ML ---
         if vectorizable_jobs:
             results.extend(_run_vectorized_batch(
-                df_sliced, symbol, timeframe, vectorizable_jobs, config, balance,
+                df, symbol, timeframe, vectorizable_jobs, config, balance,
+                start_ts=start_ts, end_ts=end_ts,
             ))
 
         # --- Fallback path: registered strategies + ML templates ---
@@ -132,8 +137,15 @@ def _run_batch(
 
 def _run_vectorized_batch(
     df, symbol, timeframe, jobs, config, balance,
+    start_ts=None, end_ts=None,
 ) -> list[ScanResult]:
-    """Run combined templates via vectorized engine."""
+    """Run combined templates via vectorized engine.
+
+    ``start_ts``/``end_ts`` (UTC pandas Timestamps) optionally restrict the
+    evaluation window. Indicators are computed on the full ``df`` first so
+    the first row of the eval window has a real value (warmup-correct);
+    the indicator dataframe is then sliced by timestamp before backtesting.
+    """
     from tradingbot.backtest.vectorized import vectorized_backtest
     from tradingbot.strategy.combined import CombinedStrategy
     from tradingbot.strategy.filters.registry import parse_filter_string
@@ -155,11 +167,16 @@ def _run_vectorized_batch(
         all_filters += entry_filters + exit_filters
         parsed_jobs.append((name, entry_filters, exit_filters, entry, exit_))
 
-    # Compute union indicators once for all vectorizable jobs
+    # Compute union indicators on the full df (warmup-correct), then slice
+    # by timestamp to the eval window before backtesting.
     union_strategy = CombinedStrategy(entry_filters=all_filters, exit_filters=[])
     union_strategy.symbols = [symbol]
     union_strategy.timeframe = timeframe
     indicator_df = union_strategy.indicators(df.copy())
+    if start_ts is not None:
+        indicator_df = indicator_df[indicator_df.index >= start_ts]
+    if end_ts is not None:
+        indicator_df = indicator_df[indicator_df.index <= end_ts]
 
     results: list[ScanResult] = []
     for name, entry_filters, exit_filters, entry, exit_ in parsed_jobs:

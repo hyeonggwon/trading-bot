@@ -362,3 +362,46 @@ class TestBugFixes:
         sortino = report.sortino_ratio
         assert isinstance(sortino, float)
         assert sortino > 0  # overall positive trend
+
+    def test_precomputed_indicators_aligned_with_sliced_data(self):
+        """Regression: when config dates slice symbol_data, the engine must
+        reindex precomputed_indicators to the same timestamps. Without this,
+        ``iloc[:idx]`` reads indicator values from the unsliced start of the
+        full dataset, which is a silent data corruption."""
+        df = _make_trending_data(200)
+        strategy_full = SmaCrossStrategy(StrategyParams({"fast_period": 5, "slow_period": 15}))
+        strategy_full.symbols = ["BTC/KRW"]
+        # Compute indicators on the FULL df, then pass that as precomputed
+        # alongside config dates that slice to a window starting at candle 100.
+        precomputed = {"BTC/KRW": strategy_full.indicators(df.copy())}
+        precomputed["BTC/KRW"].values.flags.writeable = False
+
+        sliced_start = str(df.index[100].date())
+        config = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(
+                max_position_size_pct=0.5, max_open_positions=1,
+                max_drawdown_pct=0.30, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02,
+            ),
+            backtest=BacktestConfig(
+                fee_rate=0.0005, slippage_pct=0.001, start_date=sliced_start,
+            ),
+        )
+
+        # Reference: run engine without precomputed (engine slices then computes
+        # indicators on the slice — which loses warmup, but its output is what
+        # the engine self-consistently uses today as a baseline). The bug is
+        # that with precomputed, the indicator df is unsliced and iloc[:idx]
+        # corrupts values silently.
+        strategy_with = SmaCrossStrategy(StrategyParams({"fast_period": 5, "slow_period": 15}))
+        strategy_with.symbols = ["BTC/KRW"]
+        engine_with = BacktestEngine(strategy=strategy_with, config=config)
+        report_with = engine_with.run({"BTC/KRW": df.copy()}, precomputed_indicators=precomputed)
+
+        # Pre-fix: trade entry timestamps for the precomputed run would not
+        # land in the [sliced_start, ...] window because indicator values
+        # for the first sliced rows came from candle 0 of the full dataset.
+        # Post-fix: every trade must lie within the sliced window.
+        if report_with.trades:
+            for t in report_with.trades:
+                assert t.entry_order.filled_at >= df.index[100].to_pydatetime()

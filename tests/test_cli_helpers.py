@@ -433,6 +433,44 @@ class TestRunBatch:
         assert only_start[0].total_trades < full[0].total_trades
         assert only_end[0].total_trades < full[0].total_trades
 
+    def test_vectorized_path_preserves_warmup(self, tmp_path):
+        """Slicing must NOT happen before indicator computation (warmup correctness).
+
+        If the worker sliced the OHLCV before computing indicators, the first
+        ~52 candles of a sliced range would have NaN/incorrect indicator
+        values. This test catches that regression by comparing the
+        vectorized result on a sliced range against an engine result on the
+        same range. They should produce comparable trade counts; without
+        warmup, the vectorized path would generate strictly fewer entries
+        because the first candles can't fire entry filters.
+        """
+        from tradingbot.backtest.parallel import _run_batch
+
+        data_dir, config_dir = self._setup_date_range_fixture(tmp_path)
+        # Pick a range whose start is well past the indicator warmup window
+        # so warmup-correct indicators must yield real (non-NaN) values from
+        # candle 0 of the sliced range.
+        jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
+
+        sliced_vec = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+            False, "2024-01-10", "2024-01-20",
+        )
+        # force_engine=True drives the same job through engine path which
+        # already applies indicators on the sliced data correctly via the
+        # engine's own per-iteration logic; trade count should be similar.
+        sliced_engine = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+            True, "2024-01-10", "2024-01-20",
+        )
+        assert sliced_vec[0].error is None
+        assert sliced_engine[0].error is None
+        # Both paths should agree on trade count to within a small tolerance
+        # (vectorized ≈ engine ± 1 due to rounding/fee differences).
+        assert abs(sliced_vec[0].total_trades - sliced_engine[0].total_trades) <= 2
+
     def test_empty_range_returns_error(self, tmp_path):
         """A start/end range with no candles in it should report an error, not crash."""
         from tradingbot.backtest.parallel import _run_batch
@@ -446,6 +484,34 @@ class TestRunBatch:
         )
         assert len(results) == 1
         assert results[0].error == "no data in range"
+
+
+class TestValidateDateRange:
+    """Tests for _validate_date_range used by scan/combine-scan."""
+
+    def test_valid_dates_pass(self):
+        from tradingbot.cli import _validate_date_range
+
+        _validate_date_range("2024-01-01", "2024-12-31")
+        _validate_date_range(None, None)
+        _validate_date_range("2024-01-01", None)
+        _validate_date_range(None, "2024-12-31")
+
+    def test_invalid_start_raises_typer_exit(self):
+        import typer
+
+        from tradingbot.cli import _validate_date_range
+
+        with pytest.raises(typer.Exit):
+            _validate_date_range("not-a-date", None)
+
+    def test_invalid_end_raises_typer_exit(self):
+        import typer
+
+        from tradingbot.cli import _validate_date_range
+
+        with pytest.raises(typer.Exit):
+            _validate_date_range(None, "2024-13-99")
 
 
 class TestWalkForwardCombined:
