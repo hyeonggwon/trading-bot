@@ -31,13 +31,17 @@ class LGBMStrategy(Strategy):
 
     def __init__(self, params: StrategyParams | None = None):
         super().__init__(params)
-        # Defaults are set against the calibrated probability distribution.
-        # Isotonic calibration squashes raw model output toward the base rate
-        # (~28% for 4h forward >0.6%), so calibrated probs cluster well below
-        # 0.50. The 0.60 default we used to ship was empirically unreachable —
-        # see plan_ml_walkforward.md analysis. 0.45 sits at the top of the
-        # observed plateau (BTC/KRW 4h holdout: hit rate 43% vs base 28%,
-        # +0.44%/trade gross). Tune per-symbol via StrategyParams if needed.
+        # Defaults sit inside the calibrated probability range produced by
+        # MLWalkForwardTrainer. Isotonic calibration maps raw scores to
+        # empirical positive frequencies, so the calibrator's max output is
+        # bounded by the highest base-rate bin in its calibration data.
+        # Across our 24 symbol×timeframe models the calibrated max ranges
+        # from 0.33 (LINK/KRW 1h) up to 1.00 (several models with a perfect
+        # high-confidence bin). 0.45 fires meaningfully on most models we
+        # tested (8–250 entries on a ~1.3y holdout); a few thin models
+        # produce few signals and need to be tuned via param_space() / the
+        # optimizer. The previous 0.60 default was unreachable on tighter
+        # calibrators (e.g. BTC/KRW 4h max 0.48) — that's the bug this fixes.
         self.entry_threshold: float = self.params.get("entry_threshold", 0.45)
         self.exit_threshold: float = self.params.get("exit_threshold", 0.30)
         self.model_dir = Path(self.params.get("model_dir", "models"))
@@ -204,6 +208,6 @@ class LGBMStrategy(Strategy):
     @classmethod
     def param_space(cls) -> dict[str, list[Any]]:
         return {
-            "entry_threshold": [0.40, 0.45, 0.48],
-            "exit_threshold": [0.25, 0.30, 0.35],
+            "entry_threshold": [0.40, 0.45, 0.50, 0.55],
+            "exit_threshold": [0.20, 0.25, 0.30, 0.35],
         }
