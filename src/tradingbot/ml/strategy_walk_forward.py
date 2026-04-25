@@ -17,6 +17,7 @@ from typing import Any
 import pandas as pd
 
 from tradingbot.backtest.engine import BacktestEngine
+from tradingbot.backtest.report import BacktestReport
 from tradingbot.config import AppConfig
 from tradingbot.data.external_fetcher import build_external_df
 from tradingbot.ml.features import WARMUP_CANDLES, build_feature_matrix
@@ -184,13 +185,21 @@ class MLStrategyWalkForward:
                 continue
 
             engine = BacktestEngine(strategy=strategy, config=self.config)
-            backtest_report = engine.run({self.symbol: test_ohlcv})
+            full_report = engine.run({self.symbol: test_ohlcv})
+
+            # Strip the warmup prefix from the report. The backtest sees
+            # WARMUP_CANDLES rows before test_start_ts to let indicators
+            # come up from NaN; equity sits flat there (no trades), but
+            # those flat-zero returns deflate Sharpe and skew win-rate.
+            # Pattern mirrors _walk_forward_combined in cli.py.
+            test_start_ts = df_valid.index[test_start_idx]
+            backtest_report = self._filter_to_test_window(full_report, test_start_ts)
 
             window_result = {
                 "window": window_idx,
                 "train_start": str(df_valid.index[0]),
                 "train_end": str(df_valid.index[train_end_idx - 1]),
-                "test_start": str(df_valid.index[test_start_idx]),
+                "test_start": str(test_start_ts),
                 "test_end": str(df_valid.index[test_end_idx - 1]),
                 "n_train": int(train_end_idx),
                 "n_test": int(test_end_idx - test_start_idx),
@@ -286,6 +295,38 @@ class MLStrategyWalkForward:
             calibrator = self.trainer.calibrate(model, X_cal, y_cal)
 
         return model, calibrator, win_loss_ratio
+
+    def _filter_to_test_window(
+        self,
+        full_report: BacktestReport,
+        test_start_ts: pd.Timestamp,
+    ) -> BacktestReport:
+        """Drop the warmup prefix from the engine's report.
+
+        Returns a fresh ``BacktestReport`` whose equity_curve and trades only
+        cover ``test_start_ts`` onwards. If the equity curve has fewer than
+        2 points after filtering, returns the original report (rare — would
+        indicate the warmup consumed the whole window).
+        """
+        test_equity = full_report.equity_curve[
+            full_report.equity_curve.index >= test_start_ts
+        ]
+        if len(test_equity) < 2:
+            return full_report
+
+        test_start_dt = test_start_ts.to_pydatetime()
+        test_trades = [
+            t for t in full_report.trades
+            if t.entry_order.created_at is not None
+            and t.entry_order.created_at >= test_start_dt
+        ]
+        return BacktestReport(
+            trades=test_trades,
+            equity_curve=test_equity,
+            initial_balance=float(test_equity.iloc[0]),
+            final_balance=float(test_equity.iloc[-1]),
+            timeframe=full_report.timeframe,
+        )
 
     def _slice_test_ohlcv(
         self,
