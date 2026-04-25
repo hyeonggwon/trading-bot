@@ -56,3 +56,6 @@ results/
 
 # Docker
 docker-compose.yml
+
+# Markdown
+plan.md
