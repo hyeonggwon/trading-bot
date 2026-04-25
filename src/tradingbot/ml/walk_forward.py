@@ -242,7 +242,11 @@ class MLWalkForwardTrainer:
             sorted(zip(feature_cols, importance), key=lambda x: -x[1])
         )
 
-        # Save final model + calibrator
+        # Save final model + calibrator. train_start / train_end track the
+        # *actual* slice the model fit on (df_train_pool), so downstream tools
+        # like ml-backtest can avoid evaluating on candles the model has seen.
+        # data_end keeps the original "last valid candle" for reference;
+        # holdout_* are None when no holdout was reserved.
         meta = {
             "avg_auc": report.avg_auc,
             "avg_precision": report.avg_precision,
@@ -255,8 +259,15 @@ class MLWalkForwardTrainer:
             "forward_candles": self.forward_candles,
             "threshold": self.threshold,
             "avg_win_loss_ratio": avg_win_loss_ratio,
-            "train_start": str(df_valid.index[0]),
-            "train_end": str(df_valid.index[-1]),
+            "train_start": str(df_train_pool.index[0]),
+            "train_end": str(df_train_pool.index[-1]),
+            "holdout_start": (
+                str(df_holdout.index[0]) if len(df_holdout) > 0 else None
+            ),
+            "holdout_end": (
+                str(df_holdout.index[-1]) if len(df_holdout) > 0 else None
+            ),
+            "data_end": str(df_valid.index[-1]),
         }
         report.model_path = self.trainer.save(
             final_model, self.symbol, self.timeframe, meta, feature_cols,
