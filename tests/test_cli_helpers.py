@@ -599,6 +599,38 @@ class TestResolveHoldoutWindow:
         assert s is None and e is None
         assert "no data" in note
 
+    def test_multi_symbol_with_empty_df_does_not_crash(self):
+        """Regression: an empty DataFrame in the dict must not raise IndexError."""
+        from tradingbot.cli import _resolve_holdout_window
+
+        df_real = _make_cyclic_df(100)
+        df_empty = pd.DataFrame(
+            columns=["open", "high", "low", "close", "volume"],
+            index=pd.DatetimeIndex([], tz="UTC"),
+        )
+        s, _e, note = _resolve_holdout_window(
+            {"BTC/KRW": df_real, "ETH/KRW": df_empty}, None, None, False,
+        )
+        # Empty df is filtered out; cutoff is computed from the remaining df's
+        # span (multi-symbol path uses timestamp span, not index position).
+        cutoff = pd.Timestamp(s)
+        expected = df_real.index[0] + (df_real.index[-1] - df_real.index[0]) * 0.8
+        assert abs((cutoff - expected).total_seconds()) < 60
+        assert "holdout window (last 20%)" in note
+
+    def test_multi_symbol_all_empty_returns_none(self):
+        from tradingbot.cli import _resolve_holdout_window
+
+        df_empty = pd.DataFrame(
+            columns=["open", "high", "low", "close", "volume"],
+            index=pd.DatetimeIndex([], tz="UTC"),
+        )
+        s, e, note = _resolve_holdout_window(
+            {"BTC/KRW": df_empty, "ETH/KRW": df_empty}, None, None, False,
+        )
+        assert s is None and e is None
+        assert "no data" in note
+
 
 class TestWalkForwardCombined:
     """Tests for _walk_forward_combined (combined template walk-forward)."""

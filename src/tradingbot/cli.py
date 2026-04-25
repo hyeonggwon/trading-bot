@@ -836,10 +836,11 @@ def _resolve_holdout_window(
         return None, None, "full data range (--include-train)"
 
     if isinstance(df_or_dfs, dict):
-        if not df_or_dfs:
+        non_empty = [d for d in df_or_dfs.values() if not d.empty]
+        if not non_empty:
             return None, None, "full data range (no data)"
-        common_start = max(d.index[0] for d in df_or_dfs.values())
-        common_end = min(d.index[-1] for d in df_or_dfs.values())
+        common_start = max(d.index[0] for d in non_empty)
+        common_end = min(d.index[-1] for d in non_empty)
         if common_start >= common_end:
             return None, None, "full data range (no overlap)"
         cutoff_ts = common_start + (common_end - common_start) * (1 - holdout_pct)
