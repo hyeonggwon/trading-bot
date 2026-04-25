@@ -1548,12 +1548,30 @@ def ml_backtest(
     model_dir: str = typer.Option("models", "--model-dir", help="Model directory"),
     entry_threshold: float = typer.Option(0.60, "--entry-threshold", help="Entry probability threshold"),
     exit_threshold: float = typer.Option(0.45, "--exit-threshold", help="Exit probability threshold"),
+    start: str = typer.Option(
+        None,
+        "--start",
+        help="Override evaluation start (YYYY-MM-DD). Default: meta.holdout_start.",
+    ),
+    end: str = typer.Option(None, "--end", help="Override evaluation end (YYYY-MM-DD)."),
+    include_train: bool = typer.Option(
+        False,
+        "--include-train",
+        help="Disable holdout-only filtering and evaluate on the full data range.",
+    ),
 ) -> None:
-    """Backtest using a pre-trained LightGBM model."""
+    """Backtest using a pre-trained LightGBM model.
+
+    By default the model is evaluated only on the holdout window recorded in
+    its meta.json (everything after ``train_end`` plus an embargo). Pass
+    ``--include-train`` to backtest the full data range, or use ``--start`` /
+    ``--end`` to set an explicit window.
+    """
     setup_logging()
 
     from tradingbot.backtest.engine import BacktestEngine
     from tradingbot.data.storage import load_candles
+    from tradingbot.ml.trainer import LGBMTrainer
     from tradingbot.strategy.base import StrategyParams
     from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
@@ -1562,6 +1580,30 @@ def ml_backtest(
     except FileNotFoundError:
         console.print(f"[red]No data for {symbol} {timeframe}.[/red]")
         raise typer.Exit(1)
+
+    # Resolve evaluation window. Precedence: --start/--end > meta-derived holdout > full range.
+    meta = LGBMTrainer.load_meta(symbol, timeframe, Path(model_dir))
+    effective_start: str | None = start
+    effective_end: str | None = end
+    period_note = "user-specified range"
+
+    if not include_train and effective_start is None:
+        if meta is not None and meta.get("holdout_start"):
+            effective_start = meta["holdout_start"]
+            period_note = "holdout window (post training cut)"
+        elif meta is not None and meta.get("train_end"):
+            effective_start = meta["train_end"]
+            period_note = (
+                "post train_end (legacy meta — pass --include-train if results look empty)"
+            )
+        else:
+            console.print(
+                "[yellow]Warning: meta.json missing train_end / holdout_start — "
+                "evaluating on full data range. Pass --start to constrain manually.[/yellow]"
+            )
+            period_note = "full data range (no meta)"
+    elif include_train and start is None and end is None:
+        period_note = "full data range (--include-train)"
 
     strategy = LGBMStrategy(StrategyParams(values={
         "entry_threshold": entry_threshold,
@@ -1573,9 +1615,13 @@ def ml_backtest(
 
     config = load_config(Path("config"), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+        "backtest": {"start_date": effective_start, "end_date": effective_end},
     })
 
     console.print(f"[bold]Backtesting LightGBM strategy on {symbol} {timeframe}...[/bold]")
+    eval_start_str = effective_start or str(df.index[0])
+    eval_end_str = effective_end or str(df.index[-1])
+    console.print(f"  Evaluation period: {eval_start_str} → {eval_end_str} ({period_note})")
 
     engine = BacktestEngine(strategy=strategy, config=config)
     report = engine.run({symbol: df})

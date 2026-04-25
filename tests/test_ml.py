@@ -257,6 +257,21 @@ class TestWalkForward:
         assert "has_calibrator" in meta
         assert meta["has_calibrator"] is True
 
+        # Boundary fields must reflect the actual training cut (not the data tail)
+        # so downstream tools like ml-backtest can avoid in-sample evaluation.
+        for key in ("train_start", "train_end", "holdout_start", "holdout_end", "data_end"):
+            assert key in meta, f"missing meta key: {key}"
+
+        train_end = pd.Timestamp(meta["train_end"])
+        holdout_start = pd.Timestamp(meta["holdout_start"])
+        data_end = pd.Timestamp(meta["data_end"])
+        assert train_end < holdout_start, (
+            f"train_end ({train_end}) must precede holdout_start ({holdout_start})"
+        )
+        assert holdout_start <= data_end
+        # train_end is the actual cut, not the last data point.
+        assert train_end < data_end
+
 
 class TestMLStrategyWalkForward:
     def test_run_produces_time_honest_windows(self):
