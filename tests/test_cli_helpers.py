@@ -514,6 +514,92 @@ class TestValidateDateRange:
             _validate_date_range(None, "2024-13-99")
 
 
+class TestResolveHoldoutWindow:
+    """Tests for _resolve_holdout_window used by backtest/combine."""
+
+    def test_explicit_start_takes_precedence(self):
+        from tradingbot.cli import _resolve_holdout_window
+
+        df = _make_cyclic_df(100)
+        s, e, note = _resolve_holdout_window(df, "2024-02-01", None, False)
+        assert s == "2024-02-01"
+        assert e is None
+        assert "user-specified" in note
+
+    def test_explicit_end_takes_precedence(self):
+        from tradingbot.cli import _resolve_holdout_window
+
+        df = _make_cyclic_df(100)
+        s, e, note = _resolve_holdout_window(df, None, "2024-03-01", False)
+        assert s is None
+        assert e == "2024-03-01"
+        assert "user-specified" in note
+
+    def test_include_train_returns_none_bounds(self):
+        from tradingbot.cli import _resolve_holdout_window
+
+        df = _make_cyclic_df(100)
+        s, e, note = _resolve_holdout_window(df, None, None, True)
+        assert s is None
+        assert e is None
+        assert "include-train" in note
+
+    def test_default_returns_last_20_percent_single_df(self):
+        """100 candles → cutoff at index 80 timestamp."""
+        from tradingbot.cli import _resolve_holdout_window
+
+        df = _make_cyclic_df(100)
+        s, e, note = _resolve_holdout_window(df, None, None, False)
+        assert e is None
+        assert "holdout window (last 20%)" in note
+        # Cutoff timestamp must equal df.index[80]
+        assert s == str(df.index[80])
+
+    def test_default_custom_pct(self):
+        """holdout_pct=0.1 → cutoff at index 90."""
+        from tradingbot.cli import _resolve_holdout_window
+
+        df = _make_cyclic_df(100)
+        s, _e, note = _resolve_holdout_window(df, None, None, False, holdout_pct=0.1)
+        assert s == str(df.index[90])
+        assert "10%" in note
+
+    def test_multi_symbol_uses_common_window(self):
+        """Multi-df: cutoff must lie inside the common timestamp range."""
+        from tradingbot.cli import _resolve_holdout_window
+
+        df1 = _make_cyclic_df(100)  # starts 2024-01-01 00:00, 100h long
+        df2_index = pd.date_range("2024-01-02", periods=100, freq="h", tz="UTC")
+        df2 = df1.copy()
+        df2.index = df2_index
+
+        s, _e, note = _resolve_holdout_window({"BTC/KRW": df1, "ETH/KRW": df2}, None, None, False)
+        cutoff = pd.Timestamp(s)
+        common_start = max(df1.index[0], df2.index[0])
+        common_end = min(df1.index[-1], df2.index[-1])
+        assert common_start <= cutoff <= common_end
+        # Must be 80% of the common span (within 1 hour rounding)
+        expected = common_start + (common_end - common_start) * 0.8
+        assert abs((cutoff - expected).total_seconds()) < 3600
+        assert "holdout window (last 20%)" in note
+
+    def test_explicit_start_beats_include_train(self):
+        """Precedence: --start > --include-train."""
+        from tradingbot.cli import _resolve_holdout_window
+
+        df = _make_cyclic_df(100)
+        s, _e, note = _resolve_holdout_window(df, "2024-01-15", None, True)
+        assert s == "2024-01-15"
+        assert "user-specified" in note
+
+    def test_empty_dict_returns_none(self):
+        from tradingbot.cli import _resolve_holdout_window
+
+        s, e, note = _resolve_holdout_window({}, None, None, False)
+        assert s is None and e is None
+        assert "no data" in note
+
+
 class TestWalkForwardCombined:
     """Tests for _walk_forward_combined (combined template walk-forward)."""
 

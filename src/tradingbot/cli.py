@@ -226,13 +226,24 @@ def backtest(
     strategy_name: str = typer.Option("sma_cross", "--strategy", "-S", help="Strategy name"),
     symbol: str = typer.Option(None, "--symbol", "-s", help="Trading pair (omit for all config symbols)"),
     timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe"),
-    start: str = typer.Option(None, "--start", help="Start date (YYYY-MM-DD)"),
-    end: str = typer.Option(None, "--end", help="End date (YYYY-MM-DD)"),
+    start: str = typer.Option(None, "--start", help="Override evaluation start (YYYY-MM-DD)"),
+    end: str = typer.Option(None, "--end", help="Override evaluation end (YYYY-MM-DD)"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    include_train: bool = typer.Option(
+        False, "--include-train",
+        help="Disable holdout-only filtering and evaluate on the full data range.",
+    ),
 ) -> None:
-    """Run a backtest on historical data. Supports single or multiple symbols."""
+    """Run a backtest on historical data. Supports single or multiple symbols.
+
+    By default the strategy is evaluated only on the data's last 20% so the
+    result is comparable to ``ml-backtest`` (which uses the model's recorded
+    holdout window). Pass ``--include-train`` to evaluate the full data range
+    or use ``--start``/``--end`` to set an explicit window.
+    """
     setup_logging()
+    _validate_date_range(start, end)
 
     from tradingbot.backtest.engine import BacktestEngine
     from tradingbot.data.storage import load_candles
@@ -247,14 +258,6 @@ def backtest(
     if not symbols:
         console.print("[red]No symbols found in config or --symbol flag.[/red]")
         raise typer.Exit(1)
-
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": symbols, "timeframe": timeframe, "initial_balance": balance},
-        "backtest": {
-            "start_date": start,
-            "end_date": end,
-        },
-    })
 
     strategy, strategy_name, _ = _resolve_strategy(
         strategy_name, symbols[0], timeframe, symbols=symbols,
@@ -273,7 +276,19 @@ def backtest(
         console.print("[red]No data available for any symbol.[/red]")
         raise typer.Exit(1)
 
+    # Resolve holdout window AFTER data is loaded (need timestamps for auto cutoff).
+    effective_start, effective_end, period_note = _resolve_holdout_window(
+        data, start, end, include_train,
+    )
+    config = load_config(Path("config"), overrides={
+        "trading": {"symbols": symbols, "timeframe": timeframe, "initial_balance": balance},
+        "backtest": {"start_date": effective_start, "end_date": effective_end},
+    })
+
     console.print(f"[bold]Running backtest: {strategy_name} on {len(data)} symbol(s) {timeframe}[/bold]")
+    eval_start_str = effective_start or "data start"
+    eval_end_str = effective_end or "data end"
+    console.print(f"  Evaluation period: {eval_start_str} → {eval_end_str} ({period_note})")
 
     engine = BacktestEngine(strategy=strategy, config=config)
     report = engine.run(data)
@@ -791,6 +806,53 @@ def _validate_date_range(start: str | None, end: str | None) -> None:
             raise typer.Exit(1) from exc
 
 
+def _resolve_holdout_window(
+    df_or_dfs,
+    start: str | None,
+    end: str | None,
+    include_train: bool,
+    holdout_pct: float = 0.2,
+) -> tuple[str | None, str | None, str]:
+    """Decide the evaluation window for rule-based backtests.
+
+    Mirrors ``ml-backtest`` behaviour: by default we slice to the data's
+    last ``holdout_pct`` fraction so single/combined rule-based results
+    can be compared against ML results on roughly the same period. The
+    ratio matches ``MLWalkForwardTrainer``'s ``int(len(df_valid) * 0.8)``
+    split. Multi-symbol mode picks the cutoff inside the symbols' common
+    timestamp window (max start, min end), so every symbol gets the same
+    global cutoff timestamp; per-symbol slicing still happens downstream
+    in ``BacktestEngine``.
+
+    Precedence: ``--start``/``--end`` > ``--include-train`` > auto holdout.
+
+    Returns ``(effective_start, effective_end, period_note)``. ``None``
+    bounds let ``BacktestEngine`` (or the caller) keep the data edge.
+    """
+    if start is not None or end is not None:
+        return start, end, "user-specified range"
+
+    if include_train:
+        return None, None, "full data range (--include-train)"
+
+    if isinstance(df_or_dfs, dict):
+        if not df_or_dfs:
+            return None, None, "full data range (no data)"
+        common_start = max(d.index[0] for d in df_or_dfs.values())
+        common_end = min(d.index[-1] for d in df_or_dfs.values())
+        if common_start >= common_end:
+            return None, None, "full data range (no overlap)"
+        cutoff_ts = common_start + (common_end - common_start) * (1 - holdout_pct)
+    else:
+        df = df_or_dfs
+        if len(df) == 0:
+            return None, None, "full data range (empty)"
+        cutoff_idx = int(len(df) * (1 - holdout_pct))
+        cutoff_ts = df.index[cutoff_idx]
+
+    return str(cutoff_ts), None, f"holdout window (last {holdout_pct:.0%})"
+
+
 @app.command()
 def scan(
     top_n: int = typer.Option(10, "--top", help="Show top N results"),
@@ -943,12 +1005,23 @@ def combine(
     symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Trading pair"),
     timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
-    start: str | None = typer.Option(None, "--start", help="Backtest start date (YYYY-MM-DD)"),
-    end: str | None = typer.Option(None, "--end", help="Backtest end date (YYYY-MM-DD)"),
+    start: str | None = typer.Option(None, "--start", help="Override evaluation start (YYYY-MM-DD)"),
+    end: str | None = typer.Option(None, "--end", help="Override evaluation end (YYYY-MM-DD)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    include_train: bool = typer.Option(
+        False, "--include-train",
+        help="Disable holdout-only filtering and evaluate on the full data range.",
+    ),
 ) -> None:
-    """Backtest a combined filter strategy (no code needed)."""
+    """Backtest a combined filter strategy (no code needed).
+
+    By default the strategy is evaluated only on the data's last 20% so the
+    result is comparable to ``ml-backtest``. Pass ``--include-train`` to
+    evaluate the full data range or use ``--start``/``--end`` for an
+    explicit window.
+    """
     setup_logging()
+    _validate_date_range(start, end)
 
     from tradingbot.backtest.engine import BacktestEngine
     from tradingbot.data.storage import load_candles
@@ -982,13 +1055,21 @@ def combine(
         console.print(f"[red]No data for {symbol} {timeframe}.[/red]")
         raise typer.Exit(1)
 
-    # Filter by date range
-    if start:
-        df = df[df.index >= start]
-    if end:
-        df = df[df.index <= end]
+    # Resolve holdout window after data is loaded (auto cutoff needs timestamps).
+    # Slice the df here (rather than letting engine.run slice via config dates) so
+    # the "Data: N candles" line below reflects the actual evaluation length.
+    effective_start, effective_end, period_note = _resolve_holdout_window(
+        df, start, end, include_train,
+    )
+    if effective_start:
+        df = df[df.index >= effective_start]
+    if effective_end:
+        df = df[df.index <= effective_end]
 
     console.print(f"  Data: {len(df)} candles")
+    eval_start_str = effective_start or "data start"
+    eval_end_str = effective_end or "data end"
+    console.print(f"  Evaluation period: {eval_start_str} → {eval_end_str} ({period_note})")
 
     config = load_config(Path("config"), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
