@@ -355,9 +355,11 @@ class TestRunBatch:
 
         data_dir, config_dir = self._setup_date_range_fixture(tmp_path)
 
+        # Full range via include_train=True (default is now auto holdout).
         full = _run_batch(
             "BTC/KRW", "1h", [("sma_cross", "", "")],
             str(data_dir.parent), 10_000_000, str(config_dir),
+            False, None, None, True,
         )
         sliced = _run_batch(
             "BTC/KRW", "1h", [("sma_cross", "", "")],
@@ -378,6 +380,7 @@ class TestRunBatch:
         full = _run_batch(
             "BTC/KRW", "1h", jobs,
             str(data_dir.parent), 10_000_000, str(config_dir),
+            False, None, None, True,
         )
         sliced = _run_batch(
             "BTC/KRW", "1h", jobs,
@@ -397,7 +400,7 @@ class TestRunBatch:
         full = _run_batch(
             "BTC/KRW", "1h", jobs,
             str(data_dir.parent), 10_000_000, str(config_dir),
-            True,
+            True, None, None, True,
         )
         sliced = _run_batch(
             "BTC/KRW", "1h", jobs,
@@ -417,6 +420,7 @@ class TestRunBatch:
         full = _run_batch(
             "BTC/KRW", "1h", jobs,
             str(data_dir.parent), 10_000_000, str(config_dir),
+            False, None, None, True,
         )
         only_start = _run_batch(
             "BTC/KRW", "1h", jobs,
@@ -484,6 +488,84 @@ class TestRunBatch:
         )
         assert len(results) == 1
         assert results[0].error == "no data in range"
+
+    def test_default_uses_auto_holdout(self, tmp_path):
+        """Default (no --start/--end, no --include-train) must slice to last 20%."""
+        from tradingbot.backtest.parallel import _run_batch
+
+        data_dir, config_dir = self._setup_date_range_fixture(tmp_path)
+        jobs = [("sma_cross", "", "")]
+
+        # Default (auto holdout)
+        default = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+        )
+        # --include-train opt-out → full data
+        full = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+            False, None, None, True,  # include_train=True
+        )
+        assert default[0].error is None
+        assert full[0].error is None
+        # Auto holdout sees only ~20% of candles → strictly fewer trades than full
+        assert default[0].total_trades < full[0].total_trades
+
+    def test_include_train_matches_pre_holdout_behavior(self, tmp_path):
+        """--include-train (opt-out) should produce the legacy full-range result."""
+        from tradingbot.backtest.parallel import _run_batch
+
+        data_dir, config_dir = self._setup_date_range_fixture(tmp_path)
+        jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
+
+        full_via_include_train = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+            False, None, None, True,
+        )
+        # Compare with --start at the very beginning + no end → same window
+        full_via_explicit = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+            False, "2024-01-01", None, False,
+        )
+        assert full_via_include_train[0].error is None
+        assert full_via_explicit[0].error is None
+        # Same window → identical metrics
+        assert full_via_include_train[0].total_trades == full_via_explicit[0].total_trades
+
+    def test_explicit_start_overrides_auto_holdout(self, tmp_path):
+        """When --start is given, it must take precedence over auto holdout."""
+        from tradingbot.backtest.parallel import _run_batch
+
+        data_dir, config_dir = self._setup_date_range_fixture(tmp_path)
+        jobs = [("sma_cross", "", "")]
+
+        # Full data via include_train (reference for "more candles → more trades")
+        full = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+            False, None, None, True,
+        )
+        # Auto holdout (default) → last 20% only
+        auto = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+        )
+        # Explicit --start at very beginning + None end → equivalent to full
+        explicit_full = _run_batch(
+            "BTC/KRW", "1h", jobs,
+            str(data_dir.parent), 10_000_000, str(config_dir),
+            False, "2024-01-01", None,
+        )
+        assert full[0].error is None and auto[0].error is None
+        assert explicit_full[0].error is None
+        # Auto must see fewer trades than full (proves auto holdout is active).
+        assert auto[0].total_trades < full[0].total_trades
+        # Explicit --start at the start equals full range (proves --start takes
+        # precedence over the auto holdout that would otherwise kick in).
+        assert explicit_full[0].total_trades == full[0].total_trades
 
 
 class TestValidateDateRange:

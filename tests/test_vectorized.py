@@ -26,7 +26,7 @@ def _make_ohlcv(n: int = 200, seed: int = 42) -> pd.DataFrame:
         "low": low,
         "close": close,
         "volume": volume,
-    }, index=pd.date_range("2020-01-01", periods=n, freq="1h"))
+    }, index=pd.date_range("2020-01-01", periods=n, freq="1h", tz="UTC"))
     return df
 
 
