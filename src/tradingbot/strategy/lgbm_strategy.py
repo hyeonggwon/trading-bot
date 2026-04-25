@@ -31,8 +31,15 @@ class LGBMStrategy(Strategy):
 
     def __init__(self, params: StrategyParams | None = None):
         super().__init__(params)
-        self.entry_threshold: float = self.params.get("entry_threshold", 0.60)
-        self.exit_threshold: float = self.params.get("exit_threshold", 0.45)
+        # Defaults are set against the calibrated probability distribution.
+        # Isotonic calibration squashes raw model output toward the base rate
+        # (~28% for 4h forward >0.6%), so calibrated probs cluster well below
+        # 0.50. The 0.60 default we used to ship was empirically unreachable —
+        # see plan_ml_walkforward.md analysis. 0.45 sits at the top of the
+        # observed plateau (BTC/KRW 4h holdout: hit rate 43% vs base 28%,
+        # +0.44%/trade gross). Tune per-symbol via StrategyParams if needed.
+        self.entry_threshold: float = self.params.get("entry_threshold", 0.45)
+        self.exit_threshold: float = self.params.get("exit_threshold", 0.30)
         self.model_dir = Path(self.params.get("model_dir", "models"))
         from tradingbot.data.external_fetcher import resolve_external_data_dir
 
@@ -197,6 +204,6 @@ class LGBMStrategy(Strategy):
     @classmethod
     def param_space(cls) -> dict[str, list[Any]]:
         return {
-            "entry_threshold": [0.55, 0.60, 0.65],
-            "exit_threshold": [0.40, 0.45, 0.50],
+            "entry_threshold": [0.40, 0.45, 0.48],
+            "exit_threshold": [0.25, 0.30, 0.35],
         }

@@ -292,7 +292,7 @@ class TestMLStrategyWalkForward:
             timeframe="4h",
             train_months=2,
             test_months=1,
-            entry_threshold=0.30,  # synthetic data — drop below typical 0.60
+            entry_threshold=0.30,  # synthetic data — drop below default 0.45
             exit_threshold=0.25,
             config=config,
         )
