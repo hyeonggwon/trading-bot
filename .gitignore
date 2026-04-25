@@ -45,8 +45,14 @@ htmlcov/
 .pytest_cache/
 .mypy_cache/
 
-# Markdown
-sequence.md
+# Personal scripts and artifacts (not for the repo)
+personal/
+
+# Claude Code local state
+.claude/
+
+# CLI output (results/ml_walkforward, etc.)
+results/
 
 # Docker
 docker-compose.yml

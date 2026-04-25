@@ -258,6 +258,74 @@ class TestWalkForward:
         assert meta["has_calibrator"] is True
 
 
+class TestMLStrategyWalkForward:
+    def test_run_produces_time_honest_windows(self):
+        """End-to-end: runner produces multiple windows with train_end < test_start."""
+        from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+        from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+
+        df = _make_data(1500)
+        config = AppConfig(
+            trading=TradingConfig(
+                symbols=["BTC/KRW"], timeframe="4h", initial_balance=1_000_000
+            ),
+            risk=RiskConfig(),
+            backtest=BacktestConfig(),
+        )
+        runner = MLStrategyWalkForward(
+            symbol="BTC/KRW",
+            timeframe="4h",
+            train_months=2,
+            test_months=1,
+            entry_threshold=0.30,  # synthetic data — drop below typical 0.60
+            exit_threshold=0.25,
+            config=config,
+        )
+        report = runner.run(df)
+
+        assert report.n_windows >= 2, f"expected >=2 windows, got {report.n_windows}"
+        assert len(report.windows) == report.n_windows
+
+        for w in report.windows:
+            train_end = pd.Timestamp(w["train_end"])
+            test_start = pd.Timestamp(w["test_start"])
+            assert train_end < test_start, (
+                f"window {w['window']}: train_end {train_end} >= test_start {test_start}"
+            )
+            assert w["n_test"] > 0
+            assert -1.0 <= w["return_pct"] / 100 < 100.0  # sanity bounds
+
+    def test_run_is_deterministic(self):
+        """Two consecutive runs over the same data must produce identical reports."""
+        from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+        from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+
+        df = _make_data(1500)
+        config = AppConfig(
+            trading=TradingConfig(
+                symbols=["BTC/KRW"], timeframe="4h", initial_balance=1_000_000
+            ),
+            risk=RiskConfig(),
+            backtest=BacktestConfig(),
+        )
+
+        def _run() -> list[dict]:
+            runner = MLStrategyWalkForward(
+                symbol="BTC/KRW",
+                timeframe="4h",
+                train_months=2,
+                test_months=1,
+                entry_threshold=0.30,
+                exit_threshold=0.25,
+                config=config,
+            )
+            return runner.run(df).windows
+
+        first = _run()
+        second = _run()
+        assert first == second
+
+
 class TestLGBMStrategy:
     def test_backtest_runs(self, tmp_path):
         """Full pipeline: train → save → backtest with LGBMStrategy."""
@@ -345,6 +413,47 @@ class TestLGBMStrategy:
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
         assert report.final_balance > 0
+
+    def test_set_model_bypasses_file_io(self, tmp_path):
+        """set_model() should inject model into strategy without reading from disk."""
+        from tradingbot.ml.trainer import LGBMTrainer
+        from tradingbot.strategy.base import StrategyParams
+        from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+
+        df = _make_data(500)
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        # Note: NOT calling trainer.save — tmp_path stays empty.
+
+        strategy = LGBMStrategy(StrategyParams(values={"model_dir": str(tmp_path)}))
+        strategy.timeframe = "1h"
+        strategy.set_model(
+            symbol="BTC/KRW",
+            model=model,
+            calibrator=None,
+            feature_cols=feature_cols,
+            win_loss_ratio=2.0,
+        )
+
+        # _load_model should short-circuit to the injected model
+        assert strategy._load_model("BTC/KRW") is model
+        assert strategy._feature_cols["BTC/KRW"] == feature_cols
+        assert strategy._win_loss_ratios["BTC/KRW"] == 2.0
+        # Calibrator stored as None (not auto-loaded from disk)
+        assert strategy._calibrators["BTC/KRW"] is None
+        # The strategy must not have read or written anything to model_dir.
+        # Verifies set_model truly bypasses file I/O.
+        assert list(tmp_path.iterdir()) == []
+
+        # _predict should run without raising
+        prob = strategy._predict(df_feat.dropna(subset=feature_cols), "BTC/KRW")
+        assert prob is not None
+        assert 0.0 <= prob <= 1.0
 
     def test_no_model_no_trades(self, tmp_path):
         """Without a model file, strategy should generate no trades."""

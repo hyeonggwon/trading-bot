@@ -6,7 +6,6 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
 from tradingbot.ml.features import build_feature_matrix
@@ -16,6 +15,38 @@ from tradingbot.ml.trainer import LGBMTrainer
 log = logging.getLogger(__name__)
 
 EMBARGO_CANDLES = 150  # ~3x max indicator lookback (52) for safer purging
+MIN_VAL_FOR_EARLY_STOPPING = 1000  # below this, fall back to fixed rounds
+
+CANDLES_PER_MONTH = {
+    "1m": 43200, "5m": 8640, "15m": 2880, "30m": 1440,
+    "1h": 720, "2h": 360, "4h": 180, "6h": 120,
+    "12h": 60, "1d": 30,
+}
+
+
+def candles_per_month(timeframe: str) -> int:
+    """Approximate candles per month for a timeframe."""
+    return CANDLES_PER_MONTH.get(timeframe, 720)
+
+
+def make_expanding_windows(
+    n: int,
+    train_size: int,
+    test_size: int,
+    embargo: int = EMBARGO_CANDLES,
+) -> list[tuple[int, int, int]]:
+    """Expanding-window splits with embargo.
+
+    Returns list of (train_end_idx, test_start_idx, test_end_idx).
+    """
+    windows: list[tuple[int, int, int]] = []
+    train_end = train_size
+    while train_end + embargo + test_size <= n:
+        test_start = train_end + embargo
+        test_end = min(test_start + test_size, n)
+        windows.append((train_end, test_start, test_end))
+        train_end += test_size  # expand by one test window
+    return windows
 
 
 @dataclass
@@ -127,71 +158,52 @@ class MLWalkForwardTrainer:
             f"(split at {holdout_split}, boundary_gap={boundary_gap})"
         )
 
-        # Create expanding windows on train pool only
-        windows = self._create_windows(df_train_pool)
-        if not windows:
-            log.warning("ML WF: no valid windows created")
-            return MLWalkForwardReport()
-
         report = MLWalkForwardReport()
-        es_iterations: list[int] = []  # best_iteration from early-stopped windows
 
-        for i, (train_end_idx, test_start_idx, test_end_idx) in enumerate(windows):
-            X_train = df_train_pool[feature_cols].iloc[:train_end_idx]
-            y_train = target_train_pool.iloc[:train_end_idx]
-            X_test = df_train_pool[feature_cols].iloc[test_start_idx:test_end_idx]
-            y_test = target_train_pool.iloc[test_start_idx:test_end_idx]
+        # Path B: single training on train_pool with inner train/val split.
+        # Inner val drives early stopping; no fold loop, no median heuristic.
+        val_split = int(len(df_train_pool) * 0.8)
+        val_start = val_split + EMBARGO_CANDLES
+        val_size = len(df_train_pool) - val_start
 
-            if len(X_train) < 100 or len(X_test) < 30:
-                continue
-
-            # Split train into train/val for early stopping (80/20 with embargo)
-            # Need at least 1000 val rows for stable early stopping signal
-            MIN_VAL_FOR_EARLY_STOPPING = 1000
-            val_split = int(len(X_train) * 0.8)
-            val_start = val_split + EMBARGO_CANDLES
-            val_size = len(X_train) - val_start
-
-            used_early_stopping = False
-            if val_size >= MIN_VAL_FOR_EARLY_STOPPING:
-                X_tr = X_train.iloc[:val_split]
-                X_val = X_train.iloc[val_start:]
-                y_tr = y_train.iloc[:val_split]
-                y_val = y_train.iloc[val_start:]
-                model = self.trainer.train(X_tr, y_tr, X_val, y_val)
-                used_early_stopping = True
-            else:
-                # Val set too small — use fixed rounds, no early stopping
-                model = self.trainer.train(X_train, y_train, fixed_rounds=300)
-            metrics = self.trainer.evaluate(model, X_test, y_test)
-            metrics["window"] = i
-            metrics["n_train"] = len(X_train)
-            metrics["best_iteration"] = model.best_iteration
-            report.windows.append(metrics)
-
-            if used_early_stopping and model.best_iteration > 0:
-                es_iterations.append(model.best_iteration)
-
-            log.info(f"ML WF window {i}: AUC={metrics['auc']:.4f}, precision={metrics['precision']:.4f}, best_iter={model.best_iteration}, train={len(X_train)}, test={len(X_test)}")
-
-        if report.windows:
-            report.avg_auc = round(np.mean([w["auc"] for w in report.windows]), 4)
-            report.avg_precision = round(np.mean([w["precision"] for w in report.windows]), 4)
-
-        # Train final model on train pool (NOT all data — holdout reserved)
-        if es_iterations:
-            final_rounds = int(np.median(es_iterations))
+        if val_size >= MIN_VAL_FOR_EARLY_STOPPING:
+            X_tr = df_train_pool[feature_cols].iloc[:val_split]
+            X_val = df_train_pool[feature_cols].iloc[val_start:]
+            y_tr = target_train_pool.iloc[:val_split]
+            y_val = target_train_pool.iloc[val_start:]
+            final_model = self.trainer.train(X_tr, y_tr, X_val, y_val)
+            val_metrics = self.trainer.evaluate(final_model, X_val, y_val)
+            report.avg_auc = round(val_metrics["auc"], 4)
+            report.avg_precision = round(val_metrics["precision"], 4)
+            report.windows.append({
+                "split": "inner_val",
+                "n_train": len(X_tr),
+                "n_val": len(X_val),
+                "best_iteration": final_model.best_iteration,
+                **val_metrics,
+            })
             log.info(
-                f"ML WF: final model rounds={final_rounds} "
-                f"(median of {len(es_iterations)} early-stopped windows)"
+                f"ML WF: trained with early stopping — "
+                f"inner_val AUC={val_metrics['auc']:.4f}, "
+                f"precision={val_metrics['precision']:.4f}, "
+                f"best_iter={final_model.best_iteration}, "
+                f"n_train={len(X_tr)}, n_val={len(X_val)}"
             )
         else:
-            final_rounds = 300
-            log.info(f"ML WF: no early stopping data, using default rounds={final_rounds}")
-
-        X_train_all = df_train_pool[feature_cols]
-        y_train_all = target_train_pool
-        final_model = self.trainer.train(X_train_all, y_train_all, fixed_rounds=final_rounds)
+            # Val set too small — fixed rounds without early stopping
+            X_train_all = df_train_pool[feature_cols]
+            y_train_all = target_train_pool
+            final_model = self.trainer.train(X_train_all, y_train_all, fixed_rounds=300)
+            report.windows.append({
+                "split": "fixed_rounds",
+                "n_train": len(X_train_all),
+                "n_val": 0,
+                "best_iteration": 300,
+            })
+            log.info(
+                f"ML WF: trained with fixed_rounds=300 "
+                f"(val_size={val_size} below {MIN_VAL_FOR_EARLY_STOPPING})"
+            )
 
         # Evaluate on holdout set. Split holdout in half: first half is a
         # true evaluation set (never touches the model), second half fits the
@@ -252,36 +264,3 @@ class MLWalkForwardTrainer:
         )
 
         return report
-
-    def _create_windows(
-        self, df: pd.DataFrame
-    ) -> list[tuple[int, int, int]]:
-        """Create expanding window splits with embargo.
-
-        Returns list of (train_end_idx, test_start_idx, test_end_idx).
-        """
-        n = len(df)
-        # Estimate candles per month from timeframe
-        candles_per_month = self._candles_per_month()
-        test_size = self.test_months * candles_per_month
-        min_train = self.train_months * candles_per_month
-
-        windows = []
-        train_end = min_train
-
-        while train_end + EMBARGO_CANDLES + test_size <= n:
-            test_start = train_end + EMBARGO_CANDLES
-            test_end = min(test_start + test_size, n)
-            windows.append((train_end, test_start, test_end))
-            train_end += test_size  # Expand by one test window
-
-        return windows
-
-    def _candles_per_month(self) -> int:
-        """Approximate candles per month based on timeframe."""
-        tf_map = {
-            "1m": 43200, "5m": 8640, "15m": 2880, "30m": 1440,
-            "1h": 720, "2h": 360, "4h": 180, "6h": 120,
-            "12h": 60, "1d": 30,
-        }
-        return tf_map.get(self.timeframe, 720)

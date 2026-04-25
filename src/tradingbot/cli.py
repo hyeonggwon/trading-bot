@@ -1341,30 +1341,31 @@ def ml_train(
 
     # Display results
     console.print(f"\n[bold green]Training complete![/bold green]")
-    console.print(f"  Walk-Forward windows: {len(report.windows)}")
-    console.print(f"  Avg AUC: {report.avg_auc:.4f}")
-    console.print(f"  Avg Precision: {report.avg_precision:.4f}")
+    console.print(f"  Inner-val AUC: {report.avg_auc:.4f}")
+    console.print(f"  Inner-val Precision: {report.avg_precision:.4f}")
     console.print(f"  Holdout AUC: {report.holdout_auc:.4f}")
     console.print(f"  Holdout Precision: {report.holdout_precision:.4f}")
     console.print(f"  Model saved: {report.model_path}")
 
-    # Per-window details
-    table = Table(title="Walk-Forward Results")
-    table.add_column("Window", style="cyan")
+    # Per-split details (Path B: single training with inner train/val split)
+    table = Table(title="Training Splits")
+    table.add_column("Split", style="cyan")
     table.add_column("AUC", justify="right")
     table.add_column("Precision", justify="right")
     table.add_column("Recall", justify="right")
     table.add_column("Train", justify="right")
-    table.add_column("Test", justify="right")
+    table.add_column("Val", justify="right")
+    table.add_column("Best Iter", justify="right")
 
     for w in report.windows:
         table.add_row(
-            str(w["window"]),
-            f"{w['auc']:.4f}",
-            f"{w['precision']:.4f}",
-            f"{w['recall']:.4f}",
-            str(w["n_train"]),
-            str(w["n_test"]),
+            str(w.get("split", "")),
+            f"{w['auc']:.4f}" if "auc" in w else "—",
+            f"{w['precision']:.4f}" if "precision" in w else "—",
+            f"{w['recall']:.4f}" if "recall" in w else "—",
+            str(w.get("n_train", "")),
+            str(w.get("n_val", "")),
+            str(w.get("best_iteration", "")),
         )
     console.print(table)
 
@@ -1373,6 +1374,169 @@ def ml_train(
         console.print("\n[bold]Top 10 Feature Importance:[/bold]")
         for i, (feat, imp) in enumerate(list(report.feature_importance.items())[:10], 1):
             console.print(f"  {i:2d}. {feat}: {imp:.1f}")
+
+
+@app.command(name="ml-walk-forward")
+def ml_walk_forward(
+    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol"),
+    timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Timeframe"),
+    train_months: int = typer.Option(6, "--train-months", help="Training window months"),
+    test_months: int = typer.Option(2, "--test-months", help="Test window months"),
+    forward_candles: int = typer.Option(4, "--forward-candles", help="Target horizon"),
+    threshold: float = typer.Option(0.006, "--threshold", help="Target return threshold"),
+    entry_threshold: float = typer.Option(0.60, "--entry-threshold", help="Entry probability"),
+    exit_threshold: float = typer.Option(0.45, "--exit-threshold", help="Exit probability"),
+    balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    output_dir: str = typer.Option(
+        "results/ml_walkforward", "--output-dir", help="Where to write JSON + markdown reports"
+    ),
+) -> None:
+    """Time-honest walk-forward for the LGBM strategy.
+
+    Trains a fresh model per window using only past data (Path B: single
+    training with inner train/val split for early stopping), then evaluates
+    the strategy on the test window via the standard backtest engine.
+    """
+    setup_logging()
+
+    import json
+
+    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+    from tradingbot.data.storage import load_candles
+    from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+
+    try:
+        df = load_candles(symbol, timeframe, Path(data_dir))
+    except FileNotFoundError:
+        console.print(
+            f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
+    has_external = ext_dir.exists() and any(ext_dir.iterdir())
+
+    console.print(f"[bold]ML walk-forward for {symbol} {timeframe}[/bold]")
+    console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
+    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
+    console.print(f"  Entry threshold: {entry_threshold}, Exit threshold: {exit_threshold}")
+    console.print(f"  External data dir: {ext_dir if has_external else '(none)'}")
+
+    config = AppConfig(
+        trading=TradingConfig(
+            symbols=[symbol], timeframe=timeframe, initial_balance=balance
+        ),
+        risk=RiskConfig(),
+        backtest=BacktestConfig(),
+    )
+
+    runner = MLStrategyWalkForward(
+        symbol=symbol,
+        timeframe=timeframe,
+        train_months=train_months,
+        test_months=test_months,
+        forward_candles=forward_candles,
+        threshold=threshold,
+        entry_threshold=entry_threshold,
+        exit_threshold=exit_threshold,
+        external_data_dir=ext_dir if has_external else None,
+        config=config,
+    )
+    report = runner.run(df)
+
+    if not report.windows:
+        console.print("[red]No windows produced — check data length vs train/test sizes.[/red]")
+        raise typer.Exit(1)
+
+    table = Table(title=f"Walk-Forward Windows ({len(report.windows)} total)")
+    table.add_column("#", style="cyan", justify="right")
+    table.add_column("Train End", style="dim")
+    table.add_column("Test Start", style="dim")
+    table.add_column("Test End", style="dim")
+    table.add_column("Sharpe", justify="right")
+    table.add_column("Return %", justify="right")
+    table.add_column("Trades", justify="right")
+    table.add_column("Win %", justify="right")
+    table.add_column("MaxDD %", justify="right")
+
+    for w in report.windows:
+        table.add_row(
+            str(w["window"]),
+            w["train_end"][:10],
+            w["test_start"][:10],
+            w["test_end"][:10],
+            f"{w['sharpe']:.2f}",
+            f"{w['return_pct']:+.2f}",
+            str(w["trades"]),
+            f"{w['win_rate'] * 100:.1f}",
+            f"{w['max_dd_pct']:.2f}",
+        )
+    console.print(table)
+
+    console.print(
+        f"\n[bold green]Cumulative:[/bold green] "
+        f"avg_sharpe={report.avg_sharpe:.2f}, "
+        f"cumulative_return={report.cumulative_return_pct:+.2f}%, "
+        f"trades={report.total_trades}, "
+        f"avg_win_rate={report.avg_win_rate * 100:.1f}%, "
+        f"skipped_windows={report.n_skipped}"
+    )
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{symbol.replace('/', '_')}_{timeframe}_walkforward"
+    json_path = out_dir / f"{base}.json"
+    md_path = out_dir / f"{base}.md"
+
+    json_path.write_text(
+        json.dumps(
+            {
+                "symbol": symbol,
+                "timeframe": timeframe,
+                "train_months": train_months,
+                "test_months": test_months,
+                "entry_threshold": entry_threshold,
+                "exit_threshold": exit_threshold,
+                "n_windows": report.n_windows,
+                "n_skipped": report.n_skipped,
+                "avg_sharpe": report.avg_sharpe,
+                "cumulative_return_pct": report.cumulative_return_pct,
+                "final_equity_multiple": report.final_equity_multiple,
+                "total_trades": report.total_trades,
+                "avg_win_rate": report.avg_win_rate,
+                "windows": report.windows,
+            },
+            indent=2,
+            default=str,
+        )
+    )
+
+    md_lines = [
+        f"# ML Walk-Forward — {symbol} {timeframe}",
+        "",
+        f"- Train/test: {train_months}m / {test_months}m",
+        f"- Entry/Exit threshold: {entry_threshold} / {exit_threshold}",
+        f"- Windows: {report.n_windows} (skipped: {report.n_skipped})",
+        f"- Avg Sharpe: **{report.avg_sharpe:.2f}**",
+        f"- Cumulative return: **{report.cumulative_return_pct:+.2f}%** "
+        "_(compounded per-window % gains; balance resets to initial each window)_",
+        f"- Total trades: {report.total_trades}",
+        f"- Avg win rate (traded windows): {report.avg_win_rate * 100:.1f}%",
+        "",
+        "| # | Train End | Test Start | Test End | Sharpe | Return % | Trades | Win % | MaxDD % |",
+        "|---|-----------|------------|----------|-------:|---------:|-------:|------:|--------:|",
+    ]
+    for w in report.windows:
+        md_lines.append(
+            f"| {w['window']} | {w['train_end'][:10]} | {w['test_start'][:10]} | "
+            f"{w['test_end'][:10]} | {w['sharpe']:.2f} | {w['return_pct']:+.2f} | "
+            f"{w['trades']} | {w['win_rate'] * 100:.1f} | {w['max_dd_pct']:.2f} |"
+        )
+    md_path.write_text("\n".join(md_lines) + "\n")
+
+    console.print(f"\n[dim]JSON: {json_path}[/dim]")
+    console.print(f"[dim]Markdown: {md_path}[/dim]")
 
 
 @app.command(name="ml-backtest")
