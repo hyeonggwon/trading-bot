@@ -774,6 +774,23 @@ def dashboard(
     )
 
 
+def _validate_date_range(start: str | None, end: str | None) -> None:
+    """Reject malformed --start/--end before workers spawn.
+
+    Workers parse these inside spawned processes; an invalid string would
+    crash the worker with an opaque ValueError. Validating up-front gives
+    the user a clean Typer-style error message.
+    """
+    for label, value in (("--start", start), ("--end", end)):
+        if value is None:
+            continue
+        try:
+            parse_date(value)
+        except ValueError as exc:
+            console.print(f"[red]Invalid {label} ({value!r}): {exc}[/red]")
+            raise typer.Exit(1) from exc
+
+
 @app.command()
 def scan(
     top_n: int = typer.Option(10, "--top", help="Show top N results"),
@@ -781,6 +798,8 @@ def scan(
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     sort_by: str = typer.Option("sharpe_ratio", "--sort-by", help="Sort metric"),
     workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
+    start: str = typer.Option(None, "--start", help="Evaluation start date (YYYY-MM-DD)"),
+    end: str = typer.Option(None, "--end", help="Evaluation end date (YYYY-MM-DD)"),
 ) -> None:
     """Scan all strategy × timeframe × symbol combinations to find the best."""
     import multiprocessing
@@ -788,6 +807,7 @@ def scan(
 
     setup_logging()
     _load_strategies()
+    _validate_date_range(start, end)
 
     valid_metrics = {"sharpe_ratio", "total_return", "max_drawdown", "win_rate", "profit_factor", "total_trades"}
     if sort_by not in valid_metrics:
@@ -823,10 +843,13 @@ def scan(
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
+    range_note = ""
+    if start or end:
+        range_note = f" [{start or 'start'} → {end or 'end'}]"
     console.print(
         f"[bold]Scanning {len(strategies)} strategies × {len(symbol_timeframes)} symbols "
         f"× timeframes ({total} combinations, {n_workers} workers, "
-        f"{len(batches)} batches)...[/bold]"
+        f"{len(batches)} batches){range_note}...[/bold]"
     )
 
     from tradingbot.backtest.parallel import _run_batch
@@ -836,7 +859,10 @@ def scan(
 
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
             futures = {
-                pool.submit(_run_batch, sym, tf, batch_jobs, abs_data_dir, balance, abs_config_dir): (sym, tf)
+                pool.submit(
+                    _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
+                    abs_config_dir, False, start, end,
+                ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
             for future in as_completed(futures):
@@ -1049,12 +1075,15 @@ def combine_scan(
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
+    start: str = typer.Option(None, "--start", help="Evaluation start date (YYYY-MM-DD)"),
+    end: str = typer.Option(None, "--end", help="Evaluation end date (YYYY-MM-DD)"),
 ) -> None:
     """Scan predefined filter combinations across all symbols and timeframes."""
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
     setup_logging()
+    _validate_date_range(start, end)
 
     from tradingbot.data.storage import list_available_data
 
@@ -1080,10 +1109,13 @@ def combine_scan(
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
+    range_note = ""
+    if start or end:
+        range_note = f" [{start or 'start'} → {end or 'end'}]"
     console.print(
         f"[bold]Scanning {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols "
         f"× timeframes ({total} combinations, {n_workers} workers, "
-        f"{len(batches)} batches)...[/bold]"
+        f"{len(batches)} batches){range_note}...[/bold]"
     )
 
     results: list[dict] = []
@@ -1096,7 +1128,10 @@ def combine_scan(
 
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
             futures = {
-                pool.submit(_run_batch, sym, tf, batch_jobs, abs_data_dir, balance, abs_config_dir): (sym, tf)
+                pool.submit(
+                    _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
+                    abs_config_dir, False, start, end,
+                ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
             for future in as_completed(futures):
@@ -1180,6 +1215,7 @@ def combine_scan(
                         pool.submit(
                             _run_batch, sym, tf, batch_jobs,
                             abs_data_dir, balance, abs_config_dir, True,
+                            start, end,
                         ): (sym, tf)
                         for (sym, tf), batch_jobs in verify_batches.items()
                     }

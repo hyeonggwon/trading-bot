@@ -139,8 +139,21 @@ class BacktestEngine:
         indicator_data: dict[str, pd.DataFrame] = {}
         if use_precompute:
             if precomputed_indicators:
-                # Use externally pre-computed indicators (shared across strategies)
-                indicator_data = precomputed_indicators
+                # Externally pre-computed indicators are computed on the full
+                # OHLCV (warmup-correct). When config dates slice symbol_data,
+                # we must reindex the indicator df to the same timestamps so
+                # iloc[:idx] in the hot loop addresses matching rows. Without
+                # this, the strategy reads indicator values from the wrong
+                # candles (the start of the unsliced dataset).
+                for sym, df in symbol_data.items():
+                    pre_df = precomputed_indicators.get(sym)
+                    if pre_df is None:
+                        indicator_data[sym] = self.strategy.indicators(df.copy())
+                        indicator_data[sym].values.flags.writeable = False
+                        continue
+                    if len(pre_df) != len(df) or not pre_df.index.equals(df.index):
+                        pre_df = pre_df.reindex(df.index)
+                    indicator_data[sym] = pre_df
             else:
                 for sym, df in symbol_data.items():
                     indicator_data[sym] = self.strategy.indicators(df.copy())
