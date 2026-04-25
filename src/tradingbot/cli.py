@@ -1602,7 +1602,7 @@ def ml_backtest(
                 "evaluating on full data range. Pass --start to constrain manually.[/yellow]"
             )
             period_note = "full data range (no meta)"
-    elif include_train:
+    elif include_train and start is None and end is None:
         period_note = "full data range (--include-train)"
 
     strategy = LGBMStrategy(StrategyParams(values={
