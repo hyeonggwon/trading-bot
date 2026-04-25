@@ -7,9 +7,14 @@ module so the spawn-safe parallel worker can import it without pulling in
 """
 from __future__ import annotations
 
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
+
 
 def resolve_holdout_window(
-    df_or_dfs,
+    df_or_dfs: pd.DataFrame | dict[str, pd.DataFrame],
     start: str | None,
     end: str | None,
     include_train: bool,
