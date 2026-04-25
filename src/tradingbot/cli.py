@@ -17,6 +17,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
+from tradingbot.backtest.holdout import resolve_holdout_window as _resolve_holdout_window
 from tradingbot.config import ExchangeConfig, load_config
 from tradingbot.data.fetcher import DataFetcher
 from tradingbot.data.storage import EXTERNAL_SUBDIR, list_available_data, save_candles
@@ -806,54 +807,6 @@ def _validate_date_range(start: str | None, end: str | None) -> None:
             raise typer.Exit(1) from exc
 
 
-def _resolve_holdout_window(
-    df_or_dfs,
-    start: str | None,
-    end: str | None,
-    include_train: bool,
-    holdout_pct: float = 0.2,
-) -> tuple[str | None, str | None, str]:
-    """Decide the evaluation window for rule-based backtests.
-
-    Mirrors ``ml-backtest`` behaviour: by default we slice to the data's
-    last ``holdout_pct`` fraction so single/combined rule-based results
-    can be compared against ML results on roughly the same period. The
-    ratio matches ``MLWalkForwardTrainer``'s ``int(len(df_valid) * 0.8)``
-    split. Multi-symbol mode picks the cutoff inside the symbols' common
-    timestamp window (max start, min end), so every symbol gets the same
-    global cutoff timestamp; per-symbol slicing still happens downstream
-    in ``BacktestEngine``.
-
-    Precedence: ``--start``/``--end`` > ``--include-train`` > auto holdout.
-
-    Returns ``(effective_start, effective_end, period_note)``. ``None``
-    bounds let ``BacktestEngine`` (or the caller) keep the data edge.
-    """
-    if start is not None or end is not None:
-        return start, end, "user-specified range"
-
-    if include_train:
-        return None, None, "full data range (--include-train)"
-
-    if isinstance(df_or_dfs, dict):
-        non_empty = [d for d in df_or_dfs.values() if not d.empty]
-        if not non_empty:
-            return None, None, "full data range (no data)"
-        common_start = max(d.index[0] for d in non_empty)
-        common_end = min(d.index[-1] for d in non_empty)
-        if common_start >= common_end:
-            return None, None, "full data range (no overlap)"
-        cutoff_ts = common_start + (common_end - common_start) * (1 - holdout_pct)
-    else:
-        df = df_or_dfs
-        if len(df) == 0:
-            return None, None, "full data range (empty)"
-        cutoff_idx = int(len(df) * (1 - holdout_pct))
-        cutoff_ts = df.index[cutoff_idx]
-
-    return str(cutoff_ts), None, f"holdout window (last {holdout_pct:.0%})"
-
-
 @app.command()
 def scan(
     top_n: int = typer.Option(10, "--top", help="Show top N results"),
@@ -861,10 +814,19 @@ def scan(
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     sort_by: str = typer.Option("sharpe_ratio", "--sort-by", help="Sort metric"),
     workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
-    start: str = typer.Option(None, "--start", help="Evaluation start date (YYYY-MM-DD)"),
-    end: str = typer.Option(None, "--end", help="Evaluation end date (YYYY-MM-DD)"),
+    start: str = typer.Option(None, "--start", help="Override evaluation start date (YYYY-MM-DD)"),
+    end: str = typer.Option(None, "--end", help="Override evaluation end date (YYYY-MM-DD)"),
+    include_train: bool = typer.Option(
+        False, "--include-train",
+        help="Disable per-batch holdout filtering and scan over the full data range.",
+    ),
 ) -> None:
-    """Scan all strategy × timeframe × symbol combinations to find the best."""
+    """Scan all strategy × timeframe × symbol combinations to find the best.
+
+    By default each (symbol, timeframe) batch is evaluated only on its
+    last 20% — the same policy as ``backtest`` / ``combine`` so a scan
+    result and a follow-up single run report on the same window.
+    """
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -906,9 +868,12 @@ def scan(
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
-    range_note = ""
     if start or end:
         range_note = f" [{start or 'start'} → {end or 'end'}]"
+    elif include_train:
+        range_note = " [full data range (--include-train)]"
+    else:
+        range_note = " [auto holdout: last 20% per batch]"
     console.print(
         f"[bold]Scanning {len(strategies)} strategies × {len(symbol_timeframes)} symbols "
         f"× timeframes ({total} combinations, {n_workers} workers, "
@@ -924,7 +889,7 @@ def scan(
             futures = {
                 pool.submit(
                     _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
-                    abs_config_dir, False, start, end,
+                    abs_config_dir, False, start, end, include_train,
                 ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
@@ -1157,10 +1122,18 @@ def combine_scan(
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
-    start: str = typer.Option(None, "--start", help="Evaluation start date (YYYY-MM-DD)"),
-    end: str = typer.Option(None, "--end", help="Evaluation end date (YYYY-MM-DD)"),
+    start: str = typer.Option(None, "--start", help="Override evaluation start date (YYYY-MM-DD)"),
+    end: str = typer.Option(None, "--end", help="Override evaluation end date (YYYY-MM-DD)"),
+    include_train: bool = typer.Option(
+        False, "--include-train",
+        help="Disable per-batch holdout filtering and scan over the full data range.",
+    ),
 ) -> None:
-    """Scan predefined filter combinations across all symbols and timeframes."""
+    """Scan predefined filter combinations across all symbols and timeframes.
+
+    By default each (symbol, timeframe) batch is evaluated only on its
+    last 20% — same policy as ``scan`` / ``backtest`` / ``combine``.
+    """
     import multiprocessing
     from concurrent.futures import ProcessPoolExecutor, as_completed
 
@@ -1191,9 +1164,12 @@ def combine_scan(
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
-    range_note = ""
     if start or end:
         range_note = f" [{start or 'start'} → {end or 'end'}]"
+    elif include_train:
+        range_note = " [full data range (--include-train)]"
+    else:
+        range_note = " [auto holdout: last 20% per batch]"
     console.print(
         f"[bold]Scanning {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols "
         f"× timeframes ({total} combinations, {n_workers} workers, "
@@ -1212,7 +1188,7 @@ def combine_scan(
             futures = {
                 pool.submit(
                     _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
-                    abs_config_dir, False, start, end,
+                    abs_config_dir, False, start, end, include_train,
                 ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
@@ -1297,7 +1273,7 @@ def combine_scan(
                         pool.submit(
                             _run_batch, sym, tf, batch_jobs,
                             abs_data_dir, balance, abs_config_dir, True,
-                            start, end,
+                            start, end, include_train,
                         ): (sym, tf)
                         for (sym, tf), batch_jobs in verify_batches.items()
                     }

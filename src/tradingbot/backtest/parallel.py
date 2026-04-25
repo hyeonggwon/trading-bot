@@ -35,6 +35,7 @@ def _run_batch(
     force_engine: bool = False,
     start: str | None = None,
     end: str | None = None,
+    include_train: bool = False,
 ) -> list[ScanResult]:
     """Run a batch of backtests sharing the same (symbol, timeframe) data.
 
@@ -42,10 +43,16 @@ def _run_batch(
     Data is loaded once and reused for all jobs in the batch.
     Combined strategies use vectorized engine when possible (no ML filters).
 
-    ``start``/``end`` (YYYY-MM-DD) optionally restrict the evaluation range.
-    The full engine path picks them up via ``config.backtest.start_date/end_date``;
-    the vectorized path needs explicit slicing because ``vectorized_backtest``
-    does not consult config.
+    Evaluation window precedence:
+    ``start``/``end`` > ``include_train`` (full range) > auto holdout
+    (last 20% of this batch's data — same policy as the ``backtest`` /
+    ``combine`` CLI commands so scan results match a follow-up single
+    run on the same symbol/timeframe).
+
+    The full engine path picks the resolved window up via
+    ``config.backtest.start_date/end_date``; the vectorized path needs
+    explicit slicing because ``vectorized_backtest`` does not consult
+    config.
     """
     import logging
 
@@ -57,6 +64,7 @@ def _run_batch(
         wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
     )
 
+    from tradingbot.backtest.holdout import resolve_holdout_window
     from tradingbot.config import load_config
     from tradingbot.data.storage import load_candles
 
@@ -73,17 +81,22 @@ def _run_batch(
             for name, entry, exit_ in jobs
         ]
 
+    # Resolve evaluation window for this batch. None → keep edge.
+    effective_start, effective_end, _note = resolve_holdout_window(
+        df, start, end, include_train,
+    )
+
     config = load_config(Path(config_dir), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-        "backtest": {"start_date": start, "end_date": end},
+        "backtest": {"start_date": effective_start, "end_date": effective_end},
     })
 
     # Empty-range short-circuit. Indicators are still computed on the full df
     # below so the eval window keeps proper warmup; this check just avoids
     # wasted work + surfaces a clean error when the user picks a range that
     # doesn't overlap the data.
-    start_ts = pd.Timestamp(start, tz="UTC") if start is not None else None
-    end_ts = pd.Timestamp(end, tz="UTC") if end is not None else None
+    start_ts = pd.Timestamp(effective_start, tz="UTC") if effective_start is not None else None
+    end_ts = pd.Timestamp(effective_end, tz="UTC") if effective_end is not None else None
     df_in_range = df
     if start_ts is not None:
         df_in_range = df_in_range[df_in_range.index >= start_ts]
