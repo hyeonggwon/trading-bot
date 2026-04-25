@@ -781,6 +781,8 @@ def scan(
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     sort_by: str = typer.Option("sharpe_ratio", "--sort-by", help="Sort metric"),
     workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
+    start: str = typer.Option(None, "--start", help="Evaluation start date (YYYY-MM-DD)"),
+    end: str = typer.Option(None, "--end", help="Evaluation end date (YYYY-MM-DD)"),
 ) -> None:
     """Scan all strategy × timeframe × symbol combinations to find the best."""
     import multiprocessing
@@ -823,10 +825,13 @@ def scan(
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
+    range_note = ""
+    if start or end:
+        range_note = f" [{start or 'start'} → {end or 'end'}]"
     console.print(
         f"[bold]Scanning {len(strategies)} strategies × {len(symbol_timeframes)} symbols "
         f"× timeframes ({total} combinations, {n_workers} workers, "
-        f"{len(batches)} batches)...[/bold]"
+        f"{len(batches)} batches){range_note}...[/bold]"
     )
 
     from tradingbot.backtest.parallel import _run_batch
@@ -836,7 +841,10 @@ def scan(
 
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
             futures = {
-                pool.submit(_run_batch, sym, tf, batch_jobs, abs_data_dir, balance, abs_config_dir): (sym, tf)
+                pool.submit(
+                    _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
+                    abs_config_dir, False, start, end,
+                ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
             for future in as_completed(futures):
@@ -1049,6 +1057,8 @@ def combine_scan(
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     workers: int = typer.Option(0, "--workers", "-w", help="Parallel workers (0=auto)"),
+    start: str = typer.Option(None, "--start", help="Evaluation start date (YYYY-MM-DD)"),
+    end: str = typer.Option(None, "--end", help="Evaluation end date (YYYY-MM-DD)"),
 ) -> None:
     """Scan predefined filter combinations across all symbols and timeframes."""
     import multiprocessing
@@ -1080,10 +1090,13 @@ def combine_scan(
     n_workers = workers if workers > 0 else min(cpu, 8)
     abs_data_dir = str(Path(data_dir).resolve())
     abs_config_dir = str(Path("config").resolve())
+    range_note = ""
+    if start or end:
+        range_note = f" [{start or 'start'} → {end or 'end'}]"
     console.print(
         f"[bold]Scanning {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols "
         f"× timeframes ({total} combinations, {n_workers} workers, "
-        f"{len(batches)} batches)...[/bold]"
+        f"{len(batches)} batches){range_note}...[/bold]"
     )
 
     results: list[dict] = []
@@ -1096,7 +1109,10 @@ def combine_scan(
 
         with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
             futures = {
-                pool.submit(_run_batch, sym, tf, batch_jobs, abs_data_dir, balance, abs_config_dir): (sym, tf)
+                pool.submit(
+                    _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
+                    abs_config_dir, False, start, end,
+                ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
             for future in as_completed(futures):
@@ -1180,6 +1196,7 @@ def combine_scan(
                         pool.submit(
                             _run_batch, sym, tf, batch_jobs,
                             abs_data_dir, balance, abs_config_dir, True,
+                            start, end,
                         ): (sym, tf)
                         for (sym, tf), batch_jobs in verify_batches.items()
                     }

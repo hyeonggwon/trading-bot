@@ -33,15 +33,23 @@ def _run_batch(
     balance: float,
     config_dir: str = "config",
     force_engine: bool = False,
+    start: str | None = None,
+    end: str | None = None,
 ) -> list[ScanResult]:
     """Run a batch of backtests sharing the same (symbol, timeframe) data.
 
     Each job is (strategy_name, entry, exit_).
     Data is loaded once and reused for all jobs in the batch.
     Combined strategies use vectorized engine when possible (no ML filters).
+
+    ``start``/``end`` (YYYY-MM-DD) optionally restrict the evaluation range.
+    The full engine path picks them up via ``config.backtest.start_date/end_date``;
+    the vectorized path needs explicit slicing because ``vectorized_backtest``
+    does not consult config.
     """
     import logging
 
+    import pandas as pd
     import structlog
 
     logging.getLogger().setLevel(logging.CRITICAL)
@@ -67,12 +75,31 @@ def _run_batch(
 
     config = load_config(Path(config_dir), overrides={
         "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+        "backtest": {"start_date": start, "end_date": end},
     })
+
+    # Slice df once for the vectorized path (engine path slices from config).
+    df_sliced = df
+    if start is not None:
+        df_sliced = df_sliced[df_sliced.index >= pd.Timestamp(start, tz="UTC")]
+    if end is not None:
+        df_sliced = df_sliced[df_sliced.index <= pd.Timestamp(end, tz="UTC")]
+
+    if df_sliced.empty:
+        return [
+            ScanResult(
+                strategy=name, symbol=symbol, timeframe=timeframe,
+                sharpe_ratio=0, total_return=0, max_drawdown=0,
+                win_rate=0, profit_factor=0, total_trades=0,
+                entry=entry, exit=exit_, error="no data in range",
+            )
+            for name, entry, exit_ in jobs
+        ]
 
     results: list[ScanResult] = []
 
     if force_engine:
-        # Re-verification: all jobs go through full engine
+        # Re-verification: all jobs go through full engine (honors config dates).
         results.extend(_run_engine_batch(
             df, symbol, timeframe, jobs, config, balance,
         ))
@@ -91,7 +118,7 @@ def _run_batch(
         # --- Vectorized path: combined templates without ML ---
         if vectorizable_jobs:
             results.extend(_run_vectorized_batch(
-                df, symbol, timeframe, vectorizable_jobs, config, balance,
+                df_sliced, symbol, timeframe, vectorizable_jobs, config, balance,
             ))
 
         # --- Fallback path: registered strategies + ML templates ---
