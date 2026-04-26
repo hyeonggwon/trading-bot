@@ -7,11 +7,12 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 ## 주요 기능
 
 - **Anti-lookahead 백테스트 엔진** — 전략은 과거 캔들만 접근, 체결은 다음 캔들 시가에 발생, 벡터화 스크리닝 엔진으로 combine-scan 1152조합 3분대
+- **홀드아웃 기본 평가** — backtest/combine/scan/combine-scan/ml-backtest 모두 데이터 마지막 20% 구간에서 평가 (룰 vs ML 동일 기간 비교 가능). `--include-train`으로 전체 구간, `--start/--end`로 임의 구간 지정
 - **멀티 심볼 동시 매매** — 여러 종목을 하나의 포트폴리오로 동시 운영
 - **7가지 내장 전략** — SMA, RSI, MACD, 볼린저, 멀티타임프레임, 거래량 돌파, LightGBM ML
 - **전략 자동 스캔** — 전 전략 × 심볼 × 타임프레임 조합 자동 백테스트 + 랭킹
 - **필터 조합 엔진** — 코드 없이 CLI로 필터 조합 (31종 필터, 48개 템플릿, 5가지 역할 태깅)
-- **ML 전략 (LightGBM)** — 10 기술 피처 + 6 외부 피처(김프/funding/FNG/USD_KRW), Walk-Forward 학습 + 아이소토닉 확률 보정, Half-Kelly 포지션 사이징
+- **ML 전략 (LightGBM)** — 10 기술 피처 + 6 외부 피처(김프/funding/FNG/USD_KRW), Walk-Forward 학습 + 아이소토닉 확률 보정, Half-Kelly 포지션 사이징(학습 메타의 실측 win/loss 비율 사용), 시간 정직한 `ml-walk-forward` (윈도우마다 모델 재학습)
 - **파라미터 최적화** — 그리드 서치 + Walk-Forward 검증 (오버피팅 방지)
 - **WebSocket 실시간 가격** — Upbit WebSocket으로 REST API 호출 최소화, 자동 재연결
 - **페이퍼/실매매** — 모의 체결 및 Upbit API 연동 실매매 (주문 관리, 안전 장치)
@@ -91,12 +92,12 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 
 ```
 cli.py ─┬─→ data/{fetcher, external_fetcher, storage, indicators}
-        ├─→ backtest/{engine, vectorized, optimizer, walk_forward, parallel}
+        ├─→ backtest/{engine, vectorized, optimizer, walk_forward, holdout, parallel}
         ├─→ strategy/{base, registry, combined, lgbm_strategy, examples/*, filters/*}
         ├─→ live/{engine, state, order_manager}
         ├─→ exchange/{ccxt_exchange, paper, ws_client}
         ├─→ risk/{manager, validators}
-        ├─→ ml/{trainer, features, targets, walk_forward, parallel, utils}
+        ├─→ ml/{trainer, features, targets, walk_forward, strategy_walk_forward, parallel, utils}
         ├─→ notifications/telegram
         └─→ dashboard/app
 ```
@@ -132,14 +133,19 @@ tradingbot symbols
 
 ### 2. 백테스트
 
+기본 동작은 데이터 마지막 20% 구간(홀드아웃)에서 평가하여 `ml-backtest`와 동일 기간으로 비교 가능합니다. 전체 구간 평가는 `--include-train`, 임의 구간은 `--start/--end`로 지정합니다 (우선순위: `--start/--end` > `--include-train` > 자동 홀드아웃).
+
 ```bash
-# 멀티 심볼 백테스트 (config의 전체 심볼 사용)
+# 멀티 심볼 백테스트 (config의 전체 심볼, 홀드아웃 구간)
 tradingbot backtest --strategy sma_cross
 
 # 단일 심볼 지정
 tradingbot backtest --strategy sma_cross --symbol BTC/KRW
 
-# 기간/잔고 지정
+# 전체 데이터 구간으로 평가
+tradingbot backtest --strategy sma_cross --include-train
+
+# 임의 기간/잔고 지정
 tradingbot backtest --strategy sma_cross --symbol BTC/KRW \
   --start 2024-06-01 --end 2024-12-31 --balance 5000000
 ```
@@ -166,12 +172,18 @@ tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW \
 
 ### 4. 전략 자동 스캔
 
+`scan`/`combine-scan`도 동일하게 (심볼, 타임프레임) 배치별 마지막 20%에서 평가합니다. 단일 `backtest` 결과와 스캔 1위 결과의 평가 기간이 같아 비교가 일관됩니다.
+
 ```bash
-# 전 전략 × 심볼 × 타임프레임 조합 랭킹
+# 전 전략 × 심볼 × 타임프레임 조합 랭킹 (배치별 홀드아웃)
 tradingbot scan --top 15
 
 # 수익률 기준 정렬
 tradingbot scan --sort-by total_return --top 10
+
+# 전체 데이터 구간 또는 임의 기간 지정
+tradingbot scan --include-train
+tradingbot scan --start 2024-06-01 --end 2024-12-31
 ```
 
 ### 5. 필터 조합 (코드 없이 전략 만들기)
@@ -185,12 +197,15 @@ tradingbot combine \
 
 # ML + Rule 조합 (ML 모델이 veto 필터 역할)
 tradingbot combine \
-  --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35" \
+  --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.45" \
   --exit "rsi_overbought:70" \
   --symbol BTC/KRW
 
-# 48개 사전정의 조합 자동 스캔
+# 48개 사전정의 조합 자동 스캔 (배치별 홀드아웃 구간)
 tradingbot combine-scan --top 10
+
+# 상위 N개 결과를 풀 엔진으로 재검증 (벡터화 스크리닝의 근사 오차 제거)
+tradingbot combine-scan --top 10 --verify-top 5
 ```
 
 **사용 가능한 필터 (31종, 역할별 분류):**
@@ -214,15 +229,23 @@ pip install -e ".[ml]"
 # 다운받으면 ml-train이 자동 감지하여 16 피처 모델로 학습. 없으면 10 기술 피처만 사용.
 tradingbot download-external --since 2024-01-01
 
-# 모델 학습 (Walk-Forward + 20% 홀드아웃 + 아이소토닉 보정)
+# 모델 학습 (Walk-Forward + 20% 홀드아웃 + 아이소토닉 보정 + 실측 win/loss 비율 저장)
 tradingbot ml-train --symbol BTC/KRW --timeframe 1h --train-months 3 --test-months 1
 
-# ML 전략으로 백테스트
+# ML 전략으로 백테스트 (기본: meta.json의 holdout 구간)
 tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h
+tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h --include-train   # 전체 구간
+
+# 시간 정직한 walk-forward (윈도우마다 신모델 재학습 → backtest)
+# 저장된 단일 모델로 평가하는 일반 walk-forward와 달리 in-sample 추론 오염이 없음
+tradingbot ml-walk-forward --symbol BTC/KRW --timeframe 1h \
+  --train-months 6 --test-months 2
 
 # 전체 심볼×타임프레임 일괄 병렬 학습
 tradingbot ml-train-all --workers 4
 ```
+
+**LGBM 임계값 기본값**: `entry=0.45`, `exit=0.30`. 아이소토닉 보정이 출력 분포를 데이터 base rate(약 28%)로 압축하므로 보정 후 확률은 0.50 이하에 몰립니다. 0.60 같은 값은 거의 발생하지 않아 거래가 0건으로 떨어지므로 낮은 기본값을 사용합니다 (모델별로 보정 분포가 달라 0.40~0.55 범위에서 탐색 권장).
 
 ### 7. 페이퍼 트레이딩
 
@@ -276,7 +299,7 @@ tradingbot live --strategy ML+ADXTrend --symbol BTC/KRW \
 | `bollinger_breakout` | 볼린저밴드 상단 돌파 / 중간밴드 이탈 | `period`, `std` |
 | `multi_tf` | 상위 TF 추세 필터 + 하위 TF RSI 진입 | `higher_tf_factor`, `trend_sma_period` |
 | `volume_breakout` | 거래량 급등 + 최근 고점 돌파 | `volume_spike_threshold`, `price_lookback` |
-| `lgbm` | LightGBM ML 메타 모델 (10 기술 + 6 외부 피처 → Half-Kelly) | `entry_threshold`, `exit_threshold`, `external_data_dir` |
+| `lgbm` | LightGBM ML 메타 모델 (10 기술 + 6 외부 피처 → Half-Kelly with 실측 win/loss) | `entry_threshold` (기본 0.45), `exit_threshold` (기본 0.30), `external_data_dir` (자동 주입) |
 
 ## 커스텀 전략 작성
 
@@ -326,7 +349,7 @@ trading-bot/
 ├── config/default.yaml               # 기본 설정 (심볼, 리스크, 수수료)
 ├── strategies/                       # 사용자 정의 전략 디렉토리
 │
-├── src/tradingbot/                   # 메인 패키지 (68개 모듈, ~7,400 라인)
+├── src/tradingbot/                   # 메인 패키지 (70개 모듈, ~11,900 라인)
 │   ├── cli.py                        # CLI 진입점 (typer)
 │   ├── config.py                     # Pydantic 설정 로더
 │   │
@@ -371,6 +394,7 @@ trading-bot/
 │   │   ├── report.py                 #   성과 지표 (Sharpe, Sortino, MDD, ...)
 │   │   ├── optimizer.py              #   그리드 서치 최적화
 │   │   ├── walk_forward.py           #   Walk-Forward 검증
+│   │   ├── holdout.py                #   홀드아웃 구간 결정 (단일/멀티 심볼 공용)
 │   │   └── parallel.py               #   병렬 백테스트 워커
 │   │
 │   ├── ml/                           # 머신러닝
@@ -378,8 +402,9 @@ trading-bot/
 │   │   ├── targets.py                #   4h 순방향 수익률 이진 분류 타겟
 │   │   ├── trainer.py                #   LightGBM 학습/평가/아이소토닉 보정/저장
 │   │   ├── walk_forward.py           #   퍼지드 확장 윈도우 + 엠바고 150 + 20% 홀드아웃
+│   │   ├── strategy_walk_forward.py  #   시간 정직 walk-forward (윈도우별 모델 재학습)
 │   │   ├── parallel.py               #   병렬 학습 워커
-│   │   └── utils.py                  #   공용 헬퍼 (Half-Kelly)
+│   │   └── utils.py                  #   공용 헬퍼 (실측 비율 기반 Half-Kelly)
 │   │
 │   ├── exchange/                     # 거래소 추상화
 │   │   ├── base.py                   #   BaseExchange ABC
@@ -402,7 +427,7 @@ trading-bot/
 │       ├── logging.py                #   콘솔 + JSON 파일 로테이션
 │       └── time.py                   #   타임존/날짜 파싱
 │
-└── tests/                            # 테스트 (225개, 17개 모듈)
+└── tests/                            # 테스트 (252개, 16개 모듈)
 ```
 
 ## 설정
@@ -428,7 +453,7 @@ trading:
   initial_balance: 1000000
 
 risk:
-  max_position_size_pct: 0.1      # 포지션당 최대 10%
+  max_position_size_pct: 1.0      # 포지션당 최대 100% (컨테이너=심볼 1개 구조 기준)
   max_open_positions: 5           # 최대 5개 동시
   max_drawdown_pct: 0.20          # 20% 드로다운 서킷브레이커
   default_stop_loss_pct: 0.02     # 2% 손절
@@ -480,7 +505,7 @@ tradingbot dashboard          # http://localhost:8501
 | ML | lightgbm + scikit-learn |
 | 대시보드 | streamlit + plotly |
 | 배포 | Docker + docker-compose |
-| 테스트 | pytest (225개) |
+| 테스트 | pytest (252개) |
 | 린트 | ruff + mypy |
 
 ## 개발
