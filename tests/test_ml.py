@@ -8,6 +8,7 @@ import pytest
 
 from tradingbot.ml.features import (
     EXTERNAL_FEATURE_COLS,
+    EXTRA_FEATURE_COLS,
     FEATURE_COLS,
     WARMUP_CANDLES,
     build_feature_matrix,
@@ -101,6 +102,59 @@ class TestFeatures:
         df_feat, feature_cols = build_feature_matrix(df, external_df=None)
         assert len(feature_cols) == 10
         assert feature_cols == FEATURE_COLS
+
+
+class TestExtraFeatures:
+    def test_include_extra_appends_columns(self):
+        df = _make_data(300)
+        df_feat, feature_cols = build_feature_matrix(df, include_extra=True)
+        # All extras should be present in both feature_cols and the dataframe
+        for col in EXTRA_FEATURE_COLS:
+            assert col in feature_cols, f"missing from feature_cols: {col}"
+            assert col in df_feat.columns, f"missing column: {col}"
+        # Default base set still comes first
+        assert feature_cols[: len(FEATURE_COLS)] == FEATURE_COLS
+
+    def test_default_excludes_extras(self):
+        df = _make_data(300)
+        _, feature_cols = build_feature_matrix(df)
+        for col in EXTRA_FEATURE_COLS:
+            assert col not in feature_cols, f"extra leaked: {col}"
+
+    def test_session_features_match_kst_offset(self):
+        # Pick a UTC midnight; KST = UTC+9 → hour_kst should be 9.
+        idx = pd.date_range("2024-01-01 00:00:00", periods=200, freq="h", tz="UTC")
+        df = pd.DataFrame(
+            {
+                "open": 100.0,
+                "high": 101.0,
+                "low": 99.0,
+                "close": 100.0,
+                "volume": 1.0,
+            },
+            index=idx,
+        )
+        df_feat, _ = build_feature_matrix(df, include_extra=True)
+        # First valid row (after some warmup): hour_kst = (0 + 9) % 24 = 9
+        assert df_feat["hour_kst"].iloc[0] == 9.0
+        assert df_feat["hour_kst"].iloc[15] == (15 + 9) % 24  # 0
+        # day_of_week — 2024-01-01 is Monday → 0
+        assert df_feat["day_of_week"].iloc[0] == 0.0
+
+    def test_adx_bucket_is_categorical(self):
+        df = _make_data(300)
+        df_feat, _ = build_feature_matrix(df, include_extra=True)
+        non_na = df_feat["adx_bucket"].dropna()
+        # Only 0/1/2 should appear
+        assert set(non_na.unique()).issubset({0.0, 1.0, 2.0})
+
+    def test_lag_features_align(self):
+        df = _make_data(300)
+        df_feat, _ = build_feature_matrix(df, include_extra=True)
+        # roc_12_lag1 at row N must equal roc_12 at row N-1 (after warmup)
+        i = 60
+        assert df_feat["roc_12_lag1"].iloc[i] == df_feat["roc_12"].iloc[i - 1]
+        assert df_feat["roc_12_lag2"].iloc[i] == df_feat["roc_12"].iloc[i - 2]
 
 
 class TestTargets:
@@ -329,14 +383,19 @@ class TestTrainer:
 
         # Save and load calibrator
         trainer.save(
-            model, "BTC/KRW", "1h", {}, feature_cols,
-            model_dir=tmp_path, calibrator=calibrator,
+            model,
+            "BTC/KRW",
+            "1h",
+            {},
+            feature_cols,
+            model_dir=tmp_path,
+            calibrator=calibrator,
         )
         loaded_cal = LGBMTrainer.load_calibrator("BTC/KRW", "1h", model_dir=tmp_path)
         assert loaded_cal is not None
 
         # Calibrated probabilities should be valid
-        raw = model.predict(X.iloc[split:split + 5])
+        raw = model.predict(X.iloc[split : split + 5])
         calibrated = loaded_cal.transform(raw)
         assert len(calibrated) == 5
         assert all(0 <= p <= 1 for p in calibrated)
@@ -422,9 +481,7 @@ class TestMLStrategyWalkForward:
 
         df = _make_data(1500)
         config = AppConfig(
-            trading=TradingConfig(
-                symbols=["BTC/KRW"], timeframe="4h", initial_balance=1_000_000
-            ),
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="4h", initial_balance=1_000_000),
             risk=RiskConfig(),
             backtest=BacktestConfig(),
         )
@@ -458,9 +515,7 @@ class TestMLStrategyWalkForward:
 
         df = _make_data(1500)
         config = AppConfig(
-            trading=TradingConfig(
-                symbols=["BTC/KRW"], timeframe="4h", initial_balance=1_000_000
-            ),
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="4h", initial_balance=1_000_000),
             risk=RiskConfig(),
             backtest=BacktestConfig(),
         )
@@ -504,17 +559,26 @@ class TestLGBMStrategy:
         trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
 
         # Backtest
-        strategy = LGBMStrategy(StrategyParams(values={
-            "model_dir": str(tmp_path),
-            "entry_threshold": 0.30,  # Below base rate for synthetic data (model outputs ~0.35)
-            "exit_threshold": 0.25,
-        }))
+        strategy = LGBMStrategy(
+            StrategyParams(
+                values={
+                    "model_dir": str(tmp_path),
+                    "entry_threshold": 0.30,  # Below base rate for synthetic data (model outputs ~0.35)
+                    "exit_threshold": 0.25,
+                }
+            )
+        )
         strategy.timeframe = "1h"
 
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
-            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
-                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            risk=RiskConfig(
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.3,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
 
@@ -561,8 +625,13 @@ class TestLGBMStrategy:
 
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
-            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
-                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            risk=RiskConfig(
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.3,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
 
@@ -620,9 +689,13 @@ class TestLGBMStrategy:
 
         df = _make_data(300)
 
-        strategy = LGBMStrategy(StrategyParams(values={
-            "model_dir": str(tmp_path),  # Empty dir — no model
-        }))
+        strategy = LGBMStrategy(
+            StrategyParams(
+                values={
+                    "model_dir": str(tmp_path),  # Empty dir — no model
+                }
+            )
+        )
         strategy.timeframe = "1h"
 
         config = AppConfig(
@@ -679,6 +752,7 @@ class TestLGBMStrategy:
 
         # Train 16-feature model (technical + external)
         from tradingbot.data.external_fetcher import build_external_df
+
         ext_df = build_external_df(df, external_dir)
         assert ext_df is not None and len(ext_df.columns) >= 3
 
@@ -693,18 +767,27 @@ class TestLGBMStrategy:
         trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
 
         # Backtest with external_data_dir — must match the 16-column model
-        strategy = LGBMStrategy(StrategyParams(values={
-            "model_dir": str(tmp_path),
-            "external_data_dir": str(external_dir),
-            "entry_threshold": 0.30,
-            "exit_threshold": 0.25,
-        }))
+        strategy = LGBMStrategy(
+            StrategyParams(
+                values={
+                    "model_dir": str(tmp_path),
+                    "external_data_dir": str(external_dir),
+                    "entry_threshold": 0.30,
+                    "exit_threshold": 0.25,
+                }
+            )
+        )
         strategy.timeframe = "1h"
 
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
-            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
-                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            risk=RiskConfig(
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.3,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
 
@@ -753,7 +836,9 @@ class TestLGBMStrategy:
             external_dir,
         )
         save_external(
-            pd.DataFrame({"funding_rate": rng.normal(0.0001, 0.00005, len(full_idx))}, index=full_idx),
+            pd.DataFrame(
+                {"funding_rate": rng.normal(0.0001, 0.00005, len(full_idx))}, index=full_idx
+            ),
             "funding_rate",
             external_dir,
         )
@@ -763,10 +848,14 @@ class TestLGBMStrategy:
             external_dir,
         )
 
-        strategy = LGBMStrategy(StrategyParams(values={
-            "model_dir": str(tmp_path),
-            "external_data_dir": str(external_dir),
-        }))
+        strategy = LGBMStrategy(
+            StrategyParams(
+                values={
+                    "model_dir": str(tmp_path),
+                    "external_data_dir": str(external_dir),
+                }
+            )
+        )
         strategy.timeframe = "1h"
 
         # Call indicators() for each symbol (as BacktestEngine does)

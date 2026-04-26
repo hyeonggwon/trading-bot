@@ -74,6 +74,7 @@ class MLStrategyWalkForward:
         threshold: float = 0.006,
         target_kind: str = "binary",
         atr_mult: float = 1.0,
+        include_extra: bool = False,
         entry_threshold: float = 0.45,
         exit_threshold: float = 0.30,
         external_data_dir: str | Path | None = None,
@@ -82,8 +83,7 @@ class MLStrategyWalkForward:
     ) -> None:
         if target_kind not in VALID_TARGET_KINDS:
             raise ValueError(
-                f"Unknown target_kind={target_kind!r}; "
-                f"expected one of {VALID_TARGET_KINDS}"
+                f"Unknown target_kind={target_kind!r}; expected one of {VALID_TARGET_KINDS}"
             )
         self.symbol = symbol
         self.timeframe = timeframe
@@ -93,11 +93,10 @@ class MLStrategyWalkForward:
         self.threshold = threshold
         self.target_kind = target_kind
         self.atr_mult = atr_mult
+        self.include_extra = include_extra
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
-        self.external_data_dir = (
-            Path(external_data_dir) if external_data_dir else None
-        )
+        self.external_data_dir = Path(external_data_dir) if external_data_dir else None
         self.config = config or AppConfig()
         self.trainer = LGBMTrainer(lgbm_params)
 
@@ -108,12 +107,14 @@ class MLStrategyWalkForward:
         # df.index.get_loc to return a slice and the iloc call below crashes.
         df = df[~df.index.duplicated(keep="last")].sort_index()
         external_df = (
-            build_external_df(df, self.external_data_dir)
-            if self.external_data_dir
-            else None
+            build_external_df(df, self.external_data_dir) if self.external_data_dir else None
         )
 
-        df_feat, feature_cols = build_feature_matrix(df, external_df=external_df)
+        df_feat, feature_cols = build_feature_matrix(
+            df,
+            external_df=external_df,
+            include_extra=self.include_extra,
+        )
         target = _build_target_dispatch(
             df_feat,
             target_kind=self.target_kind,
@@ -121,9 +122,7 @@ class MLStrategyWalkForward:
             threshold=self.threshold,
             atr_mult=self.atr_mult,
         )
-        fwd_return = (
-            df_feat["close"].pct_change(self.forward_candles).shift(-self.forward_candles)
-        )
+        fwd_return = df_feat["close"].pct_change(self.forward_candles).shift(-self.forward_candles)
 
         valid_mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
         df_valid = df_feat[valid_mask]
@@ -175,9 +174,7 @@ class MLStrategyWalkForward:
                         "entry_threshold": self.entry_threshold,
                         "exit_threshold": self.exit_threshold,
                         "external_data_dir": (
-                            str(self.external_data_dir)
-                            if self.external_data_dir
-                            else None
+                            str(self.external_data_dir) if self.external_data_dir else None
                         ),
                     }
                 )
@@ -192,9 +189,7 @@ class MLStrategyWalkForward:
                 win_loss_ratio=win_loss_ratio,
             )
 
-            test_ohlcv = self._slice_test_ohlcv(
-                df, df_valid, test_start_idx, test_end_idx
-            )
+            test_ohlcv = self._slice_test_ohlcv(df, df_valid, test_start_idx, test_end_idx)
             if test_ohlcv.empty:
                 log.warning(f"ML strategy WF window {window_idx}: empty OHLCV slice")
                 n_skipped += 1
@@ -244,16 +239,16 @@ class MLStrategyWalkForward:
             n_skipped=n_skipped,
         )
         if results:
-            report.avg_sharpe = round(
-                sum(r["sharpe"] for r in results) / len(results), 4
-            )
+            report.avg_sharpe = round(sum(r["sharpe"] for r in results) / len(results), 4)
             report.cumulative_return_pct = round((equity_multiple - 1.0) * 100, 4)
             report.final_equity_multiple = round(equity_multiple, 6)
             report.total_trades = sum(r["trades"] for r in results)
             traded_windows = [r for r in results if r["trades"] > 0]
-            report.avg_win_rate = round(
-                sum(r["win_rate"] for r in traded_windows) / len(traded_windows), 4
-            ) if traded_windows else 0.0
+            report.avg_win_rate = (
+                round(sum(r["win_rate"] for r in traded_windows) / len(traded_windows), 4)
+                if traded_windows
+                else 0.0
+            )
 
         return report
 
@@ -324,17 +319,15 @@ class MLStrategyWalkForward:
         2 points after filtering, returns the original report (rare — would
         indicate the warmup consumed the whole window).
         """
-        test_equity = full_report.equity_curve[
-            full_report.equity_curve.index >= test_start_ts
-        ]
+        test_equity = full_report.equity_curve[full_report.equity_curve.index >= test_start_ts]
         if len(test_equity) < 2:
             return full_report
 
         test_start_dt = test_start_ts.to_pydatetime()
         test_trades = [
-            t for t in full_report.trades
-            if t.entry_order.created_at is not None
-            and t.entry_order.created_at >= test_start_dt
+            t
+            for t in full_report.trades
+            if t.entry_order.created_at is not None and t.entry_order.created_at >= test_start_dt
         ]
         return BacktestReport(
             trades=test_trades,

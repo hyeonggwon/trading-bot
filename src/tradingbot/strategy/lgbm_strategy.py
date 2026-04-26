@@ -118,6 +118,12 @@ class LGBMStrategy(Strategy):
         correctly. External components are loaded once (cached in
         ``self._external_components``) then aligned per-df so multi-symbol
         backtests get correctly-aligned external features per symbol.
+
+        ``include_extra`` is auto-detected by peeking at each symbol's saved
+        meta — if any model trained with the Phase 4 extras then this
+        ``indicators()`` builds the wider feature frame so
+        ``_predict``'s column lookup doesn't fail. Models that don't use
+        extras simply ignore the additional columns.
         """
         if not self._external_load_tried and self.external_data_dir is not None:
             self._external_load_tried = True
@@ -135,7 +141,21 @@ class LGBMStrategy(Strategy):
 
             external_df = align_external_to(df, self._external_components)
 
-        df, _ = build_feature_matrix(df, external_df=external_df)
+        # Decide whether to build the Phase 4 extras: any saved meta with
+        # include_extra=True forces the wider build. Param override wins if set.
+        include_extra = bool(self.params.get("include_extra", False))
+        if not include_extra:
+            for sym in self.symbols:
+                meta = LGBMTrainer.load_meta(sym, self.timeframe, self.model_dir)
+                if meta and meta.get("include_extra"):
+                    include_extra = True
+                    break
+
+        df, _ = build_feature_matrix(
+            df,
+            external_df=external_df,
+            include_extra=include_extra,
+        )
         return df
 
     def _predict(self, df: pd.DataFrame, symbol: str) -> float | None:
