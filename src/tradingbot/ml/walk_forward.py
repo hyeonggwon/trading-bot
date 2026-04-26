@@ -49,6 +49,7 @@ def _build_target_dispatch(
             forward_candles=forward_candles,
             atr_mult=atr_mult,
             atr_period=atr_period,
+            threshold=threshold,
         )
     raise ValueError(
         f"Unknown target_kind={target_kind!r}; "

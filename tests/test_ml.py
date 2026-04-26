@@ -220,13 +220,11 @@ class TestBuildTargetTripleBarrier:
         target = build_target_triple_barrier(df, forward_candles=2, atr_mult=1.0)
         assert target.iloc[14] == 0.0
 
-    def test_vertical_barrier_falls_back_to_close_sign(self):
-        # Tight range, no barrier touch — vertical barrier compares close ends
+    def test_vertical_barrier_above_threshold_labels_positive(self):
+        # Tight intra-bar range so neither barrier triggers, but the close-to-
+        # close drift over the horizon clears the default 0.6% threshold.
         idx = pd.date_range("2024-01-01", periods=20, freq="h", tz="UTC")
-        close = np.full(20, 100.0)
-        # Drift up by 0.05% per bar — never crosses 1% ATR barrier
-        for i in range(20):
-            close[i] = 100.0 + 0.05 * i
+        close = np.array([100.0 + 0.25 * i for i in range(20)])  # +1% per 4 bars
         high = close * 1.001
         low = close * 0.999
         df = pd.DataFrame(
@@ -240,9 +238,29 @@ class TestBuildTargetTripleBarrier:
             index=idx,
         )
         target = build_target_triple_barrier(df, forward_candles=4, atr_mult=5.0)
-        # Last labelled row before tail NaN — drifting up, so label=1
         non_na = target.dropna()
         assert non_na.iloc[-1] == 1.0
+
+    def test_vertical_barrier_below_threshold_labels_negative(self):
+        # Drift is positive but below the fee-aware threshold (0.6%) → label 0.
+        # Documents the Gemini-review fix: sub-fee drift used to be labelled 1.
+        idx = pd.date_range("2024-01-01", periods=20, freq="h", tz="UTC")
+        close = np.array([100.0 + 0.05 * i for i in range(20)])  # +0.2% per 4 bars
+        high = close * 1.001
+        low = close * 0.999
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1.0,
+            },
+            index=idx,
+        )
+        target = build_target_triple_barrier(df, forward_candles=4, atr_mult=5.0)
+        non_na = target.dropna()
+        assert non_na.iloc[-1] == 0.0
 
 
 class TestTrainer:

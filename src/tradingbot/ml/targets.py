@@ -26,7 +26,20 @@ from __future__ import annotations
 import numpy as np
 import pandas as pd
 
-from tradingbot.data.indicators import add_atr
+
+def _atr_pct(df: pd.DataFrame, period: int) -> pd.Series:
+    """ATR as a fraction of close, computed without mutating ``df``.
+
+    Mirrors ``tradingbot.data.indicators.add_atr`` but avoids copying or
+    appending columns to the caller's frame so callers don't have to defensively
+    ``.copy()``.
+    """
+    import ta
+
+    atr = ta.volatility.AverageTrueRange(
+        high=df["high"], low=df["low"], close=df["close"], window=period
+    ).average_true_range()
+    return atr / df["close"]
 
 
 def build_target(
@@ -70,9 +83,7 @@ def build_target_atr(
 
     Rows with NaN ATR (warmup) or NaN forward return (tail) stay NaN.
     """
-    df = add_atr(df.copy(), period=atr_period)
-    atr_col = f"atr_{atr_period}"
-    atr_pct = df[atr_col] / df["close"]
+    atr_pct = _atr_pct(df, period=atr_period)
     fwd_return = df["close"].pct_change(forward_candles).shift(-forward_candles)
 
     threshold_per_row = atr_mult * atr_pct
@@ -87,6 +98,7 @@ def build_target_triple_barrier(
     forward_candles: int = 4,
     atr_mult: float = 1.0,
     atr_period: int = 14,
+    threshold: float = 0.006,
 ) -> pd.Series:
     """Lopez de Prado triple-barrier label, collapsed to binary.
 
@@ -100,14 +112,16 @@ def build_target_triple_barrier(
         1 if upper barrier touched first (high[j] >= upper_barrier)
         0 if lower barrier touched first (low[j]  <= lower_barrier)
         if neither barrier hit, fall back to vertical barrier:
-            1 if close[i + forward_candles] > close[i] else 0
+            1 if (close[i + forward_candles] / close[i] - 1) > threshold else 0
+
+    The vertical-barrier ``threshold`` matches ``build_target``'s default
+    (0.006 = 0.5% profit + 0.1% Upbit round-trip fee) so quiet rows where
+    neither barrier triggers aren't labelled positive on sub-fee drift.
 
     Returns a binary float Series; rows with NaN ATR (warmup) or insufficient
     lookahead stay NaN.
     """
-    df = add_atr(df.copy(), period=atr_period)
-    atr_col = f"atr_{atr_period}"
-    atr_pct = (df[atr_col] / df["close"]).to_numpy()
+    atr_pct = _atr_pct(df, period=atr_period).to_numpy()
     high = df["high"].to_numpy(dtype=float)
     low = df["low"].to_numpy(dtype=float)
     close = df["close"].to_numpy(dtype=float)
@@ -143,6 +157,9 @@ def build_target_triple_barrier(
             out[i] = 0.0
         else:
             # Vertical barrier — neither barrier touched within the horizon.
-            out[i] = 1.0 if close[i + horizon] > entry else 0.0
+            # Apply the same fee-aware threshold as build_target so quiet
+            # rows don't get spurious positive labels on sub-fee drift.
+            forward_ret = close[i + horizon] / entry - 1.0
+            out[i] = 1.0 if forward_ret > threshold else 0.0
 
     return pd.Series(out, index=df.index)
