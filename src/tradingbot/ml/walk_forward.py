@@ -10,8 +10,51 @@ import numpy as np
 import pandas as pd
 
 from tradingbot.ml.features import build_feature_matrix
-from tradingbot.ml.targets import build_target
+from tradingbot.ml.targets import (
+    build_target,
+    build_target_atr,
+    build_target_triple_barrier,
+)
 from tradingbot.ml.trainer import LGBMTrainer
+
+VALID_TARGET_KINDS = ("binary", "atr", "triple-barrier")
+
+
+def _build_target_dispatch(
+    df: pd.DataFrame,
+    target_kind: str,
+    forward_candles: int,
+    threshold: float,
+    atr_mult: float,
+    atr_period: int = 14,
+) -> pd.Series:
+    """Pick the right target builder based on ``target_kind``.
+
+    Centralizes the dispatch so MLWalkForwardTrainer / MLStrategyWalkForward
+    stay aligned (binary uses ``threshold``; atr / triple-barrier use
+    ``atr_mult``).
+    """
+    if target_kind == "binary":
+        return build_target(df, forward_candles=forward_candles, threshold=threshold)
+    if target_kind == "atr":
+        return build_target_atr(
+            df,
+            forward_candles=forward_candles,
+            atr_mult=atr_mult,
+            atr_period=atr_period,
+        )
+    if target_kind == "triple-barrier":
+        return build_target_triple_barrier(
+            df,
+            forward_candles=forward_candles,
+            atr_mult=atr_mult,
+            atr_period=atr_period,
+            threshold=threshold,
+        )
+    raise ValueError(
+        f"Unknown target_kind={target_kind!r}; "
+        f"expected one of {VALID_TARGET_KINDS}"
+    )
 
 log = logging.getLogger(__name__)
 
@@ -85,15 +128,24 @@ class MLWalkForwardTrainer:
         test_months: int = 1,
         forward_candles: int = 4,
         threshold: float = 0.006,
+        target_kind: str = "binary",
+        atr_mult: float = 1.0,
         model_dir: Path = Path("models"),
         lgbm_params: dict | None = None,
     ):
+        if target_kind not in VALID_TARGET_KINDS:
+            raise ValueError(
+                f"Unknown target_kind={target_kind!r}; "
+                f"expected one of {VALID_TARGET_KINDS}"
+            )
         self.symbol = symbol
         self.timeframe = timeframe
         self.train_months = train_months
         self.test_months = test_months
         self.forward_candles = forward_candles
         self.threshold = threshold
+        self.target_kind = target_kind
+        self.atr_mult = atr_mult
         self.model_dir = model_dir
         self.trainer = LGBMTrainer(lgbm_params)
 
@@ -113,7 +165,13 @@ class MLWalkForwardTrainer:
         """
         # Build features and target on full data
         df_feat, feature_cols = build_feature_matrix(df.copy(), external_df=external_df)
-        target = build_target(df_feat, self.forward_candles, self.threshold)
+        target = _build_target_dispatch(
+            df_feat,
+            target_kind=self.target_kind,
+            forward_candles=self.forward_candles,
+            threshold=self.threshold,
+            atr_mult=self.atr_mult,
+        )
 
         # Forward return per candle — needed later for empirical win/loss ratio
         fwd_return = df_feat["close"].pct_change(self.forward_candles).shift(-self.forward_candles)
@@ -282,6 +340,8 @@ class MLWalkForwardTrainer:
             "n_total_samples": len(df_valid),
             "forward_candles": self.forward_candles,
             "threshold": self.threshold,
+            "target_kind": self.target_kind,
+            "atr_mult": self.atr_mult,
             "avg_win_loss_ratio": avg_win_loss_ratio,
             "train_start": str(df_train_pool.index[0]),
             "train_end": str(df_train_pool.index[-1]),

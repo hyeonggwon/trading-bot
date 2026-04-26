@@ -1394,6 +1394,16 @@ def ml_train(
     timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Timeframe"),
     train_months: int = typer.Option(3, "--train-months", help="Training window months"),
     test_months: int = typer.Option(1, "--test-months", help="Test window months"),
+    target_kind: str = typer.Option(
+        "binary",
+        "--target-kind",
+        help="Target labelling strategy: binary | atr | triple-barrier",
+    ),
+    atr_mult: float = typer.Option(
+        1.0,
+        "--atr-mult",
+        help="ATR multiplier for atr / triple-barrier targets",
+    ),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
 ) -> None:
@@ -1425,6 +1435,8 @@ def ml_train(
         timeframe=timeframe,
         train_months=train_months,
         test_months=test_months,
+        target_kind=target_kind,
+        atr_mult=atr_mult,
         model_dir=Path(model_dir),
     )
     report = trainer.run(df, external_df=external_df)
@@ -1478,6 +1490,14 @@ def ml_walk_forward(
     test_months: int = typer.Option(2, "--test-months", help="Test window months"),
     forward_candles: int = typer.Option(4, "--forward-candles", help="Target horizon"),
     threshold: float = typer.Option(0.006, "--threshold", help="Target return threshold"),
+    target_kind: str = typer.Option(
+        "binary",
+        "--target-kind",
+        help="Target labelling strategy: binary | atr | triple-barrier",
+    ),
+    atr_mult: float = typer.Option(
+        1.0, "--atr-mult", help="ATR multiplier for atr / triple-barrier targets"
+    ),
     entry_threshold: float = typer.Option(0.45, "--entry-threshold", help="Entry probability threshold"),
     exit_threshold: float = typer.Option(0.30, "--exit-threshold", help="Exit probability threshold"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
@@ -1532,6 +1552,8 @@ def ml_walk_forward(
         test_months=test_months,
         forward_candles=forward_candles,
         threshold=threshold,
+        target_kind=target_kind,
+        atr_mult=atr_mult,
         entry_threshold=entry_threshold,
         exit_threshold=exit_threshold,
         external_data_dir=ext_dir if has_external else None,
@@ -1737,6 +1759,14 @@ def ml_train_all(
     ),
     train_months: int = typer.Option(3, "--train-months", help="Training window months"),
     test_months: int = typer.Option(1, "--test-months", help="Test window months"),
+    target_kind: str = typer.Option(
+        "binary",
+        "--target-kind",
+        help="Target labelling strategy: binary | atr | triple-barrier",
+    ),
+    atr_mult: float = typer.Option(
+        1.0, "--atr-mult", help="ATR multiplier for atr / triple-barrier targets"
+    ),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
     workers: int = typer.Option(
@@ -1807,6 +1837,8 @@ def ml_train_all(
                         timeframe=tf,
                         train_months=train_months,
                         test_months=test_months,
+                        target_kind=target_kind,
+                        atr_mult=atr_mult,
                         model_dir=Path(model_dir),
                         lgbm_params={"num_threads": threads_per_worker},
                     )
@@ -1855,7 +1887,7 @@ def ml_train_all(
                     executor.submit(
                         train_pair, sym, tf, data_dir_abs, model_dir_abs,
                         train_months, test_months, threads_per_worker,
-                        ext_dir_abs,
+                        ext_dir_abs, target_kind, atr_mult,
                     ): (sym, tf)
                     for sym, tf in pairs
                 }
@@ -1935,7 +1967,19 @@ def ml_diagnostics(
     train_months: int = typer.Option(6, "--train-months", help="Training window months"),
     test_months: int = typer.Option(2, "--test-months", help="Test window months"),
     forward_candles: int = typer.Option(4, "--forward-candles", help="Target horizon"),
-    threshold: float = typer.Option(0.006, "--threshold", help="Target return threshold"),
+    threshold: float = typer.Option(
+        0.006, "--threshold", help="Binary target return threshold (used when target-kind=binary)"
+    ),
+    target_kind: str = typer.Option(
+        "binary",
+        "--target-kind",
+        help="Target labelling strategy: binary | atr | triple-barrier",
+    ),
+    atr_mult: float = typer.Option(
+        1.0,
+        "--atr-mult",
+        help="ATR multiplier for atr / triple-barrier targets (ignored when target-kind=binary)",
+    ),
     entry_threshold: float = typer.Option(
         0.45, "--entry-threshold", help="Entry probability threshold"
     ),
@@ -1997,6 +2041,12 @@ def ml_diagnostics(
     console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
     console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
     console.print(f"  External data: {'yes' if has_external else 'no'}")
+    if target_kind == "binary":
+        console.print(f"  Target: binary (forward={forward_candles}, threshold={threshold})")
+    else:
+        console.print(
+            f"  Target: {target_kind} (forward={forward_candles}, atr_mult={atr_mult})"
+        )
 
     # ---- Step 1: model walk-forward (produces holdout AUC, calibrated probs) ----
     trainer = MLWalkForwardTrainer(
@@ -2006,6 +2056,8 @@ def ml_diagnostics(
         test_months=test_months,
         forward_candles=forward_candles,
         threshold=threshold,
+        target_kind=target_kind,
+        atr_mult=atr_mult,
         model_dir=Path(model_dir),
     )
     model_report = trainer.run(df, external_df=external_df)
@@ -2051,6 +2103,8 @@ def ml_diagnostics(
             test_months=test_months,
             forward_candles=forward_candles,
             threshold=threshold,
+            target_kind=target_kind,
+            atr_mult=atr_mult,
             entry_threshold=entry_threshold,
             exit_threshold=exit_threshold,
             external_data_dir=ext_dir if has_external else None,
@@ -2118,6 +2172,8 @@ def ml_diagnostics(
         "test_months": test_months,
         "forward_candles": forward_candles,
         "threshold": threshold,
+        "target_kind": target_kind,
+        "atr_mult": atr_mult,
         "entry_threshold": entry_threshold,
         "exit_threshold": exit_threshold,
         "initial_balance": balance,
@@ -2182,7 +2238,11 @@ def ml_diagnostics(
         "",
         f"- Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})",
         f"- Walk-Forward: {train_months}m train / {test_months}m test",
-        f"- Target: forward_candles={forward_candles}, threshold={threshold}",
+        (
+            f"- Target: binary (forward_candles={forward_candles}, threshold={threshold})"
+            if target_kind == "binary"
+            else f"- Target: {target_kind} (forward_candles={forward_candles}, atr_mult={atr_mult})"
+        ),
         f"- Entry/Exit threshold: {entry_threshold} / {exit_threshold}",
         f"- External features: {'yes' if has_external else 'no'}",
         "",
