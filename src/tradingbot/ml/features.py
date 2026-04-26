@@ -175,9 +175,13 @@ def build_feature_matrix(
 
         # Session features — Korean market hours often differ from UTC traders.
         # Both are integer-coded; LightGBM handles them as ordinal/categorical.
+        # Both hour and dayofweek must be derived from the same KST-shifted
+        # index — otherwise rows between 15:00–00:00 UTC have hour_kst on the
+        # next day but day_of_week still on the current UTC day.
         if isinstance(df.index, pd.DatetimeIndex):
-            df["hour_kst"] = ((df.index.hour + 9) % 24).astype(float)
-            df["day_of_week"] = df.index.dayofweek.astype(float)
+            kst_index = df.index + pd.Timedelta(hours=9)
+            df["hour_kst"] = kst_index.hour.astype(float)
+            df["day_of_week"] = kst_index.dayofweek.astype(float)
         else:
             df["hour_kst"] = float("nan")
             df["day_of_week"] = float("nan")

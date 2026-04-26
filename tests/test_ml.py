@@ -138,8 +138,11 @@ class TestExtraFeatures:
         # First valid row (after some warmup): hour_kst = (0 + 9) % 24 = 9
         assert df_feat["hour_kst"].iloc[0] == 9.0
         assert df_feat["hour_kst"].iloc[15] == (15 + 9) % 24  # 0
-        # day_of_week — 2024-01-01 is Monday → 0
+        # 2024-01-01 00:00 UTC = 2024-01-01 09:00 KST → still Monday (0)
         assert df_feat["day_of_week"].iloc[0] == 0.0
+        # 2024-01-01 15:00 UTC = 2024-01-02 00:00 KST → Tuesday (1).
+        # Catches the bug where dayofweek was taken from the un-shifted index.
+        assert df_feat["day_of_week"].iloc[15] == 1.0
 
     def test_adx_bucket_is_categorical(self):
         df = _make_data(300)

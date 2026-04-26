@@ -62,6 +62,9 @@ class LGBMStrategy(Strategy):
         self._external_components: dict | None = None
         self._external_load_tried: bool = False
         self._warned_missing: set[str] = set()
+        # Cache for include_extra auto-detection so multi-symbol backtests
+        # don't reload meta from disk on every indicators() call.
+        self._include_extra_detected: bool | None = None
 
     def set_model(
         self,
@@ -143,13 +146,20 @@ class LGBMStrategy(Strategy):
 
         # Decide whether to build the Phase 4 extras: any saved meta with
         # include_extra=True forces the wider build. Param override wins if set.
+        # Cache the meta scan — indicators() is called per-symbol per-iteration
+        # in multi-symbol backtests, and reading 8 meta files every call is
+        # O(N²) I/O.
         include_extra = bool(self.params.get("include_extra", False))
         if not include_extra:
-            for sym in self.symbols:
-                meta = LGBMTrainer.load_meta(sym, self.timeframe, self.model_dir)
-                if meta and meta.get("include_extra"):
-                    include_extra = True
-                    break
+            if self._include_extra_detected is None:
+                detected = False
+                for sym in self.symbols:
+                    meta = LGBMTrainer.load_meta(sym, self.timeframe, self.model_dir)
+                    if meta and meta.get("include_extra"):
+                        detected = True
+                        break
+                self._include_extra_detected = detected
+            include_extra = self._include_extra_detected
 
         df, _ = build_feature_matrix(
             df,
