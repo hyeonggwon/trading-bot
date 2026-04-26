@@ -1942,6 +1942,9 @@ def ml_diagnostics(
     exit_threshold: float = typer.Option(
         0.30, "--exit-threshold", help="Exit probability threshold"
     ),
+    balance: float = typer.Option(
+        1_000_000, "--balance", "-b", help="Initial balance for backtest (KRW)"
+    ),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
     output_dir: str = typer.Option(
@@ -2036,7 +2039,7 @@ def ml_diagnostics(
     if not skip_backtest:
         config = AppConfig(
             trading=TradingConfig(
-                symbols=[symbol], timeframe=timeframe, initial_balance=1_000_000
+                symbols=[symbol], timeframe=timeframe, initial_balance=balance
             ),
             risk=RiskConfig(),
             backtest=BacktestConfig(),
@@ -2117,6 +2120,7 @@ def ml_diagnostics(
         "threshold": threshold,
         "entry_threshold": entry_threshold,
         "exit_threshold": exit_threshold,
+        "initial_balance": balance,
         "has_external": has_external,
         "n_data": len(df),
         "data_start": str(df.index[0]),
