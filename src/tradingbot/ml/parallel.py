@@ -30,6 +30,8 @@ def train_pair(
     test_months: int,
     num_threads: int,
     external_data_dir: str | None = None,
+    target_kind: str = "binary",
+    atr_mult: float = 1.0,
 ) -> PairTrainResult:
     """Train a single symbol x timeframe pair.
 
@@ -73,6 +75,8 @@ def train_pair(
             timeframe=timeframe,
             train_months=train_months,
             test_months=test_months,
+            target_kind=target_kind,
+            atr_mult=atr_mult,
             model_dir=Path(model_dir),
             lgbm_params={"num_threads": num_threads},
         )

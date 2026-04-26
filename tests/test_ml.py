@@ -12,7 +12,11 @@ from tradingbot.ml.features import (
     WARMUP_CANDLES,
     build_feature_matrix,
 )
-from tradingbot.ml.targets import build_target
+from tradingbot.ml.targets import (
+    build_target,
+    build_target_atr,
+    build_target_triple_barrier,
+)
 
 
 def _make_data(n: int = 300) -> pd.DataFrame:
@@ -120,6 +124,125 @@ class TestTargets:
         target_high = build_target(df, forward_candles=4, threshold=0.1)
         target_low = build_target(df, forward_candles=4, threshold=0.001)
         assert target_high.sum() <= target_low.sum()
+
+
+class TestBuildTargetAtr:
+    def test_binary_and_tail_nan(self):
+        df = _make_data(200)
+        target = build_target_atr(df, forward_candles=4, atr_mult=1.0)
+        assert set(target.dropna().unique()).issubset({0.0, 1.0})
+        # forward shift NaNs the tail
+        assert target.iloc[-4:].isna().all()
+        # Middle rows must have at least one valid label
+        assert target.iloc[20:180].notna().any()
+
+    def test_higher_mult_means_fewer_positives(self):
+        df = _make_data(400)
+        easy = build_target_atr(df, forward_candles=4, atr_mult=0.5)
+        hard = build_target_atr(df, forward_candles=4, atr_mult=2.0)
+        # raising the multiplier never increases the positive count
+        assert hard.sum() <= easy.sum()
+
+    def test_handcrafted_threshold(self):
+        # Build a tiny synthetic frame where ATR% per row is constant 1%
+        # and forward returns are known. atr_mult=1.0 → label 1 iff fwd > 1%.
+        idx = pd.date_range("2024-01-01", periods=8, freq="h", tz="UTC")
+        # Constant 1% range ⇒ ATR% ≈ 1% after warmup
+        close = pd.Series(
+            [100.0, 100.0, 100.0, 100.0, 102.0, 99.5, 100.5, 100.0],
+            index=idx,
+        )
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": close * 1.005,
+                "low": close * 0.995,
+                "close": close,
+                "volume": 1.0,
+            }
+        )
+        # forward_candles=1 → label_i = 1 iff (close[i+1]/close[i] - 1) > 1% * 1.0
+        target = build_target_atr(df, forward_candles=1, atr_mult=1.0, atr_period=2)
+        # idx 4: 100 → 102 = +2% > 1% → 1
+        # idx 5: 102 → 99.5 = -2.4% → 0
+        # idx 6: 99.5 → 100.5 ≈ +1.005% > 1% → 1
+        # (head rows are NaN due to ATR warmup; tail row NaN due to shift)
+        non_na = target.dropna()
+        assert (non_na > 0).any()  # at least one positive
+        assert (non_na == 0).any()  # at least one negative
+
+
+class TestBuildTargetTripleBarrier:
+    def test_binary_output(self):
+        df = _make_data(300)
+        target = build_target_triple_barrier(df, forward_candles=6, atr_mult=1.0)
+        assert set(target.dropna().unique()).issubset({0.0, 1.0})
+
+    def test_upper_barrier_first(self):
+        # Designed: bar 1 hits upper before lower → label 1
+        idx = pd.date_range("2024-01-01", periods=20, freq="h", tz="UTC")
+        close = np.full(20, 100.0)
+        high = np.full(20, 100.5)  # baseline tight range
+        low = np.full(20, 99.5)
+        # ATR% ≈ ~1% after warmup. At i=14, set bar i+1 to clearly hit upper.
+        high[15] = 110.0  # huge upper wick
+        low[15] = 99.8
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1.0,
+            },
+            index=idx,
+        )
+        target = build_target_triple_barrier(df, forward_candles=2, atr_mult=1.0)
+        assert target.iloc[14] == 1.0
+
+    def test_lower_barrier_first(self):
+        idx = pd.date_range("2024-01-01", periods=20, freq="h", tz="UTC")
+        close = np.full(20, 100.0)
+        high = np.full(20, 100.5)
+        low = np.full(20, 99.5)
+        low[15] = 90.0  # huge lower wick → lower barrier first
+        high[15] = 100.2
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1.0,
+            },
+            index=idx,
+        )
+        target = build_target_triple_barrier(df, forward_candles=2, atr_mult=1.0)
+        assert target.iloc[14] == 0.0
+
+    def test_vertical_barrier_falls_back_to_close_sign(self):
+        # Tight range, no barrier touch — vertical barrier compares close ends
+        idx = pd.date_range("2024-01-01", periods=20, freq="h", tz="UTC")
+        close = np.full(20, 100.0)
+        # Drift up by 0.05% per bar — never crosses 1% ATR barrier
+        for i in range(20):
+            close[i] = 100.0 + 0.05 * i
+        high = close * 1.001
+        low = close * 0.999
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": high,
+                "low": low,
+                "close": close,
+                "volume": 1.0,
+            },
+            index=idx,
+        )
+        target = build_target_triple_barrier(df, forward_candles=4, atr_mult=5.0)
+        # Last labelled row before tail NaN — drifting up, so label=1
+        non_na = target.dropna()
+        assert non_na.iloc[-1] == 1.0
 
 
 class TestTrainer:

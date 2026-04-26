@@ -21,11 +21,12 @@ from tradingbot.backtest.report import BacktestReport
 from tradingbot.config import AppConfig
 from tradingbot.data.external_fetcher import build_external_df
 from tradingbot.ml.features import WARMUP_CANDLES, build_feature_matrix
-from tradingbot.ml.targets import build_target
 from tradingbot.ml.trainer import LGBMTrainer
 from tradingbot.ml.walk_forward import (
     EMBARGO_CANDLES,
     MIN_VAL_FOR_EARLY_STOPPING,
+    VALID_TARGET_KINDS,
+    _build_target_dispatch,
     candles_per_month,
     make_expanding_windows,
 )
@@ -71,18 +72,27 @@ class MLStrategyWalkForward:
         test_months: int = 2,
         forward_candles: int = 4,
         threshold: float = 0.006,
+        target_kind: str = "binary",
+        atr_mult: float = 1.0,
         entry_threshold: float = 0.45,
         exit_threshold: float = 0.30,
         external_data_dir: str | Path | None = None,
         config: AppConfig | None = None,
         lgbm_params: dict | None = None,
     ) -> None:
+        if target_kind not in VALID_TARGET_KINDS:
+            raise ValueError(
+                f"Unknown target_kind={target_kind!r}; "
+                f"expected one of {VALID_TARGET_KINDS}"
+            )
         self.symbol = symbol
         self.timeframe = timeframe
         self.train_months = train_months
         self.test_months = test_months
         self.forward_candles = forward_candles
         self.threshold = threshold
+        self.target_kind = target_kind
+        self.atr_mult = atr_mult
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
         self.external_data_dir = (
@@ -104,7 +114,13 @@ class MLStrategyWalkForward:
         )
 
         df_feat, feature_cols = build_feature_matrix(df, external_df=external_df)
-        target = build_target(df_feat, self.forward_candles, self.threshold)
+        target = _build_target_dispatch(
+            df_feat,
+            target_kind=self.target_kind,
+            forward_candles=self.forward_candles,
+            threshold=self.threshold,
+            atr_mult=self.atr_mult,
+        )
         fwd_return = (
             df_feat["close"].pct_change(self.forward_candles).shift(-self.forward_candles)
         )
