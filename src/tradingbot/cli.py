@@ -2316,5 +2316,291 @@ def ml_diagnostics(
     console.print(f"[dim]Markdown: {md_path}[/dim]")
 
 
+@app.command(name="ml-tune")
+def ml_tune(
+    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol"),
+    timeframe: str = typer.Option("4h", "--timeframe", "-t", help="Timeframe"),
+    train_months: int = typer.Option(6, "--train-months", help="Training window months"),
+    test_months: int = typer.Option(2, "--test-months", help="Test window months"),
+    forward_candles: int = typer.Option(4, "--forward-candles", help="Target horizon"),
+    threshold: float = typer.Option(
+        0.006, "--threshold", help="Binary target return threshold"
+    ),
+    target_kind: str = typer.Option(
+        "triple-barrier",
+        "--target-kind",
+        help="Target labelling strategy: binary | atr | triple-barrier",
+    ),
+    atr_mult: float = typer.Option(
+        1.0, "--atr-mult", help="ATR multiplier for atr / triple-barrier targets"
+    ),
+    entry_threshold: float = typer.Option(
+        0.45, "--entry-threshold", help="Entry probability threshold"
+    ),
+    exit_threshold: float = typer.Option(
+        0.30, "--exit-threshold", help="Exit probability threshold"
+    ),
+    balance: float = typer.Option(
+        1_000_000, "--balance", "-b", help="Initial balance for backtest (KRW)"
+    ),
+    trials: int = typer.Option(
+        50, "--trials", help="Optuna trial budget (study stops at this many)"
+    ),
+    time_budget: float = typer.Option(
+        3600.0,
+        "--time-budget",
+        help="Wall-clock budget in seconds; study stops at trial count or this, whichever first",
+    ),
+    objective: str = typer.Option(
+        "holdout_sharpe",
+        "--objective",
+        help="Objective metric: holdout_sharpe | holdout_cum_return | holdout_auc",
+    ),
+    seed: int = typer.Option(42, "--seed", help="Optuna sampler seed"),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
+    output_dir: str = typer.Option(
+        "personal/ml_iter", "--output-dir", help="Where to write the tuner report"
+    ),
+    label: str = typer.Option(
+        "02_tuned", "--label", help="Filename prefix for the tuner report"
+    ),
+) -> None:
+    """Tune LGBM hyperparameters via Optuna, then save a model with the best params.
+
+    Each trial runs a full ``MLStrategyWalkForward`` so the objective stays
+    aligned with what we report (Phase 2 surfaced that AUC alone misleads
+    when the label distribution shifts). After the study finishes the tuner
+    invokes ``MLWalkForwardTrainer`` with the winning params to persist a
+    final model + calibrator the rest of the pipeline can consume.
+    """
+    setup_logging()
+
+    import json
+
+    from tradingbot.data.external_fetcher import build_external_df
+    from tradingbot.data.storage import load_candles
+    from tradingbot.ml.tuner import LGBMTuner
+    from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+
+    try:
+        df = load_candles(symbol, timeframe, Path(data_dir))
+    except FileNotFoundError:
+        console.print(
+            f"[red]No data for {symbol} {timeframe}. "
+            "Run tradingbot download first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
+    external_df = build_external_df(df, ext_dir) if ext_dir.exists() else None
+    has_external = external_df is not None and len(external_df.columns) > 0
+    ext_dir_for_runner = ext_dir if has_external else None
+
+    console.print(f"[bold]ML hyperparameter tuning — {symbol} {timeframe}[/bold]")
+    console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
+    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
+    console.print(
+        f"  Target: {target_kind}"
+        + (f" (atr_mult={atr_mult})" if target_kind != "binary" else f" (threshold={threshold})")
+    )
+    console.print(f"  Trials: {trials}  Time budget: {time_budget:.0f}s")
+    console.print(f"  Objective: {objective}")
+
+    tuner = LGBMTuner(
+        symbol=symbol,
+        timeframe=timeframe,
+        train_months=train_months,
+        test_months=test_months,
+        forward_candles=forward_candles,
+        threshold=threshold,
+        target_kind=target_kind,
+        atr_mult=atr_mult,
+        entry_threshold=entry_threshold,
+        exit_threshold=exit_threshold,
+        balance=balance,
+        external_data_dir=ext_dir_for_runner,
+        objective=objective,
+        seed=seed,
+    )
+    result = tuner.search(df, n_trials=trials, time_budget_sec=time_budget)
+
+    if not result.best_params:
+        console.print("[red]No successful trial — no model saved.[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[bold green]Tuning complete[/bold green]  "
+        f"trials={result.n_trials_completed}  "
+        f"elapsed={result.elapsed_sec:.1f}s  "
+        f"best {objective}={result.best_value:.4f}"
+    )
+
+    # Show top 5 trials by score
+    top_trials = sorted(
+        [t for t in result.trials if t["score"] != float("-inf")],
+        key=lambda t: -t["score"],
+    )[:5]
+    if top_trials:
+        table = Table(title="Top trials")
+        table.add_column("#", justify="right")
+        table.add_column("Score", justify="right")
+        table.add_column("Sharpe", justify="right")
+        table.add_column("Cum %", justify="right")
+        table.add_column("Trades", justify="right")
+        for t in top_trials:
+            table.add_row(
+                str(t["trial"]),
+                f"{t['score']:.3f}",
+                f"{t.get('avg_sharpe', 0):.2f}",
+                f"{t.get('cumulative_return_pct', 0):+.2f}",
+                str(t.get("total_trades", 0)),
+            )
+        console.print(table)
+
+    console.print("\n[bold]Best params[/bold]")
+    for k, v in result.best_params.items():
+        if isinstance(v, float):
+            console.print(f"  {k}: {v:.4f}")
+        else:
+            console.print(f"  {k}: {v}")
+
+    # ---- Train final model with best params ----
+    console.print("\n[bold]Training final model with best params...[/bold]")
+    final_trainer = MLWalkForwardTrainer(
+        symbol=symbol,
+        timeframe=timeframe,
+        train_months=train_months,
+        test_months=test_months,
+        forward_candles=forward_candles,
+        threshold=threshold,
+        target_kind=target_kind,
+        atr_mult=atr_mult,
+        model_dir=Path(model_dir),
+        lgbm_params=dict(result.best_params),
+    )
+    final_report = final_trainer.run(df, external_df=external_df)
+    if not final_report.windows:
+        console.print(
+            "[red]Final training failed (no windows).[/red] Best params still saved to report."
+        )
+        final_model_path: Path | None = None
+    else:
+        final_model_path = final_report.model_path
+        console.print(f"[green]Final model saved: {final_model_path}[/green]")
+        console.print(
+            f"  Holdout AUC: {final_report.holdout_auc:.4f}  "
+            f"precision: {final_report.holdout_precision:.4f}"
+        )
+
+        # Patch the model meta with tuning info so downstream tools can audit
+        # which params produced the saved booster. We rewrite the file rather
+        # than threading a callback because trainer.save() owns meta layout.
+        if final_model_path is not None:
+            symbol_key = symbol.replace("/", "_")
+            meta_path = (
+                Path(model_dir) / f"lgbm_{symbol_key}_{timeframe}_meta.json"
+            )
+            if meta_path.exists():
+                meta_dict = json.loads(meta_path.read_text())
+                meta_dict["tuning"] = {
+                    "best_params": dict(result.best_params),
+                    "best_value": result.best_value,
+                    "objective": objective,
+                    "n_trials_completed": result.n_trials_completed,
+                    "elapsed_sec": result.elapsed_sec,
+                }
+                meta_path.write_text(json.dumps(meta_dict, indent=2, default=str))
+
+    # ---- Persist tuner report ----
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{label}_{symbol.replace('/', '_')}_{timeframe}"
+    json_path = out_dir / f"{base}.json"
+    md_path = out_dir / f"{base}.md"
+
+    payload = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "train_months": train_months,
+        "test_months": test_months,
+        "target_kind": target_kind,
+        "atr_mult": atr_mult,
+        "threshold": threshold,
+        "entry_threshold": entry_threshold,
+        "exit_threshold": exit_threshold,
+        "initial_balance": balance,
+        "objective": objective,
+        "trials_requested": trials,
+        "time_budget_sec": time_budget,
+        "n_trials_completed": result.n_trials_completed,
+        "elapsed_sec": result.elapsed_sec,
+        "best_params": result.best_params,
+        "best_value": result.best_value,
+        "trials": result.trials,
+        "final_holdout_auc": (
+            final_report.holdout_auc if final_report.windows else None
+        ),
+        "final_holdout_precision": (
+            final_report.holdout_precision if final_report.windows else None
+        ),
+        "final_model_path": str(final_model_path) if final_model_path else None,
+    }
+    json_path.write_text(json.dumps(payload, indent=2, default=str))
+
+    md_lines = [
+        f"# ML Tuning — {symbol} {timeframe} ({label})",
+        "",
+        f"- Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})",
+        f"- Walk-Forward: {train_months}m train / {test_months}m test",
+        (
+            f"- Target: binary (forward_candles={forward_candles}, threshold={threshold})"
+            if target_kind == "binary"
+            else f"- Target: {target_kind} (forward_candles={forward_candles}, atr_mult={atr_mult})"
+        ),
+        f"- Objective: **{objective}**",
+        f"- Trials: {result.n_trials_completed} / {trials} requested",
+        f"- Elapsed: {result.elapsed_sec:.1f}s",
+        f"- Best **{objective}**: **{result.best_value:.4f}**",
+        "",
+        "## Best params",
+        "",
+        "| Param | Value |",
+        "|-------|------:|",
+    ]
+    for k, v in result.best_params.items():
+        if isinstance(v, float):
+            md_lines.append(f"| {k} | {v:.4f} |")
+        else:
+            md_lines.append(f"| {k} | {v} |")
+    if top_trials:
+        md_lines += [
+            "",
+            "## Top trials",
+            "",
+            "| # | Score | Sharpe | Cum % | Trades |",
+            "|---|------:|-------:|------:|-------:|",
+        ]
+        for t in top_trials:
+            md_lines.append(
+                f"| {t['trial']} | {t['score']:.3f} | "
+                f"{t.get('avg_sharpe', 0):.2f} | "
+                f"{t.get('cumulative_return_pct', 0):+.2f} | "
+                f"{t.get('total_trades', 0)} |"
+            )
+    if final_report.windows:
+        md_lines += [
+            "",
+            "## Final model (trained with best params)",
+            "",
+            f"- Holdout AUC: {final_report.holdout_auc:.4f}",
+            f"- Holdout Precision: {final_report.holdout_precision:.4f}",
+            f"- Saved: `{final_model_path}`",
+        ]
+    md_path.write_text("\n".join(md_lines) + "\n")
+    console.print(f"\n[dim]JSON: {json_path}[/dim]")
+    console.print(f"[dim]Markdown: {md_path}[/dim]")
+
+
 if __name__ == "__main__":
     app()
