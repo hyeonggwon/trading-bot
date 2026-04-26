@@ -56,7 +56,9 @@ def _progress_context():
 @app.command()
 def download(
     symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Trading pair (e.g., BTC/KRW)"),
-    timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe (e.g., 1m, 5m, 1h, 4h, 1d)"),
+    timeframe: str = typer.Option(
+        "1h", "--timeframe", "-t", help="Candle timeframe (e.g., 1m, 5m, 1h, 4h, 1d)"
+    ),
     since: str = typer.Option(..., "--since", help="Start date (YYYY-MM-DD)"),
     until: str = typer.Option(None, "--until", help="End date (YYYY-MM-DD). Defaults to now."),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
@@ -143,11 +145,15 @@ def _load_strategies() -> None:
     if STRATEGY_MAP:
         return
     from tradingbot.strategy.registry import get_strategy_map
+
     STRATEGY_MAP.update(get_strategy_map())
 
 
 def _build_combined_strategy(
-    entry: str, exit_: str, symbol: str, timeframe: str,
+    entry: str,
+    exit_: str,
+    symbol: str,
+    timeframe: str,
 ):
     """Build a CombinedStrategy from filter strings."""
     from tradingbot.strategy.combined import CombinedStrategy
@@ -200,7 +206,10 @@ def _resolve_strategy(
             )
             raise typer.Exit(1)
         strategy = _build_combined_strategy(
-            tmpl["entry"], tmpl["exit"], symbol, timeframe,
+            tmpl["entry"],
+            tmpl["exit"],
+            symbol,
+            timeframe,
         )
         if symbols:
             strategy.symbols = symbols
@@ -209,9 +218,7 @@ def _resolve_strategy(
     _load_strategies()
     if strategy_name not in STRATEGY_MAP:
         console.print(f"[red]Unknown strategy: {strategy_name}[/red]")
-        available = list(STRATEGY_MAP.keys()) + [
-            t["label"] for t in COMBINE_TEMPLATES
-        ]
+        available = list(STRATEGY_MAP.keys()) + [t["label"] for t in COMBINE_TEMPLATES]
         console.print(f"Available: {', '.join(available)}")
         raise typer.Exit(1)
 
@@ -225,14 +232,17 @@ def _resolve_strategy(
 @app.command()
 def backtest(
     strategy_name: str = typer.Option("sma_cross", "--strategy", "-S", help="Strategy name"),
-    symbol: str = typer.Option(None, "--symbol", "-s", help="Trading pair (omit for all config symbols)"),
+    symbol: str = typer.Option(
+        None, "--symbol", "-s", help="Trading pair (omit for all config symbols)"
+    ),
     timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe"),
     start: str = typer.Option(None, "--start", help="Override evaluation start (YYYY-MM-DD)"),
     end: str = typer.Option(None, "--end", help="Override evaluation end (YYYY-MM-DD)"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     include_train: bool = typer.Option(
-        False, "--include-train",
+        False,
+        "--include-train",
         help="Disable holdout-only filtering and evaluate on the full data range.",
     ),
 ) -> None:
@@ -261,7 +271,10 @@ def backtest(
         raise typer.Exit(1)
 
     strategy, strategy_name, _ = _resolve_strategy(
-        strategy_name, symbols[0], timeframe, symbols=symbols,
+        strategy_name,
+        symbols[0],
+        timeframe,
+        symbols=symbols,
     )
 
     # Load data for all symbols
@@ -279,14 +292,22 @@ def backtest(
 
     # Resolve holdout window AFTER data is loaded (need timestamps for auto cutoff).
     effective_start, effective_end, period_note = _resolve_holdout_window(
-        data, start, end, include_train,
+        data,
+        start,
+        end,
+        include_train,
     )
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": symbols, "timeframe": timeframe, "initial_balance": balance},
-        "backtest": {"start_date": effective_start, "end_date": effective_end},
-    })
+    config = load_config(
+        Path("config"),
+        overrides={
+            "trading": {"symbols": symbols, "timeframe": timeframe, "initial_balance": balance},
+            "backtest": {"start_date": effective_start, "end_date": effective_end},
+        },
+    )
 
-    console.print(f"[bold]Running backtest: {strategy_name} on {len(data)} symbol(s) {timeframe}[/bold]")
+    console.print(
+        f"[bold]Running backtest: {strategy_name} on {len(data)} symbol(s) {timeframe}[/bold]"
+    )
     eval_start_str = effective_start or "data start"
     eval_end_str = effective_end or "data end"
     console.print(f"  Evaluation period: {eval_start_str} → {eval_end_str} ({period_note})")
@@ -313,18 +334,25 @@ def optimize(
     setup_logging()
 
     _, strategy_name, strategy_cls = _resolve_strategy(
-        strategy_name, symbol, timeframe,
+        strategy_name,
+        symbol,
+        timeframe,
     )
     if strategy_cls is None:
-        console.print("[red]Combined templates cannot be optimized (no param_space). Use backtest instead.[/red]")
+        console.print(
+            "[red]Combined templates cannot be optimized (no param_space). Use backtest instead.[/red]"
+        )
         raise typer.Exit(1)
 
     from tradingbot.backtest.optimizer import GridSearchOptimizer
     from tradingbot.data.storage import load_candles
 
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-    })
+    config = load_config(
+        Path("config"),
+        overrides={
+            "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+        },
+    )
     space = None
     if param_grid:
         try:
@@ -339,7 +367,10 @@ def optimize(
     optimizer = GridSearchOptimizer(strategy_cls=strategy_cls, config=config, max_workers=1)
     with _progress_context() as progress:
         results = optimizer.optimize(
-            {symbol: df}, param_space=space, sort_by=sort_by, progress=progress,
+            {symbol: df},
+            param_space=space,
+            sort_by=sort_by,
+            progress=progress,
         )
     optimizer.print_results(results, top_n=top_n)
 
@@ -358,14 +389,19 @@ def walk_forward(
     setup_logging()
 
     strategy, strategy_name, strategy_cls = _resolve_strategy(
-        strategy_name, symbol, timeframe,
+        strategy_name,
+        symbol,
+        timeframe,
     )
 
     from tradingbot.data.storage import load_candles
 
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-    })
+    config = load_config(
+        Path("config"),
+        overrides={
+            "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+        },
+    )
 
     df = load_candles(symbol, timeframe, Path(data_dir))
     console.print(
@@ -378,8 +414,10 @@ def walk_forward(
         from tradingbot.backtest.walk_forward import WalkForwardValidator
 
         validator = WalkForwardValidator(
-            strategy_cls=strategy_cls, config=config,
-            train_months=train_months, test_months=test_months,
+            strategy_cls=strategy_cls,
+            config=config,
+            train_months=train_months,
+            test_months=test_months,
         )
         with _progress_context() as progress:
             report = validator.validate({symbol: df}, progress=progress)
@@ -387,8 +425,13 @@ def walk_forward(
     else:
         # Combined template: fixed filters, no optimization — test each window
         _walk_forward_combined(
-            strategy, strategy_name, symbol, df, config,
-            train_months, test_months,
+            strategy,
+            strategy_name,
+            symbol,
+            df,
+            config,
+            train_months,
+            test_months,
         )
 
 
@@ -431,7 +474,10 @@ def _walk_forward_combined(
         task = progress.add_task("Walk-Forward (combined)", total=len(windows))
 
         for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
-            progress.update(task, description=f"WF {i+1}/{len(windows)}: {train_start.date()}~{test_end.date()}")
+            progress.update(
+                task,
+                description=f"WF {i + 1}/{len(windows)}: {train_start.date()}~{test_end.date()}",
+            )
 
             # Train window — include warmup buffer for indicator computation
             train_start_idx = df.index.searchsorted(train_start)
@@ -444,13 +490,20 @@ def _walk_forward_combined(
             full_train_report = engine.run({symbol: train_with_warmup})
 
             # Filter to train period only
-            train_start_dt = train_start.to_pydatetime() if hasattr(train_start, "to_pydatetime") else train_start
+            train_start_dt = (
+                train_start.to_pydatetime()
+                if hasattr(train_start, "to_pydatetime")
+                else train_start
+            )
             train_trades = [
-                t for t in full_train_report.trades
+                t
+                for t in full_train_report.trades
                 if t.entry_order.created_at is not None
                 and t.entry_order.created_at >= train_start_dt
             ]
-            train_equity = full_train_report.equity_curve[full_train_report.equity_curve.index >= train_start]
+            train_equity = full_train_report.equity_curve[
+                full_train_report.equity_curve.index >= train_start
+            ]
 
             if len(train_equity) < 2:
                 train_report = full_train_report
@@ -474,9 +527,12 @@ def _walk_forward_combined(
             full_report = engine.run({symbol: test_with_warmup})
 
             # Filter to test period only (exclude warmup trades)
-            test_start_dt = test_start.to_pydatetime() if hasattr(test_start, "to_pydatetime") else test_start
+            test_start_dt = (
+                test_start.to_pydatetime() if hasattr(test_start, "to_pydatetime") else test_start
+            )
             test_trades = [
-                t for t in full_report.trades
+                t
+                for t in full_report.trades
                 if t.entry_order.created_at is not None
                 and t.entry_order.created_at >= test_start_dt
             ]
@@ -500,20 +556,22 @@ def _walk_forward_combined(
                 test_dd = filtered_report.max_drawdown
                 test_trade_count = filtered_report.total_trades
 
-            results.append(WalkForwardWindow(
-                window_index=i,
-                train_start=train_start,
-                train_end=train_end,
-                test_start=test_start,
-                test_end=test_end,
-                best_params={"filters": "fixed"},
-                train_sharpe=train_report.sharpe_ratio,
-                train_return=train_report.total_return,
-                test_sharpe=test_sharpe,
-                test_return=test_return_val,
-                test_trades=test_trade_count,
-                test_max_drawdown=test_dd,
-            ))
+            results.append(
+                WalkForwardWindow(
+                    window_index=i,
+                    train_start=train_start,
+                    train_end=train_end,
+                    test_start=test_start,
+                    test_end=test_end,
+                    best_params={"filters": "fixed"},
+                    train_sharpe=train_report.sharpe_ratio,
+                    train_return=train_report.total_return,
+                    test_sharpe=test_sharpe,
+                    test_return=test_return_val,
+                    test_trades=test_trade_count,
+                    test_max_drawdown=test_dd,
+                )
+            )
 
             progress.advance(task)
 
@@ -529,9 +587,17 @@ def paper(
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial paper balance (KRW)"),
     exchange: str = typer.Option("upbit", "--exchange", "-e", help="Exchange for data feed"),
     state_file: str = typer.Option("state.json", "--state-file", help="State persistence file"),
-    use_websocket: bool = typer.Option(False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"),
-    entry: str | None = typer.Option(None, "--entry", help="Combined entry filters (e.g., 'trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35')"),
-    exit_: str | None = typer.Option(None, "--exit", help="Combined exit filters (e.g., 'rsi_overbought:70')"),
+    use_websocket: bool = typer.Option(
+        False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"
+    ),
+    entry: str | None = typer.Option(
+        None,
+        "--entry",
+        help="Combined entry filters (e.g., 'trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35')",
+    ),
+    exit_: str | None = typer.Option(
+        None, "--exit", help="Combined exit filters (e.g., 'rsi_overbought:70')"
+    ),
 ) -> None:
     """Start paper trading with simulated execution."""
     import asyncio
@@ -555,9 +621,12 @@ def paper(
     from tradingbot.live.state import StateManager
     from tradingbot.notifications.telegram import TelegramNotifier
 
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-    })
+    config = load_config(
+        Path("config"),
+        overrides={
+            "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+        },
+    )
 
     env = EnvSettings()
     data_feed = CcxtExchange(ExchangeConfig(name=exchange), env)
@@ -575,6 +644,7 @@ def paper(
     ws = None
     if use_websocket:
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
+
         ws = UpbitWebSocketClient([symbol])
 
     console.print(f"[bold]Paper trading: {strategy_name} on {symbol} {timeframe}[/bold]")
@@ -653,10 +723,20 @@ def live(
     exchange_name: str = typer.Option("upbit", "--exchange", "-e", help="Exchange"),
     state_file: str = typer.Option("state.json", "--state-file", help="State persistence file"),
     max_order_krw: float = typer.Option(500_000, "--max-order", help="Max order value (KRW)"),
-    daily_loss_krw: float = typer.Option(200_000, "--daily-loss-limit", help="Daily loss limit (KRW)"),
-    use_websocket: bool = typer.Option(False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"),
-    entry: str | None = typer.Option(None, "--entry", help="Combined entry filters (e.g., 'trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35')"),
-    exit_: str | None = typer.Option(None, "--exit", help="Combined exit filters (e.g., 'rsi_overbought:70')"),
+    daily_loss_krw: float = typer.Option(
+        200_000, "--daily-loss-limit", help="Daily loss limit (KRW)"
+    ),
+    use_websocket: bool = typer.Option(
+        False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"
+    ),
+    entry: str | None = typer.Option(
+        None,
+        "--entry",
+        help="Combined entry filters (e.g., 'trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35')",
+    ),
+    exit_: str | None = typer.Option(
+        None, "--exit", help="Combined exit filters (e.g., 'rsi_overbought:70')"
+    ),
 ) -> None:
     """Start LIVE trading with real money. Use with caution."""
     import asyncio
@@ -683,12 +763,17 @@ def live(
 
     env = EnvSettings()
     if not env.upbit_access_key or not env.upbit_secret_key:
-        console.print("[red]Upbit API keys not configured. Set UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY in .env[/red]")
+        console.print(
+            "[red]Upbit API keys not configured. Set UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY in .env[/red]"
+        )
         raise typer.Exit(1)
 
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe},
-    })
+    config = load_config(
+        Path("config"),
+        overrides={
+            "trading": {"symbols": [symbol], "timeframe": timeframe},
+        },
+    )
 
     real_exchange = CcxtExchange(ExchangeConfig(name=exchange_name), env)
     order_mgr = OrderManager(exchange=real_exchange)
@@ -708,6 +793,7 @@ def live(
     ws = None
     if use_websocket:
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
+
         ws = UpbitWebSocketClient([symbol])
 
     console.print(f"  WebSocket: {'enabled' if ws else 'disabled'}")
@@ -762,7 +848,9 @@ def balance(
 
 @app.command()
 def dashboard(
-    state_file: str = typer.Option("state.json", "--state-file", help="State file for live monitor"),
+    state_file: str = typer.Option(
+        "state.json", "--state-file", help="State file for live monitor"
+    ),
 ) -> None:
     """Launch the web dashboard (Streamlit)."""
     import subprocess
@@ -785,8 +873,15 @@ def dashboard(
     console.print("[yellow]Open http://localhost:8501 in your browser[/yellow]")
 
     subprocess.run(
-        [sys.executable, "-m", "streamlit", "run", str(dashboard_path),
-         "--", f"--state-file={state_file}"],
+        [
+            sys.executable,
+            "-m",
+            "streamlit",
+            "run",
+            str(dashboard_path),
+            "--",
+            f"--state-file={state_file}",
+        ],
     )
 
 
@@ -817,7 +912,8 @@ def scan(
     start: str = typer.Option(None, "--start", help="Override evaluation start date (YYYY-MM-DD)"),
     end: str = typer.Option(None, "--end", help="Override evaluation end date (YYYY-MM-DD)"),
     include_train: bool = typer.Option(
-        False, "--include-train",
+        False,
+        "--include-train",
         help="Disable per-batch holdout filtering and scan over the full data range.",
     ),
 ) -> None:
@@ -834,7 +930,14 @@ def scan(
     _load_strategies()
     _validate_date_range(start, end)
 
-    valid_metrics = {"sharpe_ratio", "total_return", "max_drawdown", "win_rate", "profit_factor", "total_trades"}
+    valid_metrics = {
+        "sharpe_ratio",
+        "total_return",
+        "max_drawdown",
+        "win_rate",
+        "profit_factor",
+        "total_trades",
+    }
     if sort_by not in valid_metrics:
         console.print(f"[red]Invalid sort metric: {sort_by}[/red]")
         console.print(f"Available: {', '.join(sorted(valid_metrics))}")
@@ -885,11 +988,22 @@ def scan(
     with _progress_context() as progress:
         task = progress.add_task("Scanning strategies", total=total)
 
-        with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        with ProcessPoolExecutor(
+            max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")
+        ) as pool:
             futures = {
                 pool.submit(
-                    _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
-                    abs_config_dir, False, start, end, include_train,
+                    _run_batch,
+                    sym,
+                    tf,
+                    batch_jobs,
+                    abs_data_dir,
+                    balance,
+                    abs_config_dir,
+                    False,
+                    start,
+                    end,
+                    include_train,
                 ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
@@ -906,17 +1020,19 @@ def scan(
                     if r.error:
                         failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
                     else:
-                        results.append({
-                            "strategy": r.strategy,
-                            "symbol": r.symbol,
-                            "timeframe": r.timeframe,
-                            "sharpe_ratio": r.sharpe_ratio,
-                            "total_return": r.total_return,
-                            "max_drawdown": r.max_drawdown,
-                            "win_rate": r.win_rate,
-                            "profit_factor": r.profit_factor,
-                            "total_trades": r.total_trades,
-                        })
+                        results.append(
+                            {
+                                "strategy": r.strategy,
+                                "symbol": r.symbol,
+                                "timeframe": r.timeframe,
+                                "sharpe_ratio": r.sharpe_ratio,
+                                "total_return": r.total_return,
+                                "max_drawdown": r.max_drawdown,
+                                "win_rate": r.win_rate,
+                                "profit_factor": r.profit_factor,
+                                "total_trades": r.total_trades,
+                            }
+                        )
                     progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
@@ -947,7 +1063,9 @@ def scan(
     table.add_column("Trades", justify="right")
 
     for i, r in enumerate(results[:top_n], 1):
-        sharpe_style = "green" if r["sharpe_ratio"] > 1.0 else ("yellow" if r["sharpe_ratio"] > 0 else "red")
+        sharpe_style = (
+            "green" if r["sharpe_ratio"] > 1.0 else ("yellow" if r["sharpe_ratio"] > 0 else "red")
+        )
         table.add_row(
             str(i),
             r["strategy"],
@@ -966,16 +1084,21 @@ def scan(
 
 @app.command()
 def combine(
-    entry: str = typer.Option(..., "--entry", help="Entry filters (e.g., 'trend_up:4 + rsi_oversold:30')"),
+    entry: str = typer.Option(
+        ..., "--entry", help="Entry filters (e.g., 'trend_up:4 + rsi_oversold:30')"
+    ),
     exit_: str = typer.Option(..., "--exit", help="Exit filters (e.g., 'rsi_overbought:70')"),
     symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Trading pair"),
     timeframe: str = typer.Option("1h", "--timeframe", "-t", help="Candle timeframe"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
-    start: str | None = typer.Option(None, "--start", help="Override evaluation start (YYYY-MM-DD)"),
+    start: str | None = typer.Option(
+        None, "--start", help="Override evaluation start (YYYY-MM-DD)"
+    ),
     end: str | None = typer.Option(None, "--end", help="Override evaluation end (YYYY-MM-DD)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     include_train: bool = typer.Option(
-        False, "--include-train",
+        False,
+        "--include-train",
         help="Disable holdout-only filtering and evaluate on the full data range.",
     ),
 ) -> None:
@@ -1025,7 +1148,10 @@ def combine(
     # Slice the df here (rather than letting engine.run slice via config dates) so
     # the "Data: N candles" line below reflects the actual evaluation length.
     effective_start, effective_end, period_note = _resolve_holdout_window(
-        df, start, end, include_train,
+        df,
+        start,
+        end,
+        include_train,
     )
     if effective_start:
         df = df[df.index >= effective_start]
@@ -1037,9 +1163,12 @@ def combine(
     eval_end_str = effective_end or "data end"
     console.print(f"  Evaluation period: {eval_start_str} → {eval_end_str} ({period_note})")
 
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-    })
+    config = load_config(
+        Path("config"),
+        overrides={
+            "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+        },
+    )
 
     engine = BacktestEngine(strategy=strategy, config=config)
     report = engine.run({symbol: df})
@@ -1050,68 +1179,220 @@ def combine(
 COMBINE_TEMPLATES = [
     # Trend + timing
     {"entry": "trend_up:4 + rsi_oversold:30", "exit": "rsi_overbought:70", "label": "Trend+RSI"},
-    {"entry": "trend_up:4 + rsi_oversold:35", "exit": "rsi_overbought:65", "label": "Trend+RSI(tight)"},
+    {
+        "entry": "trend_up:4 + rsi_oversold:35",
+        "exit": "rsi_overbought:65",
+        "label": "Trend+RSI(tight)",
+    },
     {"entry": "trend_up:4 + rsi_oversold:30", "exit": "trend_up:4", "label": "Trend+RSI→TrendExit"},
     # Trend + volume
     {"entry": "trend_up:4 + volume_spike:2.5", "exit": "rsi_overbought:70", "label": "Trend+Vol"},
     {"entry": "trend_up:4 + volume_spike:2.0", "exit": "ema_above:20", "label": "Trend+Vol→EMA"},
     # Triple filter
-    {"entry": "trend_up:4 + rsi_oversold:30 + volume_spike:2.0", "exit": "rsi_overbought:70", "label": "Triple"},
-    {"entry": "trend_up:4 + rsi_oversold:35 + volume_spike:2.5", "exit": "trend_up:4", "label": "Triple(strict)"},
+    {
+        "entry": "trend_up:4 + rsi_oversold:30 + volume_spike:2.0",
+        "exit": "rsi_overbought:70",
+        "label": "Triple",
+    },
+    {
+        "entry": "trend_up:4 + rsi_oversold:35 + volume_spike:2.5",
+        "exit": "trend_up:4",
+        "label": "Triple(strict)",
+    },
     # Momentum combos
     {"entry": "ema_above:50 + macd_cross_up", "exit": "rsi_overbought:70", "label": "EMA+MACD"},
     {"entry": "ema_above:20 + rsi_oversold:30", "exit": "rsi_overbought:70", "label": "EMA+RSI"},
-    {"entry": "ema_above:50 + macd_cross_up + volume_spike:2.0", "exit": "rsi_overbought:70", "label": "EMA+MACD+Vol"},
+    {
+        "entry": "ema_above:50 + macd_cross_up + volume_spike:2.0",
+        "exit": "rsi_overbought:70",
+        "label": "EMA+MACD+Vol",
+    },
     # Breakout combos
-    {"entry": "volume_spike:2.5 + price_breakout:10", "exit": "ema_above:20", "label": "Vol+Breakout"},
+    {
+        "entry": "volume_spike:2.5 + price_breakout:10",
+        "exit": "ema_above:20",
+        "label": "Vol+Breakout",
+    },
     {"entry": "bb_upper_break:20 + volume_spike:2.0", "exit": "ema_above:20", "label": "BB+Vol"},
     {"entry": "price_breakout:10 + trend_up:4", "exit": "trend_up:4", "label": "Breakout+Trend"},
     # Simple combos
-    {"entry": "rsi_oversold:30 + volume_spike:2.0", "exit": "rsi_overbought:70", "label": "RSI+Vol"},
+    {
+        "entry": "rsi_oversold:30 + volume_spike:2.0",
+        "exit": "rsi_overbought:70",
+        "label": "RSI+Vol",
+    },
     {"entry": "macd_cross_up + volume_spike:2.5", "exit": "macd_cross_up", "label": "MACD+Vol"},
     # ── Trend Following (new filters) ──
-    {"entry": "ema_cross_up:12:26 + adx_strong:25 + volume_spike:2.0", "exit": "atr_trailing_exit:14:2.5", "label": "EMACross+ADX+Vol→ATR"},
-    {"entry": "ema_cross_up:12:26 + adx_strong:25", "exit": "rsi_overbought:70", "label": "EMACross+ADX"},
-    {"entry": "stoch_oversold:20 + aroon_up:70", "exit": "stoch_overbought:80", "label": "Stoch+Aroon"},
-    {"entry": "roc_positive:12 + ichimoku_above + obv_rising", "exit": "rsi_overbought:70", "label": "ROC+Ichi+OBV"},
-    {"entry": "donchian_break:20 + adx_strong:25 + volume_spike:2.0", "exit": "donchian_break:20", "label": "Donchian+ADX+Vol"},
-    {"entry": "macd_cross_up + aroon_up:70 + mfi_confirm:50", "exit": "mfi_overbought:80", "label": "MACD+Aroon+MFI"},
+    {
+        "entry": "ema_cross_up:12:26 + adx_strong:25 + volume_spike:2.0",
+        "exit": "atr_trailing_exit:14:2.5",
+        "label": "EMACross+ADX+Vol→ATR",
+    },
+    {
+        "entry": "ema_cross_up:12:26 + adx_strong:25",
+        "exit": "rsi_overbought:70",
+        "label": "EMACross+ADX",
+    },
+    {
+        "entry": "stoch_oversold:20 + aroon_up:70",
+        "exit": "stoch_overbought:80",
+        "label": "Stoch+Aroon",
+    },
+    {
+        "entry": "roc_positive:12 + ichimoku_above + obv_rising",
+        "exit": "rsi_overbought:70",
+        "label": "ROC+Ichi+OBV",
+    },
+    {
+        "entry": "donchian_break:20 + adx_strong:25 + volume_spike:2.0",
+        "exit": "donchian_break:20",
+        "label": "Donchian+ADX+Vol",
+    },
+    {
+        "entry": "macd_cross_up + aroon_up:70 + mfi_confirm:50",
+        "exit": "mfi_overbought:80",
+        "label": "MACD+Aroon+MFI",
+    },
     # ── Mean Reversion (new filters) ──
-    {"entry": "rsi_oversold:30 + adx_strong:20 + obv_rising", "exit": "zscore_extreme:2.0", "label": "RSI+ADX+OBV→Zscore"},
-    {"entry": "stoch_oversold:20 + ema_above:50 + mfi_confirm:40", "exit": "stoch_overbought:80", "label": "Stoch+EMA+MFI"},
-    {"entry": "cci_oversold:100 + trend_up:4 + volume_spike:2.0", "exit": "cci_overbought:100", "label": "CCI+Trend+Vol"},
+    {
+        "entry": "rsi_oversold:30 + adx_strong:20 + obv_rising",
+        "exit": "zscore_extreme:2.0",
+        "label": "RSI+ADX+OBV→Zscore",
+    },
+    {
+        "entry": "stoch_oversold:20 + ema_above:50 + mfi_confirm:40",
+        "exit": "stoch_overbought:80",
+        "label": "Stoch+EMA+MFI",
+    },
+    {
+        "entry": "cci_oversold:100 + trend_up:4 + volume_spike:2.0",
+        "exit": "cci_overbought:100",
+        "label": "CCI+Trend+Vol",
+    },
     {"entry": "mfi_oversold:20 + trend_up:4", "exit": "mfi_overbought:80", "label": "MFI+Trend"},
-    {"entry": "rsi_oversold:30 + ichimoku_above", "exit": "pct_from_ma_exit:20:5.0", "label": "RSI+Ichi→PctMA"},
+    {
+        "entry": "rsi_oversold:30 + ichimoku_above",
+        "exit": "pct_from_ma_exit:20:5.0",
+        "label": "RSI+Ichi→PctMA",
+    },
     # ── Volatility Breakout (new filters) ──
-    {"entry": "bb_upper_break:20 + bb_squeeze + volume_spike:2.0", "exit": "ema_above:20", "label": "BB+Squeeze+Vol"},
-    {"entry": "atr_breakout:14:2.0 + adx_strong:25 + obv_rising", "exit": "atr_trailing_exit:14:2.5", "label": "ATR+ADX+OBV→ATR"},
-    {"entry": "keltner_break + trend_up:4 + volume_spike:2.0", "exit": "keltner_break", "label": "KC+Trend+Vol"},
-    {"entry": "price_breakout:20 + bb_bandwidth_low:0.05 + volume_spike:2.5", "exit": "pct_from_ma_exit:20:5.0", "label": "Breakout+BBW+Vol"},
+    {
+        "entry": "bb_upper_break:20 + bb_squeeze + volume_spike:2.0",
+        "exit": "ema_above:20",
+        "label": "BB+Squeeze+Vol",
+    },
+    {
+        "entry": "atr_breakout:14:2.0 + adx_strong:25 + obv_rising",
+        "exit": "atr_trailing_exit:14:2.5",
+        "label": "ATR+ADX+OBV→ATR",
+    },
+    {
+        "entry": "keltner_break + trend_up:4 + volume_spike:2.0",
+        "exit": "keltner_break",
+        "label": "KC+Trend+Vol",
+    },
+    {
+        "entry": "price_breakout:20 + bb_bandwidth_low:0.05 + volume_spike:2.5",
+        "exit": "pct_from_ma_exit:20:5.0",
+        "label": "Breakout+BBW+Vol",
+    },
     # ── Multi-Confirm (new filters) ──
-    {"entry": "rsi_oversold:30 + stoch_oversold:20 + adx_strong:25", "exit": "rsi_overbought:70", "label": "RSI+Stoch+ADX"},
-    {"entry": "macd_cross_up + obv_rising + adx_strong:25", "exit": "atr_trailing_exit:14:2.0", "label": "MACD+OBV+ADX→ATR"},
-    {"entry": "ema_cross_up:12:26 + mfi_confirm:50 + bb_bandwidth_low:0.04", "exit": "zscore_extreme:2.0", "label": "EMA+MFI+BBW→Zscore"},
+    {
+        "entry": "rsi_oversold:30 + stoch_oversold:20 + adx_strong:25",
+        "exit": "rsi_overbought:70",
+        "label": "RSI+Stoch+ADX",
+    },
+    {
+        "entry": "macd_cross_up + obv_rising + adx_strong:25",
+        "exit": "atr_trailing_exit:14:2.0",
+        "label": "MACD+OBV+ADX→ATR",
+    },
+    {
+        "entry": "ema_cross_up:12:26 + mfi_confirm:50 + bb_bandwidth_low:0.04",
+        "exit": "zscore_extreme:2.0",
+        "label": "EMA+MFI+BBW→Zscore",
+    },
     # ── ML + Rule combos (threshold 0.35 = veto filter mode) ──
-    {"entry": "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35", "exit": "rsi_overbought:70", "label": "Trend+RSI+ML"},
-    {"entry": "ema_cross_up:12:26 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.5", "label": "EMACross+ML→ATR"},
-    {"entry": "volume_spike:2.0 + adx_strong:25 + lgbm_prob:0.35", "exit": "rsi_overbought:70", "label": "Vol+ADX+ML"},
+    {
+        "entry": "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.35",
+        "exit": "rsi_overbought:70",
+        "label": "Trend+RSI+ML",
+    },
+    {
+        "entry": "ema_cross_up:12:26 + lgbm_prob:0.35",
+        "exit": "atr_trailing_exit:14:2.5",
+        "label": "EMACross+ML→ATR",
+    },
+    {
+        "entry": "volume_spike:2.0 + adx_strong:25 + lgbm_prob:0.35",
+        "exit": "rsi_overbought:70",
+        "label": "Vol+ADX+ML",
+    },
     # ── ML Veto: Trend Following ──
-    {"entry": "ema_cross_up:12:26 + trend_up:4 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.5", "label": "ML+TrendEMA"},
-    {"entry": "adx_strong:25 + ema_above:50 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + atr_trailing_exit:14:2.0", "label": "ML+ADXTrend"},
-    {"entry": "ichimoku_above + aroon_up:70 + lgbm_prob:0.35", "exit": "pct_from_ma_exit:20:5.0", "label": "ML+IchimokuTrend"},
+    {
+        "entry": "ema_cross_up:12:26 + trend_up:4 + lgbm_prob:0.35",
+        "exit": "atr_trailing_exit:14:2.5",
+        "label": "ML+TrendEMA",
+    },
+    {
+        "entry": "adx_strong:25 + ema_above:50 + lgbm_prob:0.35",
+        "exit": "rsi_overbought:70 + atr_trailing_exit:14:2.0",
+        "label": "ML+ADXTrend",
+    },
+    {
+        "entry": "ichimoku_above + aroon_up:70 + lgbm_prob:0.35",
+        "exit": "pct_from_ma_exit:20:5.0",
+        "label": "ML+IchimokuTrend",
+    },
     # ── ML Veto: Mean Reversion ──
-    {"entry": "rsi_oversold:30 + stoch_oversold:20 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + stoch_overbought:80", "label": "ML+RSIStoch"},
-    {"entry": "cci_oversold:100 + obv_rising + lgbm_prob:0.35", "exit": "cci_overbought:100 + zscore_extreme:2.0", "label": "ML+CCIMeanRev"},
-    {"entry": "mfi_oversold:20 + ema_above:50 + lgbm_prob:0.35", "exit": "mfi_overbought:80 + pct_from_ma_exit:20:5.0", "label": "ML+MFIMeanRev"},
+    {
+        "entry": "rsi_oversold:30 + stoch_oversold:20 + lgbm_prob:0.35",
+        "exit": "rsi_overbought:70 + stoch_overbought:80",
+        "label": "ML+RSIStoch",
+    },
+    {
+        "entry": "cci_oversold:100 + obv_rising + lgbm_prob:0.35",
+        "exit": "cci_overbought:100 + zscore_extreme:2.0",
+        "label": "ML+CCIMeanRev",
+    },
+    {
+        "entry": "mfi_oversold:20 + ema_above:50 + lgbm_prob:0.35",
+        "exit": "mfi_overbought:80 + pct_from_ma_exit:20:5.0",
+        "label": "ML+MFIMeanRev",
+    },
     # ── ML Veto: Breakout ──
-    {"entry": "donchian_break:20 + volume_spike:2.0 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.5", "label": "ML+DonchianBreak"},
-    {"entry": "bb_squeeze + price_breakout:10 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.0 + zscore_extreme:2.0", "label": "ML+BBSqueeze"},
-    {"entry": "keltner_break + adx_strong:25 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + atr_trailing_exit:14:2.5", "label": "ML+KeltnerBreak"},
+    {
+        "entry": "donchian_break:20 + volume_spike:2.0 + lgbm_prob:0.35",
+        "exit": "atr_trailing_exit:14:2.5",
+        "label": "ML+DonchianBreak",
+    },
+    {
+        "entry": "bb_squeeze + price_breakout:10 + lgbm_prob:0.35",
+        "exit": "atr_trailing_exit:14:2.0 + zscore_extreme:2.0",
+        "label": "ML+BBSqueeze",
+    },
+    {
+        "entry": "keltner_break + adx_strong:25 + lgbm_prob:0.35",
+        "exit": "rsi_overbought:70 + atr_trailing_exit:14:2.5",
+        "label": "ML+KeltnerBreak",
+    },
     # ── ML Veto: Volume-Confirmed ──
-    {"entry": "macd_cross_up + volume_spike:2.0 + mfi_confirm:50 + lgbm_prob:0.35", "exit": "rsi_overbought:70 + mfi_overbought:80", "label": "ML+VolMACDConfirm"},
+    {
+        "entry": "macd_cross_up + volume_spike:2.0 + mfi_confirm:50 + lgbm_prob:0.35",
+        "exit": "rsi_overbought:70 + mfi_overbought:80",
+        "label": "ML+VolMACDConfirm",
+    },
     # ── ML Veto: Multi-Confluence ──
-    {"entry": "roc_positive + obv_rising + trend_up:4 + lgbm_prob:0.35", "exit": "atr_trailing_exit:14:2.0", "label": "ML+ROCObvTrend"},
-    {"entry": "stoch_oversold:25 + aroon_up:70 + lgbm_prob:0.35", "exit": "stoch_overbought:80 + pct_from_ma_exit:20:5.0", "label": "ML+StochAroonConfirm"},
+    {
+        "entry": "roc_positive + obv_rising + trend_up:4 + lgbm_prob:0.35",
+        "exit": "atr_trailing_exit:14:2.0",
+        "label": "ML+ROCObvTrend",
+    },
+    {
+        "entry": "stoch_oversold:25 + aroon_up:70 + lgbm_prob:0.35",
+        "exit": "stoch_overbought:80 + pct_from_ma_exit:20:5.0",
+        "label": "ML+StochAroonConfirm",
+    },
 ]
 
 
@@ -1125,7 +1406,8 @@ def combine_scan(
     start: str = typer.Option(None, "--start", help="Override evaluation start date (YYYY-MM-DD)"),
     end: str = typer.Option(None, "--end", help="Override evaluation end date (YYYY-MM-DD)"),
     include_train: bool = typer.Option(
-        False, "--include-train",
+        False,
+        "--include-train",
         help="Disable per-batch holdout filtering and scan over the full data range.",
     ),
 ) -> None:
@@ -1156,7 +1438,9 @@ def combine_scan(
     total = 0
     for sym, timeframes in symbol_timeframes.items():
         for tf in timeframes:
-            batch_jobs = [(tmpl["label"], tmpl["entry"], tmpl["exit"]) for tmpl in COMBINE_TEMPLATES]
+            batch_jobs = [
+                (tmpl["label"], tmpl["entry"], tmpl["exit"]) for tmpl in COMBINE_TEMPLATES
+            ]
             batches[(sym, tf)] = batch_jobs
             total += len(batch_jobs)
 
@@ -1184,11 +1468,22 @@ def combine_scan(
     with _progress_context() as progress:
         task = progress.add_task("Scanning combinations", total=total)
 
-        with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")) as pool:
+        with ProcessPoolExecutor(
+            max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")
+        ) as pool:
             futures = {
                 pool.submit(
-                    _run_batch, sym, tf, batch_jobs, abs_data_dir, balance,
-                    abs_config_dir, False, start, end, include_train,
+                    _run_batch,
+                    sym,
+                    tf,
+                    batch_jobs,
+                    abs_data_dir,
+                    balance,
+                    abs_config_dir,
+                    False,
+                    start,
+                    end,
+                    include_train,
                 ): (sym, tf)
                 for (sym, tf), batch_jobs in batches.items()
             }
@@ -1205,19 +1500,21 @@ def combine_scan(
                     if r.error:
                         failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
                     else:
-                        results.append({
-                            "template": r.strategy,
-                            "entry": r.entry,
-                            "exit": r.exit,
-                            "symbol": r.symbol,
-                            "timeframe": r.timeframe,
-                            "sharpe_ratio": r.sharpe_ratio,
-                            "total_return": r.total_return,
-                            "max_drawdown": r.max_drawdown,
-                            "win_rate": r.win_rate,
-                            "profit_factor": r.profit_factor,
-                            "total_trades": r.total_trades,
-                        })
+                        results.append(
+                            {
+                                "template": r.strategy,
+                                "entry": r.entry,
+                                "exit": r.exit,
+                                "symbol": r.symbol,
+                                "timeframe": r.timeframe,
+                                "sharpe_ratio": r.sharpe_ratio,
+                                "total_return": r.total_return,
+                                "max_drawdown": r.max_drawdown,
+                                "win_rate": r.win_rate,
+                                "profit_factor": r.profit_factor,
+                                "total_trades": r.total_trades,
+                            }
+                        )
                     progress.advance(task)
     if failures:
         console.print(f"[yellow]{len(failures)} combinations failed:[/yellow]")
@@ -1252,9 +1549,7 @@ def combine_scan(
             verify_batches: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
             for r in verify_jobs:
                 key = (r["symbol"], r["timeframe"])
-                verify_batches.setdefault(key, []).append(
-                    (r["template"], r["entry"], r["exit"])
-                )
+                verify_batches.setdefault(key, []).append((r["template"], r["entry"], r["exit"]))
 
             console.print(
                 f"\n[bold]Re-verifying top {len(verify_jobs)} results "
@@ -1271,9 +1566,17 @@ def combine_scan(
                 ) as pool:
                     futures = {
                         pool.submit(
-                            _run_batch, sym, tf, batch_jobs,
-                            abs_data_dir, balance, abs_config_dir, True,
-                            start, end, include_train,
+                            _run_batch,
+                            sym,
+                            tf,
+                            batch_jobs,
+                            abs_data_dir,
+                            balance,
+                            abs_config_dir,
+                            True,
+                            start,
+                            end,
+                            include_train,
                         ): (sym, tf)
                         for (sym, tf), batch_jobs in verify_batches.items()
                     }
@@ -1282,9 +1585,7 @@ def combine_scan(
                         try:
                             batch_results = future.result(timeout=1800)
                         except Exception as exc:
-                            console.print(
-                                f"[yellow]Verify failed {sym}/{tf}: {exc}[/yellow]"
-                            )
+                            console.print(f"[yellow]Verify failed {sym}/{tf}: {exc}[/yellow]")
                             n_batch = len(verify_batches[(sym, tf)])
                             progress.advance(task, advance=n_batch)
                             continue
@@ -1310,9 +1611,7 @@ def combine_scan(
             # Re-sort after verification
             results.sort(key=lambda r: r["sharpe_ratio"], reverse=True)
 
-            console.print(
-                f"[green]Verified {len(verified_set)} results.[/green]"
-            )
+            console.print(f"[green]Verified {len(verified_set)} results.[/green]")
 
     table = Table(title=f"Best Filter Combinations (Top {min(top_n, len(results))})")
     table.add_column("#", justify="right")
@@ -1329,7 +1628,9 @@ def combine_scan(
         table.add_column("V", justify="center")
 
     for i, r in enumerate(results[:top_n], 1):
-        sharpe_style = "green" if r["sharpe_ratio"] > 1.0 else ("yellow" if r["sharpe_ratio"] > 0 else "red")
+        sharpe_style = (
+            "green" if r["sharpe_ratio"] > 1.0 else ("yellow" if r["sharpe_ratio"] > 0 else "red")
+        )
         row = [
             str(i),
             r["template"],
@@ -1404,6 +1705,11 @@ def ml_train(
         "--atr-mult",
         help="ATR multiplier for atr / triple-barrier targets",
     ),
+    include_extra: bool = typer.Option(
+        False,
+        "--include-extra",
+        help="Add Phase 4 extra features (regime, lag/diff, session)",
+    ),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
 ) -> None:
@@ -1417,13 +1723,19 @@ def ml_train(
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))
     except FileNotFoundError:
-        console.print(f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]")
+        console.print(
+            f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]"
+        )
         raise typer.Exit(1)
 
     # Load external features if available
     ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
     external_df = build_external_df(df, ext_dir)
-    ext_count = len([c for c in (external_df.columns if external_df is not None else [])]) if external_df is not None else 0
+    ext_count = (
+        len([c for c in (external_df.columns if external_df is not None else [])])
+        if external_df is not None
+        else 0
+    )
 
     console.print(f"[bold]Training LightGBM model for {symbol} {timeframe}...[/bold]")
     console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
@@ -1437,6 +1749,7 @@ def ml_train(
         test_months=test_months,
         target_kind=target_kind,
         atr_mult=atr_mult,
+        include_extra=include_extra,
         model_dir=Path(model_dir),
     )
     report = trainer.run(df, external_df=external_df)
@@ -1498,8 +1811,17 @@ def ml_walk_forward(
     atr_mult: float = typer.Option(
         1.0, "--atr-mult", help="ATR multiplier for atr / triple-barrier targets"
     ),
-    entry_threshold: float = typer.Option(0.45, "--entry-threshold", help="Entry probability threshold"),
-    exit_threshold: float = typer.Option(0.30, "--exit-threshold", help="Exit probability threshold"),
+    include_extra: bool = typer.Option(
+        False,
+        "--include-extra",
+        help="Add Phase 4 extra features (regime, lag/diff, session)",
+    ),
+    entry_threshold: float = typer.Option(
+        0.45, "--entry-threshold", help="Entry probability threshold"
+    ),
+    exit_threshold: float = typer.Option(
+        0.30, "--exit-threshold", help="Exit probability threshold"
+    ),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     output_dir: str = typer.Option(
@@ -1538,9 +1860,7 @@ def ml_walk_forward(
     console.print(f"  External data dir: {ext_dir if has_external else '(none)'}")
 
     config = AppConfig(
-        trading=TradingConfig(
-            symbols=[symbol], timeframe=timeframe, initial_balance=balance
-        ),
+        trading=TradingConfig(symbols=[symbol], timeframe=timeframe, initial_balance=balance),
         risk=RiskConfig(),
         backtest=BacktestConfig(),
     )
@@ -1554,6 +1874,7 @@ def ml_walk_forward(
         threshold=threshold,
         target_kind=target_kind,
         atr_mult=atr_mult,
+        include_extra=include_extra,
         entry_threshold=entry_threshold,
         exit_threshold=exit_threshold,
         external_data_dir=ext_dir if has_external else None,
@@ -1662,8 +1983,12 @@ def ml_backtest(
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model directory"),
-    entry_threshold: float = typer.Option(0.45, "--entry-threshold", help="Entry probability threshold"),
-    exit_threshold: float = typer.Option(0.30, "--exit-threshold", help="Exit probability threshold"),
+    entry_threshold: float = typer.Option(
+        0.45, "--entry-threshold", help="Entry probability threshold"
+    ),
+    exit_threshold: float = typer.Option(
+        0.30, "--exit-threshold", help="Exit probability threshold"
+    ),
     start: str = typer.Option(
         None,
         "--start",
@@ -1721,18 +2046,25 @@ def ml_backtest(
     elif include_train and start is None and end is None:
         period_note = "full data range (--include-train)"
 
-    strategy = LGBMStrategy(StrategyParams(values={
-        "entry_threshold": entry_threshold,
-        "exit_threshold": exit_threshold,
-        "model_dir": model_dir,
-    }))
+    strategy = LGBMStrategy(
+        StrategyParams(
+            values={
+                "entry_threshold": entry_threshold,
+                "exit_threshold": exit_threshold,
+                "model_dir": model_dir,
+            }
+        )
+    )
     strategy.symbols = [symbol]
     strategy.timeframe = timeframe
 
-    config = load_config(Path("config"), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-        "backtest": {"start_date": effective_start, "end_date": effective_end},
-    })
+    config = load_config(
+        Path("config"),
+        overrides={
+            "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+            "backtest": {"start_date": effective_start, "end_date": effective_end},
+        },
+    )
 
     console.print(f"[bold]Backtesting LightGBM strategy on {symbol} {timeframe}...[/bold]")
     eval_start_str = effective_start or str(df.index[0])
@@ -1755,7 +2087,10 @@ def ml_backtest(
 @app.command(name="ml-train-all")
 def ml_train_all(
     timeframe: str | None = typer.Option(
-        None, "--timeframe", "-t", help="Train only this timeframe",
+        None,
+        "--timeframe",
+        "-t",
+        help="Train only this timeframe",
     ),
     train_months: int = typer.Option(3, "--train-months", help="Training window months"),
     test_months: int = typer.Option(1, "--test-months", help="Test window months"),
@@ -1767,10 +2102,17 @@ def ml_train_all(
     atr_mult: float = typer.Option(
         1.0, "--atr-mult", help="ATR multiplier for atr / triple-barrier targets"
     ),
+    include_extra: bool = typer.Option(
+        False,
+        "--include-extra",
+        help="Add Phase 4 extra features (regime, lag/diff, session)",
+    ),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
     model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
     workers: int = typer.Option(
-        0, "--workers", "-w",
+        0,
+        "--workers",
+        "-w",
         help="Parallel workers (0=auto: cpu_count//2, 1=sequential)",
     ),
 ) -> None:
@@ -1839,6 +2181,7 @@ def ml_train_all(
                         test_months=test_months,
                         target_kind=target_kind,
                         atr_mult=atr_mult,
+                        include_extra=include_extra,
                         model_dir=Path(model_dir),
                         lgbm_params={"num_threads": threads_per_worker},
                     )
@@ -1851,16 +2194,18 @@ def ml_train_all(
                             f"holdout={report.holdout_auc:.4f} "
                             f"windows={len(report.windows)}[/green]"
                         )
-                        results.append({
-                            "symbol": sym,
-                            "timeframe": tf,
-                            "avg_auc": report.avg_auc,
-                            "avg_precision": report.avg_precision,
-                            "holdout_auc": report.holdout_auc,
-                            "holdout_precision": report.holdout_precision,
-                            "n_windows": len(report.windows),
-                            "model_path": str(report.model_path),
-                        })
+                        results.append(
+                            {
+                                "symbol": sym,
+                                "timeframe": tf,
+                                "avg_auc": report.avg_auc,
+                                "avg_precision": report.avg_precision,
+                                "holdout_auc": report.holdout_auc,
+                                "holdout_precision": report.holdout_precision,
+                                "n_windows": len(report.windows),
+                                "model_path": str(report.model_path),
+                            }
+                        )
                     else:
                         progress.log(f"[yellow]{sym} {tf}: insufficient data[/yellow]")
                 except Exception as e:
@@ -1885,9 +2230,18 @@ def ml_train_all(
             with ProcessPoolExecutor(max_workers=workers, mp_context=ctx) as executor:
                 futures = {
                     executor.submit(
-                        train_pair, sym, tf, data_dir_abs, model_dir_abs,
-                        train_months, test_months, threads_per_worker,
-                        ext_dir_abs, target_kind, atr_mult,
+                        train_pair,
+                        sym,
+                        tf,
+                        data_dir_abs,
+                        model_dir_abs,
+                        train_months,
+                        test_months,
+                        threads_per_worker,
+                        ext_dir_abs,
+                        target_kind,
+                        atr_mult,
+                        include_extra,
                     ): (sym, tf)
                     for sym, tf in pairs
                 }
@@ -1914,16 +2268,18 @@ def ml_train_all(
                                 f"holdout={r.holdout_auc:.4f} "
                                 f"windows={r.n_windows}[/green]"
                             )
-                            results.append({
-                                "symbol": sym,
-                                "timeframe": tf,
-                                "avg_auc": r.avg_auc,
-                                "avg_precision": r.avg_precision,
-                                "holdout_auc": r.holdout_auc,
-                                "holdout_precision": r.holdout_precision,
-                                "n_windows": r.n_windows,
-                                "model_path": r.model_path,
-                            })
+                            results.append(
+                                {
+                                    "symbol": sym,
+                                    "timeframe": tf,
+                                    "avg_auc": r.avg_auc,
+                                    "avg_precision": r.avg_precision,
+                                    "holdout_auc": r.holdout_auc,
+                                    "holdout_precision": r.holdout_precision,
+                                    "n_windows": r.n_windows,
+                                    "model_path": r.model_path,
+                                }
+                            )
 
                         progress.advance(task)
                 except KeyboardInterrupt:
@@ -1980,6 +2336,11 @@ def ml_diagnostics(
         "--atr-mult",
         help="ATR multiplier for atr / triple-barrier targets (ignored when target-kind=binary)",
     ),
+    include_extra: bool = typer.Option(
+        False,
+        "--include-extra",
+        help="Add Phase 4 extra features (regime, lag/diff, session)",
+    ),
     entry_threshold: float = typer.Option(
         0.45, "--entry-threshold", help="Entry probability threshold"
     ),
@@ -1994,9 +2355,7 @@ def ml_diagnostics(
     output_dir: str = typer.Option(
         "personal/ml_iter", "--output-dir", help="Where to write the diagnostics report"
     ),
-    label: str = typer.Option(
-        "00_baseline", "--label", help="Filename prefix for the report"
-    ),
+    label: str = typer.Option("00_baseline", "--label", help="Filename prefix for the report"),
     skip_backtest: bool = typer.Option(
         False, "--skip-backtest", help="Skip MLStrategyWalkForward (model metrics only)"
     ),
@@ -2028,8 +2387,7 @@ def ml_diagnostics(
         df = load_candles(symbol, timeframe, Path(data_dir))
     except FileNotFoundError:
         console.print(
-            f"[red]No data for {symbol} {timeframe}. "
-            "Run tradingbot download first.[/red]"
+            f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]"
         )
         raise typer.Exit(1)
 
@@ -2044,9 +2402,7 @@ def ml_diagnostics(
     if target_kind == "binary":
         console.print(f"  Target: binary (forward={forward_candles}, threshold={threshold})")
     else:
-        console.print(
-            f"  Target: {target_kind} (forward={forward_candles}, atr_mult={atr_mult})"
-        )
+        console.print(f"  Target: {target_kind} (forward={forward_candles}, atr_mult={atr_mult})")
 
     # ---- Step 1: model walk-forward (produces holdout AUC, calibrated probs) ----
     trainer = MLWalkForwardTrainer(
@@ -2058,6 +2414,7 @@ def ml_diagnostics(
         threshold=threshold,
         target_kind=target_kind,
         atr_mult=atr_mult,
+        include_extra=include_extra,
         model_dir=Path(model_dir),
     )
     model_report = trainer.run(df, external_df=external_df)
@@ -2066,23 +2423,33 @@ def ml_diagnostics(
         raise typer.Exit(1)
 
     # ---- Step 2: calibration + distribution metrics on the holdout eval half ----
-    calibration = evaluate_calibration(
-        y_true=model_report.holdout_y_true,
-        raw_proba=model_report.holdout_raw_proba,
-        calibrated_proba=model_report.holdout_calibrated_proba,
-    ) if model_report.holdout_y_true is not None else None
+    calibration = (
+        evaluate_calibration(
+            y_true=model_report.holdout_y_true,
+            raw_proba=model_report.holdout_raw_proba,
+            calibrated_proba=model_report.holdout_calibrated_proba,
+        )
+        if model_report.holdout_y_true is not None
+        else None
+    )
 
-    distribution = summarize_distribution(
-        model_report.holdout_calibrated_proba
-        if model_report.holdout_calibrated_proba is not None
-        else (model_report.holdout_raw_proba
-              if model_report.holdout_raw_proba is not None
-              else None),
-        thresholds=(exit_threshold, entry_threshold, 0.50),
-    ) if (
-        model_report.holdout_raw_proba is not None
-        or model_report.holdout_calibrated_proba is not None
-    ) else None
+    distribution = (
+        summarize_distribution(
+            model_report.holdout_calibrated_proba
+            if model_report.holdout_calibrated_proba is not None
+            else (
+                model_report.holdout_raw_proba
+                if model_report.holdout_raw_proba is not None
+                else None
+            ),
+            thresholds=(exit_threshold, entry_threshold, 0.50),
+        )
+        if (
+            model_report.holdout_raw_proba is not None
+            or model_report.holdout_calibrated_proba is not None
+        )
+        else None
+    )
 
     feat_top10 = top_features(model_report.feature_importance, top_n=10)
 
@@ -2090,9 +2457,7 @@ def ml_diagnostics(
     strategy_report = None
     if not skip_backtest:
         config = AppConfig(
-            trading=TradingConfig(
-                symbols=[symbol], timeframe=timeframe, initial_balance=balance
-            ),
+            trading=TradingConfig(symbols=[symbol], timeframe=timeframe, initial_balance=balance),
             risk=RiskConfig(),
             backtest=BacktestConfig(),
         )
@@ -2105,6 +2470,7 @@ def ml_diagnostics(
             threshold=threshold,
             target_kind=target_kind,
             atr_mult=atr_mult,
+            include_extra=include_extra,
             entry_threshold=entry_threshold,
             exit_threshold=exit_threshold,
             external_data_dir=ext_dir if has_external else None,
@@ -2146,17 +2512,12 @@ def ml_diagnostics(
     if strategy_report is not None and strategy_report.windows:
         console.print("\n[bold]Strategy Walk-Forward Backtest[/bold]")
         console.print(
-            f"  Windows: {strategy_report.n_windows}  "
-            f"(skipped: {strategy_report.n_skipped})"
+            f"  Windows: {strategy_report.n_windows}  (skipped: {strategy_report.n_skipped})"
         )
         console.print(f"  Avg Sharpe: {strategy_report.avg_sharpe:.2f}")
-        console.print(
-            f"  Cumulative return: {strategy_report.cumulative_return_pct:+.2f}%"
-        )
+        console.print(f"  Cumulative return: {strategy_report.cumulative_return_pct:+.2f}%")
         console.print(f"  Total trades: {strategy_report.total_trades}")
-        console.print(
-            f"  Avg win rate (traded windows): {strategy_report.avg_win_rate * 100:.1f}%"
-        )
+        console.print(f"  Avg win rate (traded windows): {strategy_report.avg_win_rate * 100:.1f}%")
 
     # ---- Persist ----
     out_dir = Path(output_dir)
@@ -2323,9 +2684,7 @@ def ml_tune(
     train_months: int = typer.Option(6, "--train-months", help="Training window months"),
     test_months: int = typer.Option(2, "--test-months", help="Test window months"),
     forward_candles: int = typer.Option(4, "--forward-candles", help="Target horizon"),
-    threshold: float = typer.Option(
-        0.006, "--threshold", help="Binary target return threshold"
-    ),
+    threshold: float = typer.Option(0.006, "--threshold", help="Binary target return threshold"),
     target_kind: str = typer.Option(
         "triple-barrier",
         "--target-kind",
@@ -2333,6 +2692,11 @@ def ml_tune(
     ),
     atr_mult: float = typer.Option(
         1.0, "--atr-mult", help="ATR multiplier for atr / triple-barrier targets"
+    ),
+    include_extra: bool = typer.Option(
+        False,
+        "--include-extra",
+        help="Add Phase 4 extra features (regime, lag/diff, session)",
     ),
     entry_threshold: float = typer.Option(
         0.45, "--entry-threshold", help="Entry probability threshold"
@@ -2362,9 +2726,7 @@ def ml_tune(
     output_dir: str = typer.Option(
         "personal/ml_iter", "--output-dir", help="Where to write the tuner report"
     ),
-    label: str = typer.Option(
-        "02_tuned", "--label", help="Filename prefix for the tuner report"
-    ),
+    label: str = typer.Option("02_tuned", "--label", help="Filename prefix for the tuner report"),
 ) -> None:
     """Tune LGBM hyperparameters via Optuna, then save a model with the best params.
 
@@ -2385,16 +2747,13 @@ def ml_tune(
 
     # Load the user's AppConfig so the tuner respects fee rate, slippage,
     # risk settings, etc. Falls back to defaults when no config dir exists.
-    app_config = load_config(
-        overrides={"trading": {"initial_balance": balance}}
-    )
+    app_config = load_config(overrides={"trading": {"initial_balance": balance}})
 
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))
     except FileNotFoundError:
         console.print(
-            f"[red]No data for {symbol} {timeframe}. "
-            "Run tradingbot download first.[/red]"
+            f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]"
         )
         raise typer.Exit(1)
 
@@ -2422,6 +2781,7 @@ def ml_tune(
         threshold=threshold,
         target_kind=target_kind,
         atr_mult=atr_mult,
+        include_extra=include_extra,
         entry_threshold=entry_threshold,
         exit_threshold=exit_threshold,
         balance=balance,
@@ -2483,6 +2843,7 @@ def ml_tune(
         threshold=threshold,
         target_kind=target_kind,
         atr_mult=atr_mult,
+        include_extra=include_extra,
         model_dir=Path(model_dir),
         lgbm_params=dict(result.best_params),
     )
@@ -2509,9 +2870,7 @@ def ml_tune(
             import os
 
             symbol_key = symbol.replace("/", "_")
-            meta_path = (
-                Path(model_dir) / f"lgbm_{symbol_key}_{timeframe}_meta.json"
-            )
+            meta_path = Path(model_dir) / f"lgbm_{symbol_key}_{timeframe}_meta.json"
             if meta_path.exists():
                 meta_dict = json.loads(meta_path.read_text())
                 meta_dict["tuning"] = {
@@ -2551,9 +2910,7 @@ def ml_tune(
         "best_params": result.best_params,
         "best_value": result.best_value,
         "trials": result.trials,
-        "final_holdout_auc": (
-            final_report.holdout_auc if final_report.windows else None
-        ),
+        "final_holdout_auc": (final_report.holdout_auc if final_report.windows else None),
         "final_holdout_precision": (
             final_report.holdout_precision if final_report.windows else None
         ),

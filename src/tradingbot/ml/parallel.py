@@ -32,6 +32,7 @@ def train_pair(
     external_data_dir: str | None = None,
     target_kind: str = "binary",
     atr_mult: float = 1.0,
+    include_extra: bool = False,
 ) -> PairTrainResult:
     """Train a single symbol x timeframe pair.
 
@@ -55,11 +56,15 @@ def train_pair(
         df = load_candles(symbol, timeframe, Path(data_dir))
     except FileNotFoundError:
         return PairTrainResult(
-            symbol=symbol, timeframe=timeframe,
-            avg_auc=0.0, avg_precision=0.0,
-            holdout_auc=0.0, holdout_precision=0.0,
+            symbol=symbol,
+            timeframe=timeframe,
+            avg_auc=0.0,
+            avg_precision=0.0,
+            holdout_auc=0.0,
+            holdout_precision=0.0,
             n_windows=0,
-            model_path="", error="no data",
+            model_path="",
+            error="no data",
         )
 
     try:
@@ -77,6 +82,7 @@ def train_pair(
             test_months=test_months,
             target_kind=target_kind,
             atr_mult=atr_mult,
+            include_extra=include_extra,
             model_dir=Path(model_dir),
             lgbm_params={"num_threads": num_threads},
         )
@@ -93,9 +99,13 @@ def train_pair(
         )
     except Exception as exc:
         return PairTrainResult(
-            symbol=symbol, timeframe=timeframe,
-            avg_auc=0.0, avg_precision=0.0,
-            holdout_auc=0.0, holdout_precision=0.0,
+            symbol=symbol,
+            timeframe=timeframe,
+            avg_auc=0.0,
+            avg_precision=0.0,
+            holdout_auc=0.0,
+            holdout_precision=0.0,
             n_windows=0,
-            model_path="", error=str(exc),
+            model_path="",
+            error=str(exc),
         )

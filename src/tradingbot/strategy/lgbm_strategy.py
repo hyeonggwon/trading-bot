@@ -62,6 +62,9 @@ class LGBMStrategy(Strategy):
         self._external_components: dict | None = None
         self._external_load_tried: bool = False
         self._warned_missing: set[str] = set()
+        # Cache for include_extra auto-detection so multi-symbol backtests
+        # don't reload meta from disk on every indicators() call.
+        self._include_extra_detected: bool | None = None
 
     def set_model(
         self,
@@ -118,6 +121,12 @@ class LGBMStrategy(Strategy):
         correctly. External components are loaded once (cached in
         ``self._external_components``) then aligned per-df so multi-symbol
         backtests get correctly-aligned external features per symbol.
+
+        ``include_extra`` is auto-detected by peeking at each symbol's saved
+        meta — if any model trained with the Phase 4 extras then this
+        ``indicators()`` builds the wider feature frame so
+        ``_predict``'s column lookup doesn't fail. Models that don't use
+        extras simply ignore the additional columns.
         """
         if not self._external_load_tried and self.external_data_dir is not None:
             self._external_load_tried = True
@@ -135,7 +144,28 @@ class LGBMStrategy(Strategy):
 
             external_df = align_external_to(df, self._external_components)
 
-        df, _ = build_feature_matrix(df, external_df=external_df)
+        # Decide whether to build the Phase 4 extras: any saved meta with
+        # include_extra=True forces the wider build. Param override wins if set.
+        # Cache the meta scan — indicators() is called per-symbol per-iteration
+        # in multi-symbol backtests, and reading 8 meta files every call is
+        # O(N²) I/O.
+        include_extra = bool(self.params.get("include_extra", False))
+        if not include_extra:
+            if self._include_extra_detected is None:
+                detected = False
+                for sym in self.symbols:
+                    meta = LGBMTrainer.load_meta(sym, self.timeframe, self.model_dir)
+                    if meta and meta.get("include_extra"):
+                        detected = True
+                        break
+                self._include_extra_detected = detected
+            include_extra = self._include_extra_detected
+
+        df, _ = build_feature_matrix(
+            df,
+            external_df=external_df,
+            include_extra=include_extra,
+        )
         return df
 
     def _predict(self, df: pd.DataFrame, symbol: str) -> float | None:

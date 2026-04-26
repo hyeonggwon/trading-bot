@@ -51,10 +51,8 @@ def _build_target_dispatch(
             atr_period=atr_period,
             threshold=threshold,
         )
-    raise ValueError(
-        f"Unknown target_kind={target_kind!r}; "
-        f"expected one of {VALID_TARGET_KINDS}"
-    )
+    raise ValueError(f"Unknown target_kind={target_kind!r}; expected one of {VALID_TARGET_KINDS}")
+
 
 log = logging.getLogger(__name__)
 
@@ -62,9 +60,16 @@ EMBARGO_CANDLES = 150  # ~3x max indicator lookback (52) for safer purging
 MIN_VAL_FOR_EARLY_STOPPING = 1000  # below this, fall back to fixed rounds
 
 CANDLES_PER_MONTH = {
-    "1m": 43200, "5m": 8640, "15m": 2880, "30m": 1440,
-    "1h": 720, "2h": 360, "4h": 180, "6h": 120,
-    "12h": 60, "1d": 30,
+    "1m": 43200,
+    "5m": 8640,
+    "15m": 2880,
+    "30m": 1440,
+    "1h": 720,
+    "2h": 360,
+    "4h": 180,
+    "6h": 120,
+    "12h": 60,
+    "1d": 30,
 }
 
 
@@ -130,13 +135,13 @@ class MLWalkForwardTrainer:
         threshold: float = 0.006,
         target_kind: str = "binary",
         atr_mult: float = 1.0,
+        include_extra: bool = False,
         model_dir: Path = Path("models"),
         lgbm_params: dict | None = None,
     ):
         if target_kind not in VALID_TARGET_KINDS:
             raise ValueError(
-                f"Unknown target_kind={target_kind!r}; "
-                f"expected one of {VALID_TARGET_KINDS}"
+                f"Unknown target_kind={target_kind!r}; expected one of {VALID_TARGET_KINDS}"
             )
         self.symbol = symbol
         self.timeframe = timeframe
@@ -146,6 +151,7 @@ class MLWalkForwardTrainer:
         self.threshold = threshold
         self.target_kind = target_kind
         self.atr_mult = atr_mult
+        self.include_extra = include_extra
         self.model_dir = model_dir
         self.trainer = LGBMTrainer(lgbm_params)
 
@@ -164,7 +170,11 @@ class MLWalkForwardTrainer:
             MLWalkForwardReport with per-window metrics and final model path.
         """
         # Build features and target on full data
-        df_feat, feature_cols = build_feature_matrix(df.copy(), external_df=external_df)
+        df_feat, feature_cols = build_feature_matrix(
+            df.copy(),
+            external_df=external_df,
+            include_extra=self.include_extra,
+        )
         target = _build_target_dispatch(
             df_feat,
             target_kind=self.target_kind,
@@ -204,8 +214,8 @@ class MLWalkForwardTrainer:
         df_train_pool = df_valid.iloc[:holdout_split]
         target_train_pool = target_valid.iloc[:holdout_split]
         fwd_return_train_pool = fwd_return_valid.iloc[:holdout_split]
-        df_holdout = df_valid.iloc[holdout_split + boundary_gap:]
-        target_holdout = target_valid.iloc[holdout_split + boundary_gap:]
+        df_holdout = df_valid.iloc[holdout_split + boundary_gap :]
+        target_holdout = target_valid.iloc[holdout_split + boundary_gap :]
 
         # Empirical avg_win/avg_loss for Kelly sizing — uses train_pool only
         # so the ratio shipped with the model never sees holdout data.
@@ -245,13 +255,15 @@ class MLWalkForwardTrainer:
             val_metrics = self.trainer.evaluate(final_model, X_val, y_val)
             report.avg_auc = round(val_metrics["auc"], 4)
             report.avg_precision = round(val_metrics["precision"], 4)
-            report.windows.append({
-                "split": "inner_val",
-                "n_train": len(X_tr),
-                "n_val": len(X_val),
-                "best_iteration": final_model.best_iteration,
-                **val_metrics,
-            })
+            report.windows.append(
+                {
+                    "split": "inner_val",
+                    "n_train": len(X_tr),
+                    "n_val": len(X_val),
+                    "best_iteration": final_model.best_iteration,
+                    **val_metrics,
+                }
+            )
             log.info(
                 f"ML WF: trained with early stopping — "
                 f"inner_val AUC={val_metrics['auc']:.4f}, "
@@ -264,12 +276,14 @@ class MLWalkForwardTrainer:
             X_train_all = df_train_pool[feature_cols]
             y_train_all = target_train_pool
             final_model = self.trainer.train(X_train_all, y_train_all, fixed_rounds=300)
-            report.windows.append({
-                "split": "fixed_rounds",
-                "n_train": len(X_train_all),
-                "n_val": 0,
-                "best_iteration": 300,
-            })
+            report.windows.append(
+                {
+                    "split": "fixed_rounds",
+                    "n_train": len(X_train_all),
+                    "n_val": 0,
+                    "best_iteration": 300,
+                }
+            )
             log.info(
                 f"ML WF: trained with fixed_rounds=300 "
                 f"(val_size={val_size} below {MIN_VAL_FOR_EARLY_STOPPING})"
@@ -320,9 +334,7 @@ class MLWalkForwardTrainer:
 
         # Feature importance
         importance = final_model.feature_importance(importance_type="gain")
-        report.feature_importance = dict(
-            sorted(zip(feature_cols, importance), key=lambda x: -x[1])
-        )
+        report.feature_importance = dict(sorted(zip(feature_cols, importance), key=lambda x: -x[1]))
 
         # Save final model + calibrator. train_start / train_end track the
         # *actual* slice the model fit on (df_train_pool), so downstream tools
@@ -342,20 +354,22 @@ class MLWalkForwardTrainer:
             "threshold": self.threshold,
             "target_kind": self.target_kind,
             "atr_mult": self.atr_mult,
+            "include_extra": self.include_extra,
             "avg_win_loss_ratio": avg_win_loss_ratio,
             "train_start": str(df_train_pool.index[0]),
             "train_end": str(df_train_pool.index[-1]),
-            "holdout_start": (
-                str(df_holdout.index[0]) if len(df_holdout) > 0 else None
-            ),
-            "holdout_end": (
-                str(df_holdout.index[-1]) if len(df_holdout) > 0 else None
-            ),
+            "holdout_start": (str(df_holdout.index[0]) if len(df_holdout) > 0 else None),
+            "holdout_end": (str(df_holdout.index[-1]) if len(df_holdout) > 0 else None),
             "data_end": str(df_valid.index[-1]),
         }
         report.model_path = self.trainer.save(
-            final_model, self.symbol, self.timeframe, meta, feature_cols,
-            self.model_dir, calibrator=calibrator,
+            final_model,
+            self.symbol,
+            self.timeframe,
+            meta,
+            feature_cols,
+            self.model_dir,
+            calibrator=calibrator,
         )
 
         return report

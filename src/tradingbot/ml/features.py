@@ -12,11 +12,13 @@ import pandas as pd
 from tradingbot.data.indicators import (
     add_adx,
     add_atr,
+    add_bollinger_bands,
     add_ichimoku,
     add_macd,
     add_mfi,
     add_obv,
     add_roc,
+    add_rsi,
     add_volume_sma,
 )
 
@@ -50,10 +52,31 @@ FEATURE_COLS = [
     "hl_range_pct",
 ]
 
+# Phase 4 extra features (opt-in via build_feature_matrix(..., include_extra=True)).
+# Three groups: regime indicators, lag/diff, session.
+EXTRA_FEATURE_COLS = [
+    # Regime
+    "adx_bucket",  # 0 (low), 1 (mid), 2 (high) — categorical from adx_14
+    "bb_bandwidth_20",  # (BB upper - lower) / middle
+    "bb_bandwidth_pct_50",  # rolling percentile of bb_bandwidth_20 over 50 bars
+    "realized_vol_20",  # std of close.pct_change() over 20 bars
+    "realized_vol_pct_50",  # rolling percentile of realized_vol_20 over 50 bars
+    # Lag / diff
+    "roc_12_lag1",
+    "roc_12_lag2",
+    "rsi_14",
+    "rsi_14_diff",
+    "obv_roc_10_lag1",
+    # Session
+    "hour_kst",  # (UTC hour + 9) % 24 — Korean market timing
+    "day_of_week",  # 0=Mon..6=Sun
+]
+
 
 def build_feature_matrix(
     df: pd.DataFrame,
     external_df: pd.DataFrame | None = None,
+    include_extra: bool = False,
 ) -> tuple[pd.DataFrame, list[str]]:
     """Build feature matrix from OHLCV DataFrame with optional external features.
 
@@ -61,6 +84,10 @@ def build_feature_matrix(
         df: OHLCV DataFrame with DatetimeIndex. Should include warmup candles.
         external_df: Optional DataFrame with external data (kimchi_pct, funding_rate,
             fng_value, usd_krw). Merged via merge_asof(direction='backward').
+        include_extra: When True, also adds the Phase 4 extras
+            (regime / lag / session). Default False keeps prior models
+            backwards-compatible — meta.feature_names captures whichever set
+            was used at training time.
 
     Returns:
         Tuple of (DataFrame with feature columns added, list of feature column names).
@@ -110,8 +137,61 @@ def build_feature_matrix(
     # Step 3: Replace any inf values with NaN
     df[FEATURE_COLS] = df[FEATURE_COLS].replace([float("inf"), float("-inf")], float("nan"))
 
-    # Step 4: External features (optional)
     active_cols = list(FEATURE_COLS)
+
+    # Step 3b: Phase 4 extras (opt-in)
+    if include_extra:
+        # Regime: ADX bucket (low/mid/high) — boundaries match common practice
+        # (ADX < 20 = no trend, 20-40 = trending, > 40 = strong trend).
+        adx = df["adx_14"]
+        df["adx_bucket"] = (
+            pd.cut(
+                adx,
+                bins=[-float("inf"), 20.0, 40.0, float("inf")],
+                labels=[0, 1, 2],
+            )
+            .astype("Int64")
+            .astype(float)
+        )
+
+        # Bollinger band width (volatility regime)
+        df = add_bollinger_bands(df, period=20, std=2.0)
+        bb_mid = df["bb_middle_20_2.0"].replace(0, _nan)
+        df["bb_bandwidth_20"] = (df["bb_upper_20_2.0"] - df["bb_lower_20_2.0"]) / bb_mid
+        df["bb_bandwidth_pct_50"] = df["bb_bandwidth_20"].rolling(50, min_periods=10).rank(pct=True)
+
+        # Realized volatility regime
+        ret_1 = df["close"].pct_change()
+        df["realized_vol_20"] = ret_1.rolling(20, min_periods=10).std()
+        df["realized_vol_pct_50"] = df["realized_vol_20"].rolling(50, min_periods=10).rank(pct=True)
+
+        # Lag / diff features — give the model access to short-term momentum
+        # changes without forcing it to relearn first differences from scratch.
+        df["roc_12_lag1"] = df["roc_12"].shift(1)
+        df["roc_12_lag2"] = df["roc_12"].shift(2)
+        df = add_rsi(df, period=14)
+        df["rsi_14_diff"] = df["rsi_14"].diff(1)
+        df["obv_roc_10_lag1"] = df["obv_roc_10"].shift(1)
+
+        # Session features — Korean market hours often differ from UTC traders.
+        # Both are integer-coded; LightGBM handles them as ordinal/categorical.
+        # Both hour and dayofweek must be derived from the same KST-shifted
+        # index — otherwise rows between 15:00–00:00 UTC have hour_kst on the
+        # next day but day_of_week still on the current UTC day.
+        if isinstance(df.index, pd.DatetimeIndex):
+            kst_index = df.index + pd.Timedelta(hours=9)
+            df["hour_kst"] = kst_index.hour.astype(float)
+            df["day_of_week"] = kst_index.dayofweek.astype(float)
+        else:
+            df["hour_kst"] = float("nan")
+            df["day_of_week"] = float("nan")
+
+        df[EXTRA_FEATURE_COLS] = df[EXTRA_FEATURE_COLS].replace(
+            [float("inf"), float("-inf")], float("nan")
+        )
+        active_cols.extend(EXTRA_FEATURE_COLS)
+
+    # Step 4: External features (optional)
 
     if external_df is not None and len(external_df) > 0:
         # Merge external data using backward lookup (anti-lookahead)

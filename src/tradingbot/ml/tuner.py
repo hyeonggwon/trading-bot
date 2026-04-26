@@ -58,6 +58,7 @@ class LGBMTuner:
         threshold: float = 0.006,
         target_kind: str = "binary",
         atr_mult: float = 1.0,
+        include_extra: bool = False,
         entry_threshold: float = 0.45,
         exit_threshold: float = 0.30,
         balance: float = 1_000_000,
@@ -67,9 +68,7 @@ class LGBMTuner:
         seed: int = 42,
     ) -> None:
         if objective not in VALID_OBJECTIVES:
-            raise ValueError(
-                f"Unknown objective={objective!r}; expected one of {VALID_OBJECTIVES}"
-            )
+            raise ValueError(f"Unknown objective={objective!r}; expected one of {VALID_OBJECTIVES}")
         self.symbol = symbol
         self.timeframe = timeframe
         self.train_months = train_months
@@ -78,12 +77,11 @@ class LGBMTuner:
         self.threshold = threshold
         self.target_kind = target_kind
         self.atr_mult = atr_mult
+        self.include_extra = include_extra
         self.entry_threshold = entry_threshold
         self.exit_threshold = exit_threshold
         self.balance = balance
-        self.external_data_dir = (
-            Path(external_data_dir) if external_data_dir else None
-        )
+        self.external_data_dir = Path(external_data_dir) if external_data_dir else None
         # Caller's AppConfig carries fee rate, slippage, risk settings, etc.
         # We clone per trial so mutation of trading.symbols / initial_balance
         # doesn't bleed between trials or back to the caller.
@@ -129,6 +127,7 @@ class LGBMTuner:
             threshold=self.threshold,
             target_kind=self.target_kind,
             atr_mult=self.atr_mult,
+            include_extra=self.include_extra,
             entry_threshold=self.entry_threshold,
             exit_threshold=self.exit_threshold,
             external_data_dir=self.external_data_dir,
@@ -195,12 +194,14 @@ class LGBMTuner:
         def _objective(trial) -> float:
             params = self._suggest_params(trial)
             score, summary = self._score(params, df)
-            trial_log.append({
-                "trial": trial.number,
-                "score": score,
-                "params": params,
-                **summary,
-            })
+            trial_log.append(
+                {
+                    "trial": trial.number,
+                    "score": score,
+                    "params": params,
+                    **summary,
+                }
+            )
             return score
 
         study.optimize(
@@ -219,8 +220,7 @@ class LGBMTuner:
             elapsed_sec=round(elapsed, 2),
             n_trials_completed=len(study.trials),
             n_trials_pruned=sum(
-                1 for t in study.trials
-                if t.state == optuna.trial.TrialState.PRUNED
+                1 for t in study.trials if t.state == optuna.trial.TrialState.PRUNED
             ),
             trials=trial_log,
         )
