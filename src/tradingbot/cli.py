@@ -2383,6 +2383,12 @@ def ml_tune(
     from tradingbot.ml.tuner import LGBMTuner
     from tradingbot.ml.walk_forward import MLWalkForwardTrainer
 
+    # Load the user's AppConfig so the tuner respects fee rate, slippage,
+    # risk settings, etc. Falls back to defaults when no config dir exists.
+    app_config = load_config(
+        overrides={"trading": {"initial_balance": balance}}
+    )
+
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))
     except FileNotFoundError:
@@ -2420,6 +2426,7 @@ def ml_tune(
         exit_threshold=exit_threshold,
         balance=balance,
         external_data_dir=ext_dir_for_runner,
+        config=app_config,
         objective=objective,
         seed=seed,
     )
@@ -2496,7 +2503,11 @@ def ml_tune(
         # Patch the model meta with tuning info so downstream tools can audit
         # which params produced the saved booster. We rewrite the file rather
         # than threading a callback because trainer.save() owns meta layout.
+        # Write to a sibling temp file first then os.replace — keeps the meta
+        # file uncorrupted if the process is interrupted mid-write.
         if final_model_path is not None:
+            import os
+
             symbol_key = symbol.replace("/", "_")
             meta_path = (
                 Path(model_dir) / f"lgbm_{symbol_key}_{timeframe}_meta.json"
@@ -2510,7 +2521,9 @@ def ml_tune(
                     "n_trials_completed": result.n_trials_completed,
                     "elapsed_sec": result.elapsed_sec,
                 }
-                meta_path.write_text(json.dumps(meta_dict, indent=2, default=str))
+                tmp_path = meta_path.with_suffix(".json.tmp")
+                tmp_path.write_text(json.dumps(meta_dict, indent=2, default=str))
+                os.replace(tmp_path, meta_path)
 
     # ---- Persist tuner report ----
     out_dir = Path(output_dir)

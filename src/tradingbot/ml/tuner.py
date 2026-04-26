@@ -19,7 +19,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+from tradingbot.config import AppConfig
 from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
 
 log = logging.getLogger(__name__)
@@ -62,6 +62,7 @@ class LGBMTuner:
         exit_threshold: float = 0.30,
         balance: float = 1_000_000,
         external_data_dir: str | Path | None = None,
+        config: AppConfig | None = None,
         objective: str = "holdout_sharpe",
         seed: int = 42,
     ) -> None:
@@ -83,6 +84,10 @@ class LGBMTuner:
         self.external_data_dir = (
             Path(external_data_dir) if external_data_dir else None
         )
+        # Caller's AppConfig carries fee rate, slippage, risk settings, etc.
+        # We clone per trial so mutation of trading.symbols / initial_balance
+        # doesn't bleed between trials or back to the caller.
+        self.config = config or AppConfig()
         self.objective = objective
         self.seed = seed
 
@@ -103,17 +108,18 @@ class LGBMTuner:
     def _score(self, lgbm_params: dict, df: pd.DataFrame) -> tuple[float, dict]:
         """Run one strategy walk-forward and extract the objective score.
 
-        Returns (score, summary_dict). On any exception, returns (-inf, {error}).
+        Returns ``(score, summary_dict)``. On any exception we log it and
+        return ``(-inf, {"error": ...})`` so the trial still gets recorded
+        in the trial log and Optuna keeps moving — losing a trial silently
+        would desync ``trial_log`` from the study's trial count.
         """
-        config = AppConfig(
-            trading=TradingConfig(
-                symbols=[self.symbol],
-                timeframe=self.timeframe,
-                initial_balance=self.balance,
-            ),
-            risk=RiskConfig(),
-            backtest=BacktestConfig(),
-        )
+        # Clone the user's AppConfig so per-trial mutations (symbols,
+        # timeframe, balance) don't leak across trials or back to the CLI.
+        config = self.config.model_copy(deep=True)
+        config.trading.symbols = [self.symbol]
+        config.trading.timeframe = self.timeframe
+        config.trading.initial_balance = self.balance
+
         runner = MLStrategyWalkForward(
             symbol=self.symbol,
             timeframe=self.timeframe,
@@ -129,7 +135,11 @@ class LGBMTuner:
             config=config,
             lgbm_params=lgbm_params,
         )
-        report = runner.run(df)
+        try:
+            report = runner.run(df)
+        except Exception as exc:  # don't let one bad trial kill the study
+            log.exception("LGBMTuner trial failed: %s", exc)
+            return float("-inf"), {"error": str(exc)}
 
         if not report.windows:
             return float("-inf"), {"error": "no_windows"}
@@ -147,11 +157,13 @@ class LGBMTuner:
         elif self.objective == "holdout_cum_return":
             score = float(report.cumulative_return_pct)
         elif self.objective == "holdout_auc":
-            # Per-window AUC isn't recorded by MLStrategyWalkForward; derive a
-            # cheap proxy via avg win rate * 2 - 1 if no other option.
-            # Caller probably wants holdout_sharpe instead — use auc only when
-            # explicitly requested for fast iterations.
-            score = float(report.avg_win_rate)
+            # Per-window AUC isn't recorded by MLStrategyWalkForward; derive
+            # an AUC-shaped proxy from win rate. Mapping:
+            #   random win-rate 0.5 → score 0.0
+            #   perfect win-rate 1.0 → score 1.0
+            # Use holdout_sharpe for serious tuning; this proxy is for fast
+            # iterations only.
+            score = float(report.avg_win_rate * 2 - 1)
             summary["proxy_auc"] = score
         else:  # pragma: no cover (validated in __init__)
             score = float("-inf")
