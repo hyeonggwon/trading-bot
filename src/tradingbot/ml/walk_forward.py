@@ -6,6 +6,7 @@ import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 from tradingbot.ml.features import build_feature_matrix
@@ -51,7 +52,15 @@ def make_expanding_windows(
 
 @dataclass
 class MLWalkForwardReport:
-    """Results from ML walk-forward validation."""
+    """Results from ML walk-forward validation.
+
+    The ``holdout_*_proba`` / ``holdout_y_true`` arrays cover the *eval half*
+    of the holdout — the same slice ``holdout_auc`` / ``holdout_precision``
+    were computed on. ``holdout_calibrated_proba`` is None when the
+    calibrator could not be fit (single-class cal half). They exist so the
+    diagnostics command can compute calibration error / distribution stats
+    without re-deriving the holdout split.
+    """
 
     windows: list[dict] = field(default_factory=list)
     avg_auc: float = 0.0
@@ -60,6 +69,9 @@ class MLWalkForwardReport:
     holdout_precision: float = 0.0
     model_path: Path | None = None
     feature_importance: dict = field(default_factory=dict)
+    holdout_y_true: np.ndarray | None = None
+    holdout_raw_proba: np.ndarray | None = None
+    holdout_calibrated_proba: np.ndarray | None = None
 
 
 class MLWalkForwardTrainer:
@@ -235,6 +247,18 @@ class MLWalkForwardTrainer:
 
             # Fit probability calibrator on the calibration half only
             calibrator = self.trainer.calibrate(final_model, X_cal, y_cal)
+
+            # Expose eval-half predictions so the diagnostics CLI can compute
+            # calibration error + distribution stats without re-deriving the
+            # holdout split. Calibrated probs are produced via the calibrator
+            # we just fit (which itself only saw the cal half — no leakage).
+            raw_eval = np.asarray(final_model.predict(X_eval), dtype=float)
+            report.holdout_y_true = y_eval.to_numpy(dtype=float)
+            report.holdout_raw_proba = raw_eval
+            if calibrator is not None:
+                report.holdout_calibrated_proba = np.asarray(
+                    calibrator.transform(raw_eval), dtype=float
+                )
 
         # Feature importance
         importance = final_model.feature_importance(importance_type="gain")

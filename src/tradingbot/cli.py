@@ -1928,5 +1928,329 @@ def ml_train_all(
     console.print(table)
 
 
+@app.command(name="ml-diagnostics")
+def ml_diagnostics(
+    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol"),
+    timeframe: str = typer.Option("4h", "--timeframe", "-t", help="Timeframe"),
+    train_months: int = typer.Option(6, "--train-months", help="Training window months"),
+    test_months: int = typer.Option(2, "--test-months", help="Test window months"),
+    forward_candles: int = typer.Option(4, "--forward-candles", help="Target horizon"),
+    threshold: float = typer.Option(0.006, "--threshold", help="Target return threshold"),
+    entry_threshold: float = typer.Option(
+        0.45, "--entry-threshold", help="Entry probability threshold"
+    ),
+    exit_threshold: float = typer.Option(
+        0.30, "--exit-threshold", help="Exit probability threshold"
+    ),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    model_dir: str = typer.Option("models", "--model-dir", help="Model output directory"),
+    output_dir: str = typer.Option(
+        "personal/ml_iter", "--output-dir", help="Where to write the diagnostics report"
+    ),
+    label: str = typer.Option(
+        "00_baseline", "--label", help="Filename prefix for the report"
+    ),
+    skip_backtest: bool = typer.Option(
+        False, "--skip-backtest", help="Skip MLStrategyWalkForward (model metrics only)"
+    ),
+) -> None:
+    """Combined ML model + strategy diagnostics for a single (symbol, timeframe).
+
+    Trains a fresh model via ``MLWalkForwardTrainer`` (Path B), reads back its
+    holdout-eval predictions to compute calibration error and prediction
+    distribution, then runs ``MLStrategyWalkForward`` for per-window backtest
+    metrics. Writes both a human-readable markdown table and a JSON dump for
+    later iteration comparisons.
+    """
+    setup_logging()
+
+    import json
+
+    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+    from tradingbot.data.external_fetcher import build_external_df
+    from tradingbot.data.storage import load_candles
+    from tradingbot.ml.diagnostics import (
+        evaluate_calibration,
+        summarize_distribution,
+        top_features,
+    )
+    from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+    from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+
+    try:
+        df = load_candles(symbol, timeframe, Path(data_dir))
+    except FileNotFoundError:
+        console.print(
+            f"[red]No data for {symbol} {timeframe}. "
+            "Run tradingbot download first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
+    external_df = build_external_df(df, ext_dir) if ext_dir.exists() else None
+    has_external = external_df is not None and len(external_df.columns) > 0
+
+    console.print(f"[bold]ML diagnostics — {symbol} {timeframe}[/bold]")
+    console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
+    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
+    console.print(f"  External data: {'yes' if has_external else 'no'}")
+
+    # ---- Step 1: model walk-forward (produces holdout AUC, calibrated probs) ----
+    trainer = MLWalkForwardTrainer(
+        symbol=symbol,
+        timeframe=timeframe,
+        train_months=train_months,
+        test_months=test_months,
+        forward_candles=forward_candles,
+        threshold=threshold,
+        model_dir=Path(model_dir),
+    )
+    model_report = trainer.run(df, external_df=external_df)
+    if not model_report.windows:
+        console.print("[red]Training failed — insufficient data.[/red]")
+        raise typer.Exit(1)
+
+    # ---- Step 2: calibration + distribution metrics on the holdout eval half ----
+    calibration = evaluate_calibration(
+        y_true=model_report.holdout_y_true,
+        raw_proba=model_report.holdout_raw_proba,
+        calibrated_proba=model_report.holdout_calibrated_proba,
+    ) if model_report.holdout_y_true is not None else None
+
+    distribution = summarize_distribution(
+        model_report.holdout_calibrated_proba
+        if model_report.holdout_calibrated_proba is not None
+        else (model_report.holdout_raw_proba
+              if model_report.holdout_raw_proba is not None
+              else None),
+        thresholds=(exit_threshold, entry_threshold, 0.50),
+    ) if (
+        model_report.holdout_raw_proba is not None
+        or model_report.holdout_calibrated_proba is not None
+    ) else None
+
+    feat_top10 = top_features(model_report.feature_importance, top_n=10)
+
+    # ---- Step 3: strategy walk-forward (per-window backtest) ----
+    strategy_report = None
+    if not skip_backtest:
+        config = AppConfig(
+            trading=TradingConfig(
+                symbols=[symbol], timeframe=timeframe, initial_balance=1_000_000
+            ),
+            risk=RiskConfig(),
+            backtest=BacktestConfig(),
+        )
+        runner = MLStrategyWalkForward(
+            symbol=symbol,
+            timeframe=timeframe,
+            train_months=train_months,
+            test_months=test_months,
+            forward_candles=forward_candles,
+            threshold=threshold,
+            entry_threshold=entry_threshold,
+            exit_threshold=exit_threshold,
+            external_data_dir=ext_dir if has_external else None,
+            config=config,
+        )
+        strategy_report = runner.run(df)
+
+    # ---- Step 4: print + persist ----
+    console.print("\n[bold]Model Quality (holdout eval half)[/bold]")
+    console.print(f"  Inner-val AUC: {model_report.avg_auc:.4f}")
+    console.print(f"  Holdout AUC: {model_report.holdout_auc:.4f}")
+    console.print(f"  Holdout Precision: {model_report.holdout_precision:.4f}")
+    if calibration is not None:
+        console.print(
+            f"  Brier (raw / calibrated): {calibration.brier_raw:.4f} / "
+            f"{calibration.brier_calibrated:.4f}"
+        )
+        console.print(
+            f"  ECE (raw / calibrated): {calibration.ece_raw:.4f} / "
+            f"{calibration.ece_calibrated:.4f}    MCE: {calibration.mce_calibrated:.4f}"
+        )
+
+    if distribution is not None:
+        console.print("\n[bold]Calibrated Probability Distribution[/bold]")
+        console.print(
+            f"  min={distribution.min:.3f}  p25={distribution.p25:.3f}  "
+            f"p50={distribution.p50:.3f}  mean={distribution.mean:.3f}  "
+            f"p75={distribution.p75:.3f}  max={distribution.max:.3f}"
+        )
+        for thr_key, n_above in distribution.above.items():
+            pct = distribution.above_pct[thr_key] * 100
+            console.print(f"  ≥ {thr_key}: {n_above} ({pct:.1f}%)")
+
+    if feat_top10:
+        console.print("\n[bold]Top 10 Feature Importance (gain)[/bold]")
+        for i, (feat, imp) in enumerate(feat_top10, 1):
+            console.print(f"  {i:2d}. {feat}: {imp:.1f}")
+
+    if strategy_report is not None and strategy_report.windows:
+        console.print("\n[bold]Strategy Walk-Forward Backtest[/bold]")
+        console.print(
+            f"  Windows: {strategy_report.n_windows}  "
+            f"(skipped: {strategy_report.n_skipped})"
+        )
+        console.print(f"  Avg Sharpe: {strategy_report.avg_sharpe:.2f}")
+        console.print(
+            f"  Cumulative return: {strategy_report.cumulative_return_pct:+.2f}%"
+        )
+        console.print(f"  Total trades: {strategy_report.total_trades}")
+        console.print(
+            f"  Avg win rate (traded windows): {strategy_report.avg_win_rate * 100:.1f}%"
+        )
+
+    # ---- Persist ----
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{label}_{symbol.replace('/', '_')}_{timeframe}"
+    json_path = out_dir / f"{base}.json"
+    md_path = out_dir / f"{base}.md"
+
+    payload: dict = {
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "train_months": train_months,
+        "test_months": test_months,
+        "forward_candles": forward_candles,
+        "threshold": threshold,
+        "entry_threshold": entry_threshold,
+        "exit_threshold": exit_threshold,
+        "has_external": has_external,
+        "n_data": len(df),
+        "data_start": str(df.index[0]),
+        "data_end": str(df.index[-1]),
+        "model": {
+            "inner_val_auc": model_report.avg_auc,
+            "inner_val_precision": model_report.avg_precision,
+            "holdout_auc": model_report.holdout_auc,
+            "holdout_precision": model_report.holdout_precision,
+        },
+        "calibration": (
+            {
+                "n_samples": calibration.n_samples,
+                "positive_rate": calibration.positive_rate,
+                "brier_raw": calibration.brier_raw,
+                "brier_calibrated": calibration.brier_calibrated,
+                "ece_raw": calibration.ece_raw,
+                "ece_calibrated": calibration.ece_calibrated,
+                "mce_calibrated": calibration.mce_calibrated,
+            }
+            if calibration is not None
+            else None
+        ),
+        "distribution": (
+            {
+                "n": distribution.n,
+                "min": distribution.min,
+                "p25": distribution.p25,
+                "p50": distribution.p50,
+                "mean": distribution.mean,
+                "p75": distribution.p75,
+                "max": distribution.max,
+                "above": distribution.above,
+                "above_pct": distribution.above_pct,
+            }
+            if distribution is not None
+            else None
+        ),
+        "feature_importance_top10": feat_top10,
+        "backtest": (
+            {
+                "n_windows": strategy_report.n_windows,
+                "n_skipped": strategy_report.n_skipped,
+                "avg_sharpe": strategy_report.avg_sharpe,
+                "cumulative_return_pct": strategy_report.cumulative_return_pct,
+                "final_equity_multiple": strategy_report.final_equity_multiple,
+                "total_trades": strategy_report.total_trades,
+                "avg_win_rate": strategy_report.avg_win_rate,
+                "windows": strategy_report.windows,
+            }
+            if strategy_report is not None
+            else None
+        ),
+    }
+    json_path.write_text(json.dumps(payload, indent=2, default=str))
+
+    md_lines = [
+        f"# ML Diagnostics — {symbol} {timeframe} ({label})",
+        "",
+        f"- Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})",
+        f"- Walk-Forward: {train_months}m train / {test_months}m test",
+        f"- Target: forward_candles={forward_candles}, threshold={threshold}",
+        f"- Entry/Exit threshold: {entry_threshold} / {exit_threshold}",
+        f"- External features: {'yes' if has_external else 'no'}",
+        "",
+        "## Model Quality (holdout eval half)",
+        "",
+        f"- Inner-val AUC: {model_report.avg_auc:.4f}",
+        f"- Holdout AUC: **{model_report.holdout_auc:.4f}**",
+        f"- Holdout Precision: {model_report.holdout_precision:.4f}",
+    ]
+    if calibration is not None:
+        md_lines += [
+            f"- Brier (raw / calibrated): {calibration.brier_raw:.4f} / "
+            f"{calibration.brier_calibrated:.4f}",
+            f"- ECE (raw / calibrated): {calibration.ece_raw:.4f} / "
+            f"{calibration.ece_calibrated:.4f}",
+            f"- MCE (calibrated): {calibration.mce_calibrated:.4f}",
+            f"- Eval positive rate: {calibration.positive_rate:.4f}",
+        ]
+    if distribution is not None:
+        md_lines += [
+            "",
+            "## Calibrated Probability Distribution (eval half)",
+            "",
+            "| Stat | Value |",
+            "|------|------:|",
+            f"| min | {distribution.min:.3f} |",
+            f"| p25 | {distribution.p25:.3f} |",
+            f"| p50 | {distribution.p50:.3f} |",
+            f"| mean | {distribution.mean:.3f} |",
+            f"| p75 | {distribution.p75:.3f} |",
+            f"| max | {distribution.max:.3f} |",
+        ]
+        for thr_key, n_above in distribution.above.items():
+            pct = distribution.above_pct[thr_key] * 100
+            md_lines.append(f"| ≥ {thr_key} | {n_above} ({pct:.1f}%) |")
+
+    if feat_top10:
+        md_lines += [
+            "",
+            "## Top 10 Feature Importance",
+            "",
+            "| # | Feature | Gain |",
+            "|---|---------|-----:|",
+        ]
+        for i, (feat, imp) in enumerate(feat_top10, 1):
+            md_lines.append(f"| {i} | {feat} | {imp:.1f} |")
+
+    if strategy_report is not None and strategy_report.windows:
+        md_lines += [
+            "",
+            "## Strategy Walk-Forward Backtest",
+            "",
+            f"- Windows: {strategy_report.n_windows} (skipped: {strategy_report.n_skipped})",
+            f"- Avg Sharpe: **{strategy_report.avg_sharpe:.2f}**",
+            f"- Cumulative return: **{strategy_report.cumulative_return_pct:+.2f}%**",
+            f"- Total trades: {strategy_report.total_trades}",
+            f"- Avg win rate (traded windows): {strategy_report.avg_win_rate * 100:.1f}%",
+            "",
+            "| # | Test Start | Test End | Sharpe | Return % | Trades | Win % | MaxDD % |",
+            "|---|-----------|----------|-------:|---------:|-------:|------:|--------:|",
+        ]
+        for w in strategy_report.windows:
+            md_lines.append(
+                f"| {w['window']} | {w['test_start'][:10]} | {w['test_end'][:10]} | "
+                f"{w['sharpe']:.2f} | {w['return_pct']:+.2f} | {w['trades']} | "
+                f"{w['win_rate'] * 100:.1f} | {w['max_dd_pct']:.2f} |"
+            )
+
+    md_path.write_text("\n".join(md_lines) + "\n")
+    console.print(f"\n[dim]JSON: {json_path}[/dim]")
+    console.print(f"[dim]Markdown: {md_path}[/dim]")
+
+
 if __name__ == "__main__":
     app()
