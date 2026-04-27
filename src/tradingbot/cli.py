@@ -2972,5 +2972,218 @@ def ml_tune(
     console.print(f"[dim]Markdown: {md_path}[/dim]")
 
 
+@app.command(name="ml-tune-thresholds")
+def ml_tune_thresholds(
+    symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol"),
+    timeframe: str = typer.Option("4h", "--timeframe", "-t", help="Timeframe"),
+    entry_grid: str = typer.Option(
+        "0.40,0.45,0.50,0.55,0.60",
+        "--entry-grid",
+        help="Comma-separated entry threshold grid",
+    ),
+    exit_grid: str = typer.Option(
+        "0.20,0.25,0.30,0.35",
+        "--exit-grid",
+        help="Comma-separated exit threshold grid",
+    ),
+    baseline_entry: float = typer.Option(
+        0.45,
+        "--baseline-entry",
+        help="Entry threshold used as the baseline comparison row",
+    ),
+    baseline_exit: float = typer.Option(
+        0.30,
+        "--baseline-exit",
+        help="Exit threshold used as the baseline comparison row",
+    ),
+    balance: float = typer.Option(
+        1_000_000, "--balance", "-b", help="Initial balance for backtest (KRW)"
+    ),
+    data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
+    model_dir: str = typer.Option("models", "--model-dir", help="Model directory"),
+    output_dir: str = typer.Option(
+        "personal/ml_iter",
+        "--output-dir",
+        help="Where to write the threshold tuner report",
+    ),
+    label: str = typer.Option(
+        "04_thresholds",
+        "--label",
+        help="Filename prefix for the tuner report",
+    ),
+    write_meta: bool = typer.Option(
+        True,
+        "--write-meta/--no-write-meta",
+        help="Persist best thresholds back into the model meta file",
+    ),
+) -> None:
+    """Sweep entry/exit thresholds against the model's holdout window.
+
+    Loads the saved booster + calibrator (no retraining), runs one cheap
+    backtest per (entry, exit) combo on the holdout slice from meta.json,
+    and writes the best pair back into the meta as ``entry_threshold`` /
+    ``exit_threshold``. ``LGBMStrategy._load_model`` then reuses those
+    overrides automatically on subsequent runs.
+    """
+    setup_logging()
+
+    import json
+
+    from tradingbot.data.storage import load_candles
+    from tradingbot.ml.threshold_tuner import (
+        ThresholdTuner,
+        patch_meta_thresholds,
+    )
+
+    app_config = load_config(overrides={"trading": {"initial_balance": balance}})
+
+    try:
+        df = load_candles(symbol, timeframe, Path(data_dir))
+    except FileNotFoundError:
+        console.print(
+            f"[red]No data for {symbol} {timeframe}. Run tradingbot download first.[/red]"
+        )
+        raise typer.Exit(1)
+
+    try:
+        entry_values = tuple(float(x) for x in entry_grid.split(",") if x.strip())
+        exit_values = tuple(float(x) for x in exit_grid.split(",") if x.strip())
+    except ValueError as exc:
+        console.print(f"[red]Invalid grid value: {exc}[/red]")
+        raise typer.Exit(1)
+    if not entry_values or not exit_values:
+        console.print("[red]entry_grid and exit_grid must each contain at least one value.[/red]")
+        raise typer.Exit(1)
+
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
+    ext_dir_for_runner = ext_dir if ext_dir.exists() else None
+
+    console.print(f"[bold]Threshold tuning — {symbol} {timeframe}[/bold]")
+    console.print(f"  Data: {len(df)} candles ({df.index[0]} → {df.index[-1]})")
+    console.print(f"  Entry grid: {list(entry_values)}")
+    console.print(f"  Exit grid:  {list(exit_values)}")
+    console.print(f"  Baseline:   entry={baseline_entry} exit={baseline_exit}")
+
+    tuner = ThresholdTuner(
+        symbol=symbol,
+        timeframe=timeframe,
+        model_dir=Path(model_dir),
+        external_data_dir=ext_dir_for_runner,
+        config=app_config,
+        balance=balance,
+        baseline_entry=baseline_entry,
+        baseline_exit=baseline_exit,
+    )
+    result = tuner.search(df, entry_grid=entry_values, exit_grid=exit_values)
+
+    if result.error and not result.grid:
+        console.print(f"[red]Threshold tuning failed: {result.error}[/red]")
+        raise typer.Exit(1)
+
+    console.print(
+        f"\n[bold green]Best[/bold green]  "
+        f"entry={result.best_entry:.2f} exit={result.best_exit:.2f}  "
+        f"sharpe={result.best_sharpe:.3f} return={result.best_return_pct:+.2f}% "
+        f"trades={result.best_trades}"
+    )
+    console.print(
+        f"[dim]Baseline  entry={result.baseline_entry:.2f} exit={result.baseline_exit:.2f}  "
+        f"sharpe={result.baseline_sharpe:.3f} return={result.baseline_return_pct:+.2f}% "
+        f"trades={result.baseline_trades}[/dim]"
+    )
+
+    # Top combos by Sharpe (with at least one trade)
+    sortable = [g for g in result.grid if g.get("trades", 0) > 0]
+    sortable.sort(key=lambda g: (g["sharpe"], g["trades"]), reverse=True)
+    if sortable:
+        table = Table(title=f"Top combos — {symbol} {timeframe}")
+        table.add_column("Entry", justify="right")
+        table.add_column("Exit", justify="right")
+        table.add_column("Sharpe", justify="right")
+        table.add_column("Return %", justify="right")
+        table.add_column("Trades", justify="right")
+        table.add_column("Win %", justify="right")
+        table.add_column("MaxDD %", justify="right")
+        for g in sortable[:8]:
+            table.add_row(
+                f"{g['entry']:.2f}",
+                f"{g['exit']:.2f}",
+                f"{g['sharpe']:.3f}",
+                f"{g['return_pct']:+.2f}",
+                str(g["trades"]),
+                f"{g['win_rate'] * 100:.1f}",
+                f"{g['max_dd_pct']:+.2f}",
+            )
+        console.print(table)
+
+    meta_path: Path | None = None
+    if write_meta:
+        meta_path = patch_meta_thresholds(symbol, timeframe, Path(model_dir), result)
+        if meta_path is not None:
+            console.print(f"[green]Meta updated: {meta_path}[/green]")
+        else:
+            console.print("[yellow]Meta not updated (missing file or no winning combo).[/yellow]")
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    base = f"{label}_{symbol.replace('/', '_')}_{timeframe}"
+    json_path = out_dir / f"{base}.json"
+    md_path = out_dir / f"{base}.md"
+
+    payload = {
+        "symbol": result.symbol,
+        "timeframe": result.timeframe,
+        "holdout_start": result.holdout_start,
+        "holdout_end": result.holdout_end,
+        "baseline_entry": result.baseline_entry,
+        "baseline_exit": result.baseline_exit,
+        "baseline_sharpe": result.baseline_sharpe,
+        "baseline_return_pct": result.baseline_return_pct,
+        "baseline_trades": result.baseline_trades,
+        "best_entry": result.best_entry,
+        "best_exit": result.best_exit,
+        "best_sharpe": result.best_sharpe,
+        "best_return_pct": result.best_return_pct,
+        "best_trades": result.best_trades,
+        "best_win_rate": result.best_win_rate,
+        "best_max_dd_pct": result.best_max_dd_pct,
+        "n_combos_evaluated": result.n_combos_evaluated,
+        "n_combos_skipped": result.n_combos_skipped,
+        "entry_grid": list(entry_values),
+        "exit_grid": list(exit_values),
+        "grid": result.grid,
+        "meta_path": str(meta_path) if meta_path else None,
+        "error": result.error,
+    }
+    json_path.write_text(json.dumps(payload, indent=2, default=str))
+
+    md_lines = [
+        f"# Threshold tuning — {symbol} {timeframe} ({label})",
+        "",
+        f"- Holdout: {result.holdout_start} → {result.holdout_end}",
+        f"- Combos evaluated: {result.n_combos_evaluated} (skipped: {result.n_combos_skipped})",
+        f"- Best: **entry={result.best_entry:.2f} / exit={result.best_exit:.2f}**, "
+        f"Sharpe **{result.best_sharpe:.3f}**, "
+        f"Return **{result.best_return_pct:+.2f}%**, Trades {result.best_trades}",
+        f"- Baseline (entry={result.baseline_entry:.2f}/exit={result.baseline_exit:.2f}): "
+        f"Sharpe {result.baseline_sharpe:.3f}, Return {result.baseline_return_pct:+.2f}%, "
+        f"Trades {result.baseline_trades}",
+        "",
+        "## Top combos",
+        "",
+        "| Entry | Exit | Sharpe | Return % | Trades | Win % | MaxDD % |",
+        "|------:|-----:|-------:|---------:|-------:|------:|--------:|",
+    ]
+    for g in sortable[:12]:
+        md_lines.append(
+            f"| {g['entry']:.2f} | {g['exit']:.2f} | {g['sharpe']:.3f} | "
+            f"{g['return_pct']:+.2f} | {g['trades']} | "
+            f"{g['win_rate'] * 100:.1f} | {g['max_dd_pct']:+.2f} |"
+        )
+    md_path.write_text("\n".join(md_lines) + "\n")
+    console.print(f"[dim]JSON: {json_path}[/dim]")
+    console.print(f"[dim]Markdown: {md_path}[/dim]")
+
+
 if __name__ == "__main__":
     app()
