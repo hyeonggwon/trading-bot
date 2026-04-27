@@ -2972,6 +2972,353 @@ def ml_tune(
     console.print(f"[dim]Markdown: {md_path}[/dim]")
 
 
+@app.command(name="ml-tune-all")
+def ml_tune_all(
+    timeframe: str | None = typer.Option(
+        None, "--timeframe", "-t", help="Restrict to this timeframe (default: all)"
+    ),
+    train_months: int = typer.Option(6, "--train-months"),
+    test_months: int = typer.Option(2, "--test-months"),
+    forward_candles: int = typer.Option(4, "--forward-candles"),
+    threshold: float = typer.Option(0.006, "--threshold"),
+    target_kind: str = typer.Option("triple-barrier", "--target-kind"),
+    atr_mult: float = typer.Option(1.0, "--atr-mult"),
+    include_extra: bool = typer.Option(False, "--include-extra"),
+    entry_threshold: float = typer.Option(0.45, "--entry-threshold"),
+    exit_threshold: float = typer.Option(0.30, "--exit-threshold"),
+    balance: float = typer.Option(1_000_000, "--balance", "-b"),
+    trials: int = typer.Option(50, "--trials"),
+    time_budget: float = typer.Option(3600.0, "--time-budget"),
+    objective: str = typer.Option("holdout_sharpe", "--objective"),
+    seed: int = typer.Option(42, "--seed"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+    model_dir: str = typer.Option("models", "--model-dir"),
+    output_dir: str = typer.Option("personal/ml_iter", "--output-dir"),
+    label: str = typer.Option("06_tune_all", "--label"),
+    workers: int = typer.Option(
+        0,
+        "--workers",
+        "-w",
+        help="Parallel workers (0=auto: cpu_count//2, 1=sequential)",
+    ),
+) -> None:
+    """Run Optuna tuning for every saved (symbol, timeframe) model.
+
+    Iterates ``models/lgbm_*_meta.json``, runs ``LGBMTuner`` per model with
+    the provided trials/time budget, then trains a final model with the
+    best params (and patches its meta with the tuning record). Per-model
+    JSON+MD reports land under ``output_dir/{label}_{sym}_{tf}.{json,md}``;
+    a summary report sortable by ``best_value`` is written as
+    ``{label}_summary.{json,md}``. Designed for Phase 6 — replaces the
+    24-times manual ``ml-tune`` invocation needed before re-running
+    ``scan`` / ``combine-scan``.
+    """
+    setup_logging()
+
+    import json
+    import multiprocessing as mp
+
+    # Enumerate saved models the same way ml-tune-thresholds-all does.
+    model_path = Path(model_dir)
+    if not model_path.exists():
+        console.print(f"[red]Model dir does not exist: {model_path}[/red]")
+        raise typer.Exit(1)
+
+    targets: list[tuple[str, str]] = []
+    for meta_file in sorted(model_path.glob("lgbm_*_meta.json")):
+        stem = meta_file.stem.removeprefix("lgbm_").removesuffix("_meta")
+        if "_" not in stem:
+            continue
+        sym_key, tf = stem.rsplit("_", 1)
+        sym = sym_key.replace("_", "/")
+        if timeframe is not None and tf != timeframe:
+            continue
+        targets.append((sym, tf))
+
+    if not targets:
+        console.print(
+            f"[yellow]No models found in {model_path}"
+            + (f" matching timeframe={timeframe}" if timeframe else "")
+            + "[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    cpu_count = mp.cpu_count()
+    if workers <= 0:
+        n_workers = max(1, min(cpu_count // 2, len(targets)))
+    else:
+        n_workers = min(workers, len(targets))
+    threads_per_worker = max(1, cpu_count // n_workers)
+
+    console.print(
+        f"[bold]Optuna tuning — {len(targets)} (symbol, timeframe) models[/bold]"
+    )
+    console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
+    console.print(
+        f"  Target: {target_kind}"
+        + (f" (atr_mult={atr_mult})" if target_kind != "binary" else f" (threshold={threshold})")
+    )
+    console.print(f"  Objective: {objective}")
+    console.print(f"  Trials/model: {trials}  Time budget: {time_budget:.0f}s")
+    console.print(f"  Workers: {n_workers}  (threads/worker: {threads_per_worker})")
+
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
+    ext_dir_abs = str(ext_dir.resolve()) if ext_dir.exists() else None
+    data_dir_abs = str(Path(data_dir).resolve())
+    model_dir_abs = str(model_path.resolve())
+    output_dir_abs = str(Path(output_dir).resolve())
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict] = []
+    failed: list[tuple[str, str, str]] = []
+
+    def _record_result(sym: str, tf: str, r) -> None:
+        # ``no_successful_trial``, ``no_data``, etc. surface as failures
+        # because the per-model meta wasn't updated and there's no Sharpe
+        # to compare. Anything with a usable best_value goes into rows.
+        if r.error and r.best_value == float("-inf"):
+            failed.append((sym, tf, r.error))
+            return
+        rows.append(
+            {
+                "symbol": sym,
+                "timeframe": tf,
+                "objective": r.objective,
+                "best_value": r.best_value,
+                "n_trials_completed": r.n_trials_completed,
+                "elapsed_sec": r.elapsed_sec,
+                "final_holdout_auc": r.final_holdout_auc,
+                "final_holdout_precision": r.final_holdout_precision,
+                "final_model_path": r.final_model_path,
+                "best_params": r.best_params,
+                "error": r.error,
+            }
+        )
+
+    if n_workers == 1:
+        # Sequential — no worker, but still wrap each model in a broad
+        # try/except so a single crash doesn't kill the run.
+        from tradingbot.ml.parallel import tune_pair
+
+        config_dump = load_config(
+            overrides={"trading": {"initial_balance": balance}}
+        ).model_dump()
+
+        with _progress_context() as progress:
+            task = progress.add_task("Tuning models", total=len(targets))
+            for sym, tf in targets:
+                progress.update(task, description=f"Tuning {sym} {tf}")
+                try:
+                    r = tune_pair(
+                        sym,
+                        tf,
+                        data_dir_abs,
+                        model_dir_abs,
+                        ext_dir_abs,
+                        train_months,
+                        test_months,
+                        forward_candles,
+                        threshold,
+                        target_kind,
+                        atr_mult,
+                        include_extra,
+                        entry_threshold,
+                        exit_threshold,
+                        balance,
+                        trials,
+                        time_budget,
+                        objective,
+                        seed,
+                        output_dir_abs,
+                        label,
+                        threads_per_worker,
+                        config_dump,
+                    )
+                except Exception as exc:
+                    failed.append((sym, tf, f"unexpected: {exc}"))
+                    progress.log(f"[red]{sym} {tf}: unexpected error: {exc}[/red]")
+                    progress.advance(task)
+                    continue
+
+                _record_result(sym, tf, r)
+                if r.error and r.best_value == float("-inf"):
+                    color = "yellow" if r.error == "no_data" else "red"
+                    progress.log(f"[{color}]{sym} {tf}: {r.error}[/{color}]")
+                else:
+                    progress.log(
+                        f"[green]{sym} {tf}: {objective}={r.best_value:.4f} "
+                        f"trials={r.n_trials_completed} elapsed={r.elapsed_sec:.0f}s[/green]"
+                    )
+                progress.advance(task)
+    else:
+        from concurrent.futures import ProcessPoolExecutor, as_completed
+
+        from tradingbot.ml.parallel import tune_pair
+
+        ctx = mp.get_context("spawn")
+        config_dump = load_config(
+            overrides={"trading": {"initial_balance": balance}}
+        ).model_dump()
+
+        with _progress_context() as progress:
+            task = progress.add_task("Tuning models", total=len(targets))
+            with ProcessPoolExecutor(
+                max_workers=n_workers, mp_context=ctx
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        tune_pair,
+                        sym,
+                        tf,
+                        data_dir_abs,
+                        model_dir_abs,
+                        ext_dir_abs,
+                        train_months,
+                        test_months,
+                        forward_candles,
+                        threshold,
+                        target_kind,
+                        atr_mult,
+                        include_extra,
+                        entry_threshold,
+                        exit_threshold,
+                        balance,
+                        trials,
+                        time_budget,
+                        objective,
+                        seed,
+                        output_dir_abs,
+                        label,
+                        threads_per_worker,
+                        config_dump,
+                    ): (sym, tf)
+                    for sym, tf in targets
+                }
+                try:
+                    for future in as_completed(futures):
+                        sym, tf = futures[future]
+                        try:
+                            r = future.result()
+                        except Exception as exc:
+                            failed.append((sym, tf, f"unexpected: {exc}"))
+                            progress.log(
+                                f"[red]{sym} {tf}: unexpected error: {exc}[/red]"
+                            )
+                            progress.advance(task)
+                            continue
+
+                        _record_result(sym, tf, r)
+                        if r.error and r.best_value == float("-inf"):
+                            color = "yellow" if r.error == "no_data" else "red"
+                            progress.log(f"[{color}]{sym} {tf}: {r.error}[/{color}]")
+                        else:
+                            progress.log(
+                                f"[green]{sym} {tf}: {objective}={r.best_value:.4f} "
+                                f"trials={r.n_trials_completed} "
+                                f"elapsed={r.elapsed_sec:.0f}s[/green]"
+                            )
+                        progress.advance(task)
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Interrupted. Cancelling...[/yellow]")
+                    for f in futures:
+                        f.cancel()
+                    raise
+
+    # ---- Summary ----
+    rows.sort(key=lambda r: r["best_value"], reverse=True)
+
+    table = Table(title=f"Tune-all summary ({len(rows)} models)")
+    table.add_column("Symbol")
+    table.add_column("TF")
+    table.add_column(objective, justify="right")
+    table.add_column("Trials", justify="right")
+    table.add_column("Elapsed s", justify="right")
+    table.add_column("Holdout AUC", justify="right")
+    for row in rows:
+        auc_str = (
+            f"{row['final_holdout_auc']:.4f}"
+            if row["final_holdout_auc"] is not None
+            else "—"
+        )
+        table.add_row(
+            row["symbol"],
+            row["timeframe"],
+            f"{row['best_value']:.4f}",
+            str(row["n_trials_completed"]),
+            f"{row['elapsed_sec']:.0f}",
+            auc_str,
+        )
+    console.print(table)
+
+    if failed:
+        console.print(f"\n[yellow]{len(failed)} models skipped:[/yellow]")
+        for sym, tf, reason in failed:
+            console.print(f"  {sym} {tf}: {reason}")
+
+    summary_json = out_dir / f"{label}_summary.json"
+    summary_md = out_dir / f"{label}_summary.md"
+    summary_json.write_text(
+        json.dumps(
+            {
+                "label": label,
+                "timeframe_filter": timeframe,
+                "objective": objective,
+                "trials_per_model": trials,
+                "time_budget_sec": time_budget,
+                "target_kind": target_kind,
+                "atr_mult": atr_mult,
+                "include_extra": include_extra,
+                "rows": rows,
+                "failed": [
+                    {"symbol": s, "timeframe": t, "reason": r} for s, t, r in failed
+                ],
+            },
+            indent=2,
+            default=str,
+        )
+    )
+
+    md_lines = [
+        f"# Optuna tuning — all models ({label})",
+        "",
+        f"- Models tuned: {len(rows)} (skipped: {len(failed)})",
+        f"- Objective: **{objective}**",
+        f"- Trials/model: {trials}  (time budget: {time_budget:.0f}s)",
+        (
+            f"- Target: binary (forward_candles={forward_candles}, threshold={threshold})"
+            if target_kind == "binary"
+            else f"- Target: {target_kind} (forward_candles={forward_candles}, atr_mult={atr_mult})"
+        ),
+        f"- Extras: {'on' if include_extra else 'off'}",
+        "",
+        f"## Summary (sorted by best {objective})",
+        "",
+        f"| Symbol | TF | {objective} | Trials | Elapsed s | Holdout AUC |",
+        "|--------|----|------------:|-------:|----------:|------------:|",
+    ]
+    for row in rows:
+        auc_str = (
+            f"{row['final_holdout_auc']:.4f}"
+            if row["final_holdout_auc"] is not None
+            else "—"
+        )
+        md_lines.append(
+            f"| {row['symbol']} | {row['timeframe']} | "
+            f"{row['best_value']:.4f} | {row['n_trials_completed']} | "
+            f"{row['elapsed_sec']:.0f} | {auc_str} |"
+        )
+    if failed:
+        md_lines.extend(["", "## Skipped", ""])
+        for sym, tf, reason in failed:
+            md_lines.append(f"- {sym} {tf}: {reason}")
+
+    summary_md.write_text("\n".join(md_lines) + "\n")
+    console.print(f"\n[green]Summary JSON: {summary_json}[/green]")
+    console.print(f"[green]Summary Markdown: {summary_md}[/green]")
+
+
 @app.command(name="ml-tune-thresholds")
 def ml_tune_thresholds(
     symbol: str = typer.Option("BTC/KRW", "--symbol", "-s", help="Symbol"),

@@ -75,6 +75,7 @@ tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h        # Default: holdout
 tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h --include-train
 tradingbot ml-walk-forward --symbol BTC/KRW --timeframe 1h    # Time-honest LGBM (fresh model per window)
 tradingbot ml-tune --symbol BTC/KRW --timeframe 4h            # Optuna hyperparameter search
+tradingbot ml-tune-all --workers 4                            # Optuna batch across every saved model
 tradingbot ml-tune-thresholds --symbol BTC/KRW --timeframe 4h # Per-model entry/exit threshold sweep
 tradingbot ml-tune-thresholds-all                             # Threshold sweep across every saved model
 
