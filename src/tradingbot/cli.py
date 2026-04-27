@@ -3185,5 +3185,303 @@ def ml_tune_thresholds(
     console.print(f"[dim]Markdown: {md_path}[/dim]")
 
 
+@app.command(name="ml-tune-thresholds-all")
+def ml_tune_thresholds_all(
+    timeframe: str = typer.Option(
+        None, "--timeframe", "-t", help="Restrict to this timeframe (default: all)"
+    ),
+    entry_grid: str = typer.Option(
+        "0.40,0.45,0.50,0.55,0.60",
+        "--entry-grid",
+        help="Comma-separated entry threshold grid",
+    ),
+    exit_grid: str = typer.Option(
+        "0.20,0.25,0.30,0.35",
+        "--exit-grid",
+        help="Comma-separated exit threshold grid",
+    ),
+    baseline_entry: float = typer.Option(0.45, "--baseline-entry"),
+    baseline_exit: float = typer.Option(0.30, "--baseline-exit"),
+    balance: float = typer.Option(1_000_000, "--balance", "-b"),
+    data_dir: str = typer.Option("data", "--data-dir"),
+    model_dir: str = typer.Option("models", "--model-dir"),
+    output_dir: str = typer.Option(
+        "personal/ml_iter",
+        "--output-dir",
+        help="Where to write the per-model + summary reports",
+    ),
+    label: str = typer.Option(
+        "06_thresholds_all",
+        "--label",
+        help="Filename prefix for the summary report",
+    ),
+    write_meta: bool = typer.Option(
+        True,
+        "--write-meta/--no-write-meta",
+        help="Persist best thresholds back into each model's meta file",
+    ),
+) -> None:
+    """Sweep entry/exit thresholds across every saved (symbol, timeframe) model.
+
+    Enumerates ``models/lgbm_*_meta.json``, runs the per-model threshold tuner
+    on each, and writes a combined summary (sortable by best Sharpe) to
+    ``output_dir/{label}_summary.{json,md}``. Per-model reports are also
+    emitted under the same ``label`` prefix so you can drill into any one
+    result. Designed for Phase 6 — apply tuned thresholds to all 24 models
+    before re-running ``scan`` / ``combine-scan``.
+    """
+    setup_logging()
+
+    import json
+
+    from tradingbot.data.storage import load_candles
+    from tradingbot.ml.threshold_tuner import (
+        ThresholdTuner,
+        patch_meta_thresholds,
+    )
+
+    app_config = load_config(overrides={"trading": {"initial_balance": balance}})
+
+    try:
+        entry_values = tuple(float(x) for x in entry_grid.split(",") if x.strip())
+        exit_values = tuple(float(x) for x in exit_grid.split(",") if x.strip())
+    except ValueError as exc:
+        console.print(f"[red]Invalid grid value: {exc}[/red]")
+        raise typer.Exit(1)
+    if not entry_values or not exit_values:
+        console.print("[red]entry_grid and exit_grid must each contain at least one value.[/red]")
+        raise typer.Exit(1)
+
+    # Enumerate every saved model. ``meta.json`` files have the form
+    # ``lgbm_{SYM_KEY}_{TF}_meta.json``; SYM_KEY uses ``_`` as the slash
+    # replacement so we split on the *last* underscore to recover (sym, tf).
+    model_path = Path(model_dir)
+    if not model_path.exists():
+        console.print(f"[red]Model dir does not exist: {model_path}[/red]")
+        raise typer.Exit(1)
+
+    targets: list[tuple[str, str]] = []
+    for meta_file in sorted(model_path.glob("lgbm_*_meta.json")):
+        stem = meta_file.stem.removeprefix("lgbm_").removesuffix("_meta")
+        if "_" not in stem:
+            continue
+        sym_key, tf = stem.rsplit("_", 1)
+        sym = sym_key.replace("_", "/")
+        if timeframe is not None and tf != timeframe:
+            continue
+        targets.append((sym, tf))
+
+    if not targets:
+        console.print(
+            f"[yellow]No models found in {model_path}"
+            + (f" matching timeframe={timeframe}" if timeframe else "")
+            + "[/yellow]"
+        )
+        raise typer.Exit(1)
+
+    console.print(
+        f"[bold]Threshold tuning — {len(targets)} (symbol, timeframe) models[/bold]"
+    )
+    console.print(f"  Entry grid: {list(entry_values)}")
+    console.print(f"  Exit grid:  {list(exit_values)}")
+    console.print(f"  Baseline:   entry={baseline_entry} exit={baseline_exit}")
+
+    ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
+    ext_dir_for_runner = ext_dir if ext_dir.exists() else None
+
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    rows: list[dict] = []
+    failed: list[tuple[str, str, str]] = []
+
+    with _progress_context() as progress:
+        task = progress.add_task("Tuning thresholds", total=len(targets))
+        for sym, tf in targets:
+            progress.update(task, description=f"Tuning {sym} {tf}")
+            try:
+                df = load_candles(sym, tf, Path(data_dir))
+            except FileNotFoundError:
+                failed.append((sym, tf, "no_data"))
+                progress.advance(task)
+                continue
+
+            tuner = ThresholdTuner(
+                symbol=sym,
+                timeframe=tf,
+                model_dir=model_path,
+                external_data_dir=ext_dir_for_runner,
+                config=app_config,
+                balance=balance,
+                baseline_entry=baseline_entry,
+                baseline_exit=baseline_exit,
+            )
+            result = tuner.search(df, entry_grid=entry_values, exit_grid=exit_values)
+
+            if result.error and not result.grid:
+                failed.append((sym, tf, result.error))
+                progress.advance(task)
+                continue
+
+            meta_path: Path | None = None
+            if write_meta:
+                meta_path = patch_meta_thresholds(sym, tf, model_path, result)
+
+            # Per-model JSON+MD (same filename pattern as ml-tune-thresholds).
+            base = f"{label}_{sym.replace('/', '_')}_{tf}"
+            (out_dir / f"{base}.json").write_text(
+                json.dumps(
+                    {
+                        "symbol": result.symbol,
+                        "timeframe": result.timeframe,
+                        "holdout_start": result.holdout_start,
+                        "holdout_end": result.holdout_end,
+                        "best_entry": result.best_entry,
+                        "best_exit": result.best_exit,
+                        "best_sharpe": result.best_sharpe,
+                        "best_return_pct": result.best_return_pct,
+                        "best_trades": result.best_trades,
+                        "best_win_rate": result.best_win_rate,
+                        "best_max_dd_pct": result.best_max_dd_pct,
+                        "baseline_entry": result.baseline_entry,
+                        "baseline_exit": result.baseline_exit,
+                        "baseline_sharpe": result.baseline_sharpe,
+                        "baseline_return_pct": result.baseline_return_pct,
+                        "baseline_trades": result.baseline_trades,
+                        "n_combos_evaluated": result.n_combos_evaluated,
+                        "n_combos_skipped": result.n_combos_skipped,
+                        "entry_grid": list(entry_values),
+                        "exit_grid": list(exit_values),
+                        "grid": result.grid,
+                        "meta_path": str(meta_path) if meta_path else None,
+                        "error": result.error,
+                    },
+                    indent=2,
+                    default=str,
+                )
+            )
+
+            rows.append(
+                {
+                    "symbol": sym,
+                    "timeframe": tf,
+                    "best_entry": result.best_entry,
+                    "best_exit": result.best_exit,
+                    "best_sharpe": result.best_sharpe,
+                    "best_return_pct": result.best_return_pct,
+                    "best_trades": result.best_trades,
+                    "best_win_rate": result.best_win_rate,
+                    "best_max_dd_pct": result.best_max_dd_pct,
+                    "baseline_sharpe": result.baseline_sharpe,
+                    "baseline_return_pct": result.baseline_return_pct,
+                    "baseline_trades": result.baseline_trades,
+                    "delta_sharpe": (
+                        result.best_sharpe - result.baseline_sharpe
+                        if result.baseline_sharpe != float("-inf")
+                        else None
+                    ),
+                    "n_combos_evaluated": result.n_combos_evaluated,
+                    "holdout_start": result.holdout_start,
+                    "holdout_end": result.holdout_end,
+                    "meta_patched": meta_path is not None,
+                }
+            )
+            progress.advance(task)
+
+    # Summary table — sort by best Sharpe descending.
+    rows.sort(key=lambda r: r["best_sharpe"], reverse=True)
+
+    table = Table(title=f"Threshold tuning summary ({len(rows)} models)")
+    table.add_column("Symbol")
+    table.add_column("TF")
+    table.add_column("Entry", justify="right")
+    table.add_column("Exit", justify="right")
+    table.add_column("Sharpe", justify="right")
+    table.add_column("Return %", justify="right")
+    table.add_column("Trades", justify="right")
+    table.add_column("ΔSharpe", justify="right")
+    for row in rows:
+        delta_str = (
+            f"{row['delta_sharpe']:+.3f}" if row["delta_sharpe"] is not None else "—"
+        )
+        table.add_row(
+            row["symbol"],
+            row["timeframe"],
+            f"{row['best_entry']:.2f}",
+            f"{row['best_exit']:.2f}",
+            f"{row['best_sharpe']:.3f}",
+            f"{row['best_return_pct']:+.2f}",
+            str(row["best_trades"]),
+            delta_str,
+        )
+    console.print(table)
+
+    if failed:
+        console.print(f"\n[yellow]{len(failed)} models skipped:[/yellow]")
+        for sym, tf, reason in failed:
+            console.print(f"  {sym} {tf}: {reason}")
+
+    summary_json = out_dir / f"{label}_summary.json"
+    summary_md = out_dir / f"{label}_summary.md"
+    summary_json.write_text(
+        json.dumps(
+            {
+                "label": label,
+                "timeframe_filter": timeframe,
+                "entry_grid": list(entry_values),
+                "exit_grid": list(exit_values),
+                "baseline_entry": baseline_entry,
+                "baseline_exit": baseline_exit,
+                "rows": rows,
+                "failed": [
+                    {"symbol": s, "timeframe": t, "reason": r} for s, t, r in failed
+                ],
+            },
+            indent=2,
+            default=str,
+        )
+    )
+
+    md_lines = [
+        f"# Threshold tuning — all models ({label})",
+        "",
+        f"- Models tuned: {len(rows)} (skipped: {len(failed)})",
+        f"- Entry grid: {list(entry_values)}",
+        f"- Exit grid:  {list(exit_values)}",
+        f"- Baseline:   entry={baseline_entry} exit={baseline_exit}",
+        "",
+        "## Summary (sorted by best Sharpe)",
+        "",
+        "| Symbol | TF | Entry | Exit | Sharpe | Return % | Trades | Win % | "
+        "Baseline Sharpe | ΔSharpe |",
+        "|--------|----|------:|-----:|-------:|---------:|-------:|------:|"
+        "----------------:|--------:|",
+    ]
+    for row in rows:
+        delta_str = (
+            f"{row['delta_sharpe']:+.3f}" if row["delta_sharpe"] is not None else "—"
+        )
+        baseline_str = (
+            f"{row['baseline_sharpe']:.3f}"
+            if row["baseline_sharpe"] != float("-inf")
+            else "—"
+        )
+        md_lines.append(
+            f"| {row['symbol']} | {row['timeframe']} | "
+            f"{row['best_entry']:.2f} | {row['best_exit']:.2f} | "
+            f"{row['best_sharpe']:.3f} | {row['best_return_pct']:+.2f} | "
+            f"{row['best_trades']} | {row['best_win_rate'] * 100:.1f} | "
+            f"{baseline_str} | {delta_str} |"
+        )
+    if failed:
+        md_lines.extend(["", "## Skipped", ""])
+        for sym, tf, reason in failed:
+            md_lines.append(f"- {sym} {tf}: {reason}")
+
+    summary_md.write_text("\n".join(md_lines) + "\n")
+    console.print(f"\n[green]Summary JSON: {summary_json}[/green]")
+    console.print(f"[green]Summary Markdown: {summary_md}[/green]")
+
+
 if __name__ == "__main__":
     app()
