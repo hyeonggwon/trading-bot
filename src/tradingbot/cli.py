@@ -3362,6 +3362,16 @@ def ml_tune_thresholds(
         "--write-meta/--no-write-meta",
         help="Persist best thresholds back into the model meta file",
     ),
+    min_trades: int = typer.Option(
+        -1,
+        "--min-trades",
+        help=(
+            "Floor on holdout trade count when picking the winning combo. "
+            "-1 (default) auto-uses the baseline trade count so the tuner "
+            "never recommends fewer trades. 0 disables the floor (any combo "
+            "with at least 1 trade is eligible)."
+        ),
+    ),
 ) -> None:
     """Sweep entry/exit thresholds against the model's holdout window.
 
@@ -3410,6 +3420,12 @@ def ml_tune_thresholds(
     console.print(f"  Exit grid:  {list(exit_values)}")
     console.print(f"  Baseline:   entry={baseline_entry} exit={baseline_exit}")
 
+    # ``-1`` is the CLI sentinel for "auto" — the tuner uses
+    # ``baseline_trades`` as the floor so we never recommend a combo with
+    # fewer trades than the current default. Any non-negative value is
+    # forwarded verbatim (and the tuner floors it at 1 internally).
+    min_trades_arg: int | None = None if min_trades < 0 else min_trades
+
     tuner = ThresholdTuner(
         symbol=symbol,
         timeframe=timeframe,
@@ -3419,6 +3435,7 @@ def ml_tune_thresholds(
         balance=balance,
         baseline_entry=baseline_entry,
         baseline_exit=baseline_exit,
+        min_trades=min_trades_arg,
     )
     result = tuner.search(df, entry_grid=entry_values, exit_grid=exit_values)
 
@@ -3572,6 +3589,16 @@ def ml_tune_thresholds_all(
         "-w",
         help="Parallel workers (0=auto: cpu_count//2, 1=sequential)",
     ),
+    min_trades: int = typer.Option(
+        -1,
+        "--min-trades",
+        help=(
+            "Floor on holdout trade count when picking each model's winning "
+            "combo. -1 (default) auto-uses each model's baseline trade count "
+            "so the tuner never recommends fewer trades. 0 disables the "
+            "floor (any combo with at least 1 trade is eligible)."
+        ),
+    ),
 ) -> None:
     """Sweep entry/exit thresholds across every saved (symbol, timeframe) model.
 
@@ -3636,7 +3663,16 @@ def ml_tune_thresholds_all(
     console.print(f"  Entry grid: {list(entry_values)}")
     console.print(f"  Exit grid:  {list(exit_values)}")
     console.print(f"  Baseline:   entry={baseline_entry} exit={baseline_exit}")
+    console.print(
+        "  Min trades: "
+        + ("auto (= baseline)" if min_trades < 0 else str(max(min_trades, 1)))
+    )
     console.print(f"  Workers:    {n_workers}")
+
+    # ``-1`` is the CLI sentinel for "auto" — each tuner uses its own
+    # ``baseline_trades`` as the floor. Any non-negative value is forwarded
+    # verbatim (and the tuner floors it at 1 internally).
+    min_trades_arg: int | None = None if min_trades < 0 else min_trades
 
     ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
     ext_dir_for_runner = ext_dir if ext_dir.exists() else None
@@ -3719,6 +3755,7 @@ def ml_tune_thresholds_all(
                         balance=balance,
                         baseline_entry=baseline_entry,
                         baseline_exit=baseline_exit,
+                        min_trades=min_trades_arg,
                     )
                     result = tuner.search(
                         df, entry_grid=entry_values, exit_grid=exit_values
@@ -3830,6 +3867,7 @@ def ml_tune_thresholds_all(
                         output_dir_abs,
                         label,
                         config_dump,
+                        min_trades_arg,
                     ): (sym, tf)
                     for sym, tf in targets
                 }

@@ -16,6 +16,7 @@ from tradingbot.ml.threshold_tuner import (
     DEFAULT_EXIT_GRID,
     ThresholdTuner,
     ThresholdTunerResult,
+    _select_best,
     patch_meta_thresholds,
 )
 from tradingbot.ml.trainer import LGBMTrainer
@@ -187,6 +188,80 @@ class TestThresholdTuner:
         assert all(0 < v < 1 for v in DEFAULT_ENTRY_GRID + DEFAULT_EXIT_GRID)
 
 
+class TestSelectBest:
+    """The XRP sandbox surfaced argmax-Sharpe picking 5-trade outliers over
+    44-trade combos with similar Sharpe. The ``min_trades`` floor exists to
+    fix that — these tests pin the floor's behaviour."""
+
+    def _grid(self):
+        # Crafted to exercise the floor: a high-Sharpe outlier with few
+        # trades vs a slightly-lower-Sharpe combo with many trades.
+        return [
+            {"entry": 0.55, "exit": 0.35, "sharpe": 1.46, "trades": 5,
+             "return_pct": 3.58, "win_rate": 0.40, "max_dd_pct": -1.5},
+            {"entry": 0.40, "exit": 0.35, "sharpe": 1.29, "trades": 44,
+             "return_pct": 3.51, "win_rate": 0.55, "max_dd_pct": -1.2},
+            {"entry": 0.45, "exit": 0.30, "sharpe": 0.62, "trades": 37,
+             "return_pct": 2.56, "win_rate": 0.50, "max_dd_pct": -1.3},
+            {"entry": 0.60, "exit": 0.40, "sharpe": 2.50, "trades": 0,
+             "return_pct": 0.0, "win_rate": 0.0, "max_dd_pct": 0.0},
+        ]
+
+    def test_default_floor_picks_5_trade_outlier(self):
+        # Without a floor (default min_trades=1) we still get the 5-trade win.
+        best = _select_best(self._grid(), min_trades=1)
+        assert best is not None
+        assert best["entry"] == 0.55 and best["trades"] == 5
+
+    def test_floor_filters_5_trade_outlier(self):
+        # Floor at 30 forces argmax onto the 44-trade combo.
+        best = _select_best(self._grid(), min_trades=30)
+        assert best is not None
+        assert best["entry"] == 0.40 and best["trades"] == 44
+
+    def test_floor_normalises_zero_to_one(self):
+        # min_trades=0 must never let zero-trade combos win.
+        best = _select_best(self._grid(), min_trades=0)
+        assert best is not None
+        assert best["trades"] > 0
+
+    def test_floor_too_strict_falls_back(self):
+        # Aspirational floor with no qualifier degrades to "any combo with
+        # trades" rather than returning None — callers can still inspect
+        # ``best_trades`` to see the floor wasn't met.
+        best = _select_best(self._grid(), min_trades=1000)
+        assert best is not None
+        assert best["trades"] > 0
+
+    def test_returns_none_when_grid_all_zero_trades(self):
+        zero_grid = [
+            {"entry": 0.55, "exit": 0.35, "sharpe": 0.0, "trades": 0,
+             "return_pct": 0.0, "win_rate": 0.0, "max_dd_pct": 0.0},
+        ]
+        assert _select_best(zero_grid, min_trades=1) is None
+
+    def test_search_auto_floor_uses_baseline_trades(self, tmp_path):
+        # When ``min_trades=None`` the tuner pins the floor to the recorded
+        # baseline trade count — populated by ``_evaluate`` on the baseline
+        # combo before the grid runs. We assert the resolved value lands on
+        # ``min_trades_applied`` so callers can audit.
+        df = _make_data(600)
+        holdout_start = df.index[int(len(df) * 0.7)]
+        _train_and_save(df, tmp_path, holdout_start)
+
+        tuner = ThresholdTuner(
+            symbol="BTC/KRW",
+            timeframe="1h",
+            model_dir=tmp_path,
+            config=_config(),
+            balance=10_000_000,
+            min_trades=None,
+        )
+        result = tuner.search(df, entry_grid=(0.40, 0.50), exit_grid=(0.20, 0.30))
+        assert result.min_trades_applied >= 1
+        assert result.min_trades_applied == max(int(result.baseline_trades), 1)
+
+
 class TestPatchMetaThresholds:
     def test_writes_thresholds_atomically(self, tmp_path):
         df = _make_data(600)
@@ -278,6 +353,53 @@ class TestLGBMStrategyMetaThresholds:
         assert loaded is not None
         assert strategy._entry_thresholds["BTC/KRW"] == 0.55
         assert strategy._exit_thresholds["BTC/KRW"] == 0.25
+
+    def test_ignore_meta_thresholds_param_keeps_init_values(self, tmp_path):
+        """ThresholdTuner relies on this opt-out — meta override must yield."""
+        from tradingbot.strategy.base import StrategyParams
+        from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+
+        df = _make_data(600)
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        trainer.save(
+            model,
+            "BTC/KRW",
+            "1h",
+            {
+                "avg_win_loss_ratio": 1.5,
+                "entry_threshold": 0.55,
+                "exit_threshold": 0.25,
+            },
+            feature_cols,
+            model_dir=tmp_path,
+        )
+
+        # With ``ignore_meta_thresholds=True`` (what ThresholdTuner sets),
+        # the per-symbol override stays empty and ``should_entry`` should
+        # fall back to ``self.entry_threshold`` from params.
+        strategy = LGBMStrategy(
+            StrategyParams(
+                values={
+                    "model_dir": str(tmp_path),
+                    "entry_threshold": 0.40,
+                    "exit_threshold": 0.20,
+                    "ignore_meta_thresholds": True,
+                }
+            )
+        )
+        strategy.timeframe = "1h"
+        strategy._load_model("BTC/KRW")
+        assert "BTC/KRW" not in strategy._entry_thresholds
+        assert "BTC/KRW" not in strategy._exit_thresholds
+        # Param-defined values still in place — used as the threshold floor.
+        assert strategy.entry_threshold == 0.40
+        assert strategy.exit_threshold == 0.20
 
     def test_set_model_does_not_populate_meta_thresholds(self):
         """Injection path keeps the param-defined thresholds (used by ml-walk-forward)."""
