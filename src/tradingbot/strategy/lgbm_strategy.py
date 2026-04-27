@@ -58,6 +58,11 @@ class LGBMStrategy(Strategy):
         self._calibrators: dict = {}
         self._feature_cols: dict[str, list[str]] = {}
         self._win_loss_ratios: dict[str, float] = {}
+        # Per-symbol threshold overrides written by the Phase 5 threshold
+        # tuner. Populated from meta in ``_load_model``; fall back to the
+        # CLI / param defaults above when absent.
+        self._entry_thresholds: dict[str, float] = {}
+        self._exit_thresholds: dict[str, float] = {}
         # Raw external components loaded once, aligned per symbol/df
         self._external_components: dict | None = None
         self._external_load_tried: bool = False
@@ -104,9 +109,19 @@ class LGBMStrategy(Strategy):
                     self._feature_cols[symbol] = FEATURE_COLS
                 # Empirical avg_win/avg_loss ratio from training (Kelly sizing)
                 self._win_loss_ratios[symbol] = (meta or {}).get("avg_win_loss_ratio", 1.5)
+                # Per-symbol thresholds (Phase 5). Only override when the meta
+                # carries explicit values — otherwise the user's CLI / param
+                # default at __init__ time wins.
+                if meta is not None:
+                    if "entry_threshold" in meta:
+                        self._entry_thresholds[symbol] = float(meta["entry_threshold"])
+                    if "exit_threshold" in meta:
+                        self._exit_thresholds[symbol] = float(meta["exit_threshold"])
                 log.info(
                     f"LightGBM model loaded: {symbol} {self.timeframe} "
-                    f"(win_loss_ratio={self._win_loss_ratios[symbol]})"
+                    f"(win_loss_ratio={self._win_loss_ratios[symbol]}, "
+                    f"entry_threshold={self._entry_thresholds.get(symbol, self.entry_threshold)}, "
+                    f"exit_threshold={self._exit_thresholds.get(symbol, self.exit_threshold)})"
                 )
             else:
                 self._models[symbol] = None
@@ -206,7 +221,8 @@ class LGBMStrategy(Strategy):
 
     def should_entry(self, df: pd.DataFrame, symbol: str) -> Signal | None:
         prob = self._predict(df, symbol)
-        if prob is None or prob < self.entry_threshold:
+        entry_threshold = self._entry_thresholds.get(symbol, self.entry_threshold)
+        if prob is None or prob < entry_threshold:
             return None
 
         ratio = self._win_loss_ratios.get(symbol, 1.5)
@@ -226,7 +242,8 @@ class LGBMStrategy(Strategy):
             return None
 
         # Exit when model confidence drops below threshold
-        if prob < self.exit_threshold:
+        exit_threshold = self._exit_thresholds.get(symbol, self.exit_threshold)
+        if prob < exit_threshold:
             return Signal(
                 timestamp=df.index[-1].to_pydatetime(),
                 symbol=symbol,
