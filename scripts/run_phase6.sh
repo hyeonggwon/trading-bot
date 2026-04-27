@@ -2,9 +2,16 @@
 # Phase 6 full evaluation pipeline.
 #
 # Runs the five-step retrain + tune + threshold + scan + combine-scan pipeline
-# end-to-end, with timestamps. Wall-clock estimate ~7h on a recent Mac with
+# end-to-end, with timestamps. Wall-clock estimate ~7.5h on a recent Mac with
 # workers tuned for the machine. Total compute ≈ 24 LGBM models × (train +
-# Optuna 30 trials @ 5min budget + threshold sweep) plus two scan passes.
+# Optuna 50 trials @ 30min cap + threshold sweep) plus two scan passes.
+#
+# Trials and time-budget are sized from Phase 3 sandbox data: best-value was
+# reached at trials 13 / 33 / 39 (ETH / BTC / XRP) with ~30s/trial, so 50
+# trials @ ~25min is the convergence horizon we observed. The 30min cap
+# (--time-budget 1800) is just an outlier fuse for degenerate models that
+# never early-stop — under normal conditions Optuna terminates on trial
+# count first. With workers=4 the step takes ~2.5h wall-clock.
 #
 # Both ml-train-all and ml-tune-all use --train-months 6 / --test-months 2
 # so the baseline trained in step 1 stays comparable to the model retrained
@@ -58,13 +65,15 @@ step "ml-train-all (triple-barrier)" \
     --train-months 6 --test-months 2 \
     --workers 8
 
-# 2. Optuna tune every model (30 trials × 5min budget × 24 models, workers=4).
+# 2. Optuna tune every model (50 trials × 30min cap × 24 models, workers=4).
 #    Same windows as step 1 so the final-fit overwrite stays consistent.
+#    50 trials matches Phase 3's observed convergence (BTC@33, XRP@39); the
+#    30min cap is an outlier fuse, not the expected stop condition.
 step "ml-tune-all (Optuna)" \
     tradingbot ml-tune-all \
     --target-kind triple-barrier --atr-mult 1.0 \
     --train-months 6 --test-months 2 \
-    --workers 4 --time-budget 300 --trials 30
+    --workers 4 --time-budget 1800 --trials 50
 
 # 3. Per-model entry/exit threshold sweep on the freshly tuned models.
 step "ml-tune-thresholds-all" \
