@@ -64,24 +64,42 @@ class ThresholdTunerResult:
     n_combos_skipped: int = 0
     holdout_start: str = ""
     holdout_end: str = ""
+    min_trades_applied: int = 1
     grid: list[dict] = field(default_factory=list)
     error: str | None = None
 
 
-def _select_best(grid: list[dict]) -> dict | None:
+def _select_best(grid: list[dict], min_trades: int = 1) -> dict | None:
     """Pick the best (entry, exit) by lexicographic (sharpe, trades).
 
     A tie on Sharpe should break in favour of the combo with more trades —
     a Sharpe number from 1 trade is statistically meaningless even if
     nominally high, while Sharpe from 30+ trades is much more credible.
+
+    ``min_trades`` filters out high-precision overfits before argmax. Sandbox
+    runs surfaced this: XRP picked a 5-trade combo (Sharpe 1.46) over a
+    44-trade combo (Sharpe 1.29) because the tuner was blind to trade count.
+    Default 1 keeps the historical "any combo with trades" floor; callers
+    typically pass ``baseline_trades`` to enforce "must not regress".
     """
+    floor = max(int(min_trades), 1)
     # ``pd.notna`` rejects NaN sharpe values that otherwise sneak past an
     # ``is not None`` check — backtests with constant equity (zero-trade
     # combos squeak through if trade-count guard ever loosens) report Sharpe
     # as NaN and would poison ``max`` with non-deterministic ordering.
-    valid = [g for g in grid if g.get("trades", 0) > 0 and pd.notna(g.get("sharpe"))]
+    valid = [g for g in grid if g.get("trades", 0) >= floor and pd.notna(g.get("sharpe"))]
     if not valid:
-        return None
+        # Degrade gracefully: if no combo meets ``min_trades`` (e.g. the
+        # caller passed an aspirational floor), fall back to "any positive
+        # trade count" so we still record the best available combo. Callers
+        # that care about the floor can inspect ``min_trades_applied`` /
+        # ``best_trades`` on the result.
+        if floor > 1:
+            valid = [
+                g for g in grid if g.get("trades", 0) > 0 and pd.notna(g.get("sharpe"))
+            ]
+        if not valid:
+            return None
     return max(valid, key=lambda g: (g["sharpe"], g["trades"]))
 
 
@@ -105,6 +123,7 @@ class ThresholdTuner:
         balance: float = 1_000_000,
         baseline_entry: float = 0.45,
         baseline_exit: float = 0.30,
+        min_trades: int | None = None,
     ) -> None:
         self.symbol = symbol
         self.timeframe = timeframe
@@ -116,6 +135,10 @@ class ThresholdTuner:
         self.balance = balance
         self.baseline_entry = baseline_entry
         self.baseline_exit = baseline_exit
+        # ``None`` → "auto" (use baseline_trades as the floor at search time).
+        # Explicit int → use that floor verbatim. ``0`` is normalised to ``1``
+        # because zero-trade combos must never win regardless.
+        self.min_trades = min_trades
 
     def search(
         self,
@@ -199,7 +222,17 @@ class ThresholdTuner:
             )
             result.n_combos_evaluated += 1
 
-        best = _select_best(result.grid)
+        # Resolve the trade-count floor. None means "auto" — pin to the
+        # baseline so the tuner never recommends fewer trades than the
+        # current default. We also floor at 1 because zero-trade combos
+        # have no meaningful Sharpe even if the user passes ``min_trades=0``.
+        if self.min_trades is None:
+            min_trades_resolved = max(int(result.baseline_trades), 1)
+        else:
+            min_trades_resolved = max(int(self.min_trades), 1)
+        result.min_trades_applied = min_trades_resolved
+
+        best = _select_best(result.grid, min_trades=min_trades_resolved)
         if best is not None:
             result.best_entry = float(best["entry"])
             result.best_exit = float(best["exit"])
@@ -232,6 +265,10 @@ class ThresholdTuner:
                 "external_data_dir": (
                     str(self.external_data_dir) if self.external_data_dir else None
                 ),
+                # Indicator pre-compute path doesn't actually load thresholds,
+                # but stay consistent with ``_evaluate`` so any future feature
+                # build that does is also unaffected by stale meta overrides.
+                "ignore_meta_thresholds": True,
             }
         )
         indicator_strategy = LGBMStrategy(params)
@@ -316,6 +353,13 @@ class ThresholdTuner:
                 "external_data_dir": (
                     str(self.external_data_dir) if self.external_data_dir else None
                 ),
+                # Critical: without this opt-out, ``_load_model`` would
+                # overwrite the per-trial entry/exit with whatever meta
+                # currently has, collapsing every grid cell onto the same
+                # thresholds. This was discovered when re-running the XRP
+                # tuner on a model whose meta had already been patched with
+                # 0.55/0.35 — every combo produced 5 trades.
+                "ignore_meta_thresholds": True,
             }
         )
         strategy = LGBMStrategy(params)
@@ -408,6 +452,7 @@ def patch_meta_thresholds(
         "baseline_trades": result.baseline_trades,
         "n_combos_evaluated": result.n_combos_evaluated,
         "n_combos_skipped": result.n_combos_skipped,
+        "min_trades_applied": result.min_trades_applied,
         "holdout_start": result.holdout_start,
         "holdout_end": result.holdout_end,
     }

@@ -56,6 +56,7 @@ class ThresholdTunePairResult:
     baseline_return_pct: float = 0.0
     baseline_trades: int = 0
     n_combos_evaluated: int = 0
+    min_trades_applied: int = 1
     holdout_start: str = ""
     holdout_end: str = ""
     meta_patched: bool = False
@@ -473,6 +474,7 @@ def tune_thresholds_pair(
     output_dir: str,
     label: str,
     config_dump: dict | None = None,
+    min_trades: int | None = None,
 ) -> ThresholdTunePairResult:
     """Tune (entry, exit) thresholds for a single (symbol, timeframe) pair.
 
@@ -534,6 +536,7 @@ def tune_thresholds_pair(
             balance=balance,
             baseline_entry=baseline_entry,
             baseline_exit=baseline_exit,
+            min_trades=min_trades,
         )
         result = tuner.search(df, entry_grid=entry_grid, exit_grid=exit_grid)
 
@@ -589,6 +592,7 @@ def tune_thresholds_pair(
                         "baseline_trades": result.baseline_trades,
                         "n_combos_evaluated": result.n_combos_evaluated,
                         "n_combos_skipped": result.n_combos_skipped,
+                        "min_trades_applied": result.min_trades_applied,
                         "entry_grid": list(entry_grid),
                         "exit_grid": list(exit_grid),
                         "grid": result.grid,
@@ -622,6 +626,7 @@ def tune_thresholds_pair(
             baseline_return_pct=float(result.baseline_return_pct),
             baseline_trades=int(result.baseline_trades),
             n_combos_evaluated=int(result.n_combos_evaluated),
+            min_trades_applied=int(result.min_trades_applied),
             holdout_start=result.holdout_start,
             holdout_end=result.holdout_end,
             meta_patched=meta_path is not None,
