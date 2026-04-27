@@ -74,6 +74,7 @@ tradingbot ml-train-all --workers 4
 tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h        # Default: holdout window from meta.json
 tradingbot ml-backtest --symbol BTC/KRW --timeframe 1h --include-train
 tradingbot ml-walk-forward --symbol BTC/KRW --timeframe 1h    # Time-honest LGBM (fresh model per window)
+tradingbot ml-diagnostics --symbol BTC/KRW --timeframe 4h     # Calibration / feature importance / WF Sharpe report
 tradingbot ml-tune --symbol BTC/KRW --timeframe 4h            # Optuna hyperparameter search
 tradingbot ml-tune-all --workers 4                            # Optuna batch across every saved model
 tradingbot ml-tune-thresholds --symbol BTC/KRW --timeframe 4h # Per-model entry/exit threshold sweep
@@ -129,7 +130,7 @@ Strategies inherit from `Strategy` and implement three methods:
 - `strategy/base.py` — Abstract `Strategy` class with `indicators()`, `should_entry()`, `should_exit()`, `supports_precompute`
 - `strategy/registry.py` — Strategy name → class lookup, loads built-in + custom strategies from `strategies/`
 - `strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip, ML strength collection) + OR exit with entry_index for trailing stops
-- `strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing (empirical avg_win/avg_loss ratio from training meta). Default thresholds: entry 0.45 / exit 0.30 (calibrated probabilities cluster below 0.50 due to isotonic squashing toward base rate). `set_model()` injects pre-trained models for time-honest walk-forward.
+- `strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing (empirical avg_win/avg_loss ratio from training meta). Default thresholds: entry 0.45 / exit 0.30 (calibrated probabilities cluster below 0.50 due to isotonic squashing toward base rate). Reads per-symbol entry/exit thresholds from meta when present (Phase 5 threshold tuner output) — falls back to CLI/param defaults otherwise. `set_model()` injects pre-trained models for time-honest walk-forward.
 - `strategy/examples/` — 6 built-in strategy files (sma_cross, rsi_mean_reversion, macd_momentum, bollinger_breakout, multi_timeframe, volume_breakout)
 - `strategy/filters/` — 31 reusable filters with role tagging (entry/trend/volatility/volume/exit)
   - `base.py` — BaseFilter ABC with `role` field + `check_exit(df, entry_index)` for trailing exits + `vectorized_entry/exit()` for screening
@@ -149,12 +150,15 @@ Strategies inherit from `Strategy` and implement three methods:
 - `backtest/report.py` — Performance metrics: Sharpe, Sortino, max drawdown, win rate, profit factor
 - `backtest/optimizer.py` — Grid search parameter optimization with parallel execution, optional `progress` parameter
 - `backtest/walk_forward.py` — Walk-forward validation (train/test window rolling), optional `progress` parameter
-- `ml/features.py` — 10 technical features + 6 optional external features (kimchi premium, funding rate, FNG, USD/KRW)
-- `ml/targets.py` — 4h forward return binary classification target (offline only)
+- `ml/features.py` — 10 technical features + 6 optional external features (kimchi premium, funding rate, FNG, USD/KRW) + 12 optional extras (regime/lag/session, opt-in via `include_extra`).
+- `ml/targets.py` — 4h forward-return labelling: `binary` (default), `atr` (volatility-scaled threshold), `triple-barrier` (TP/SL/timeout). CLI default is `binary`; `--target-kind` selects.
 - `ml/trainer.py` — LGBMTrainer: train, evaluate, calibrate (isotonic), save/load (.lgb + _meta.json + _cal.json)
 - `ml/walk_forward.py` — MLWalkForwardTrainer: purged expanding window + embargo (150 candles) + 20% holdout (half eval, half calibrator fit). Persists `train_end` / `holdout_start` / `holdout_end` / `data_end` + `avg_win_loss_ratio` to meta.json so downstream commands can slice and Kelly-size correctly.
 - `ml/strategy_walk_forward.py` — MLStrategyWalkForward: time-honest LGBM walk-forward (`ml-walk-forward` CLI). Trains a fresh model per expanding window (Path B: single training with inner train/val split for early stopping), injects via `LGBMStrategy.set_model()`, then runs the standard backtest engine on the test window — no in-sample inference contamination.
-- `ml/parallel.py` — Spawn-safe parallel training worker (ProcessPoolExecutor); forwards holdout AUC/precision so `ml-train-all` summary is accurate.
+- `ml/diagnostics.py` — Pure metric helpers (Brier, ECE, MCE, prediction-distribution summaries) consumed by the `ml-diagnostics` CLI. Wraps `MLWalkForwardTrainer` + `MLStrategyWalkForward` to produce a comparable per-(symbol, timeframe) report (calibration, feature importance, WF Sharpe).
+- `ml/tuner.py` — LGBMTuner: Optuna-driven hyperparameter search. Each trial reuses `MLStrategyWalkForward` so the objective (`holdout_sharpe` / `holdout_cum_return` / `holdout_auc`) matches what we report. Budget-bounded by `n_trials` + `time_budget_sec`; persists `best_params` to meta.
+- `ml/threshold_tuner.py` — Per-model entry/exit threshold sweep on the saved booster + calibrator (no retraining). Runs a cheap holdout backtest per (entry, exit) grid combo; writes winners back into meta so `LGBMStrategy._load_model` picks them up automatically.
+- `ml/parallel.py` — Spawn-safe parallel workers (ProcessPoolExecutor): `train_pair` (`ml-train-all`), `tune_pair` (`ml-tune-all` Optuna batch), `tune_thresholds_pair` (`ml-tune-thresholds-all`). All forward holdout AUC/precision and persist per-model JSON in-worker so the parent only ferries summary fields.
 - `ml/utils.py` — Shared ML helpers (Half-Kelly position sizing with empirical avg_win/avg_loss ratio).
 - `data/fetcher.py` — CCXT-based OHLCV download with Upbit rate limiting
 - `data/external_fetcher.py` — External data: Binance OHLCV, funding rate, FRED USD/KRW, Fear & Greed Index
