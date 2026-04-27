@@ -75,7 +75,11 @@ def _select_best(grid: list[dict]) -> dict | None:
     a Sharpe number from 1 trade is statistically meaningless even if
     nominally high, while Sharpe from 30+ trades is much more credible.
     """
-    valid = [g for g in grid if g.get("trades", 0) > 0 and g.get("sharpe") is not None]
+    # ``pd.notna`` rejects NaN sharpe values that otherwise sneak past an
+    # ``is not None`` check — backtests with constant equity (zero-trade
+    # combos squeak through if trade-count guard ever loosens) report Sharpe
+    # as NaN and would poison ``max`` with non-deterministic ordering.
+    valid = [g for g in grid if g.get("trades", 0) > 0 and pd.notna(g.get("sharpe"))]
     if not valid:
         return None
     return max(valid, key=lambda g: (g["sharpe"], g["trades"]))
@@ -153,10 +157,21 @@ class ThresholdTuner:
         result.holdout_start = str(holdout_start)
         result.holdout_end = str(holdout_end or df.index[-1])
 
+        # Pre-compute indicators ONCE on the warmup-prefixed slice so each
+        # trial reuses them. Without this, the engine recomputes indicators
+        # *after* its own start_date filter has dropped the warmup prefix —
+        # leaving rolling windows NaN at the start of the holdout. That bug
+        # also wastes O(|grid|) duplicate indicator passes; passing the
+        # precomputed frame via ``precomputed_indicators`` fixes both.
+        eval_df, eval_indicators = self._precompute_indicators(slice_df, holdout_start)
+        if eval_df is None or eval_indicators is None:
+            result.error = "indicator_precompute_failed"
+            return result
+
         # Baseline: evaluate the user-specified defaults so we always have a
         # comparison point even when the grid happens to skip those values.
         baseline_metrics = self._evaluate(
-            slice_df, holdout_start, self.baseline_entry, self.baseline_exit
+            eval_df, eval_indicators, self.baseline_entry, self.baseline_exit
         )
         if baseline_metrics is not None:
             result.baseline_sharpe = baseline_metrics["sharpe"]
@@ -170,7 +185,7 @@ class ThresholdTuner:
                 result.n_combos_skipped += 1
                 continue
 
-            metrics = self._evaluate(slice_df, holdout_start, entry_thr, exit_thr)
+            metrics = self._evaluate(eval_df, eval_indicators, entry_thr, exit_thr)
             if metrics is None:
                 result.n_combos_skipped += 1
                 continue
@@ -198,6 +213,51 @@ class ThresholdTuner:
 
         return result
 
+    def _precompute_indicators(
+        self,
+        slice_df: pd.DataFrame,
+        holdout_start: str,
+    ) -> tuple[pd.DataFrame | None, pd.DataFrame | None]:
+        """Compute indicators on warmup+holdout, then strip the warmup prefix.
+
+        Returns ``(eval_df, eval_indicators)`` aligned on the holdout-only
+        index — ready to feed straight to ``BacktestEngine.run`` via
+        ``precomputed_indicators`` without any further slicing. Returns
+        ``(None, None)`` if the strategy fails to build the feature matrix
+        (e.g. external data missing for an extras-trained model).
+        """
+        params = StrategyParams(
+            values={
+                "model_dir": str(self.model_dir),
+                "external_data_dir": (
+                    str(self.external_data_dir) if self.external_data_dir else None
+                ),
+            }
+        )
+        indicator_strategy = LGBMStrategy(params)
+        indicator_strategy.symbols = [self.symbol]
+        indicator_strategy.timeframe = self.timeframe
+
+        try:
+            full_indicators = indicator_strategy.indicators(slice_df.copy())
+        except Exception as exc:  # noqa: BLE001 — log + bail any indicator failure
+            log.warning(
+                "ThresholdTuner[%s %s]: indicator precompute failed: %s",
+                self.symbol,
+                self.timeframe,
+                exc,
+            )
+            return None, None
+
+        start_ts = pd.Timestamp(holdout_start, tz="UTC")
+        # Strip warmup prefix from both frames so they share the holdout-only
+        # index. The reindex check inside the engine becomes a no-op.
+        eval_df = slice_df[slice_df.index >= start_ts]
+        eval_indicators = full_indicators[full_indicators.index >= start_ts]
+        if not eval_df.index.equals(eval_indicators.index):
+            eval_indicators = eval_indicators.reindex(eval_df.index)
+        return eval_df, eval_indicators
+
     def _slice_holdout(
         self,
         df: pd.DataFrame,
@@ -208,9 +268,9 @@ class ThresholdTuner:
 
         The prefix lets ``LGBMStrategy.indicators()`` come up from NaN
         before the first scoring bar; predictions on the warmup rows return
-        None so they don't contaminate trade counts. The engine's
-        ``start_date`` filter gets the actual holdout boundary back later
-        (see ``_evaluate``).
+        None so they don't contaminate trade counts. ``_precompute_indicators``
+        strips the warmup back off after computation so the holdout index
+        feeds straight into the engine via ``precomputed_indicators``.
         """
         start_ts = pd.Timestamp(holdout_start, tz="UTC")
         end_ts = pd.Timestamp(holdout_end, tz="UTC") if holdout_end else None
@@ -232,22 +292,21 @@ class ThresholdTuner:
 
     def _evaluate(
         self,
-        slice_df: pd.DataFrame,
-        holdout_start: str,
+        eval_df: pd.DataFrame,
+        eval_indicators: pd.DataFrame,
         entry_threshold: float,
         exit_threshold: float,
     ) -> dict | None:
         """Run one backtest at the given thresholds, return metrics or None on failure."""
         # Per-trial config clone — initial_balance & symbol must reflect this
-        # tuner instance, but we shouldn't mutate the caller's AppConfig.
-        # The engine uses backtest.start_date to drop the warmup prefix from
-        # equity / trade accounting so the metrics line up with the holdout.
+        # tuner instance, but we shouldn't mutate the caller's AppConfig. We
+        # do *not* set ``backtest.start_date`` here: ``eval_df`` is already
+        # holdout-only, and setting it would re-trigger the same slicing
+        # path that strips the warmup-aware indicator alignment.
         config = self.config.model_copy(deep=True)
         config.trading.symbols = [self.symbol]
         config.trading.timeframe = self.timeframe
         config.trading.initial_balance = self.balance
-        config.backtest.start_date = str(holdout_start)
-        # Leave end_date alone — slice_df is already truncated to holdout_end.
 
         params = StrategyParams(
             values={
@@ -265,7 +324,10 @@ class ThresholdTuner:
 
         try:
             engine = BacktestEngine(strategy=strategy, config=config)
-            report = engine.run({self.symbol: slice_df})
+            report = engine.run(
+                {self.symbol: eval_df},
+                precomputed_indicators={self.symbol: eval_indicators},
+            )
         except Exception as exc:
             log.warning(
                 "ThresholdTuner[%s %s] entry=%s exit=%s failed: %s",
@@ -318,7 +380,17 @@ def patch_meta_thresholds(
         log.warning("ThresholdTuner: meta missing at %s — cannot patch", meta_path)
         return None
 
-    meta_dict = json.loads(meta_path.read_text())
+    # A corrupt or unreadable meta should not crash the whole tune sweep —
+    # log and bail so the caller can report on the rest of the symbols.
+    try:
+        meta_dict = json.loads(meta_path.read_text())
+    except (json.JSONDecodeError, OSError) as exc:
+        log.warning(
+            "ThresholdTuner: meta read failed at %s (%s) — cannot patch",
+            meta_path,
+            exc,
+        )
+        return None
     meta_dict["entry_threshold"] = result.best_entry
     meta_dict["exit_threshold"] = result.best_exit
     meta_dict["threshold_tuning"] = {
