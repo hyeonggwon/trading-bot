@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -32,15 +32,11 @@ class TunePairResult:
     n_trials_pruned: int = 0
     elapsed_sec: float = 0.0
     objective: str = "holdout_sharpe"
-    best_params: dict = None  # type: ignore[assignment]
+    best_params: dict = field(default_factory=dict)
     final_holdout_auc: float | None = None
     final_holdout_precision: float | None = None
     final_model_path: str = ""
     error: str | None = None
-
-    def __post_init__(self):
-        if self.best_params is None:
-            self.best_params = {}
 
 
 @dataclass

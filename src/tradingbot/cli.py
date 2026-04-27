@@ -3222,8 +3222,7 @@ def ml_tune_all(
                         progress.advance(task)
                 except KeyboardInterrupt:
                     console.print("\n[yellow]Interrupted. Cancelling...[/yellow]")
-                    for f in futures:
-                        f.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
                     raise
 
     # ---- Summary ----
@@ -3861,8 +3860,7 @@ def ml_tune_thresholds_all(
                         progress.advance(task)
                 except KeyboardInterrupt:
                     console.print("\n[yellow]Interrupted. Cancelling...[/yellow]")
-                    for f in futures:
-                        f.cancel()
+                    executor.shutdown(wait=False, cancel_futures=True)
                     raise
 
     # Summary table — sort by best Sharpe descending.
