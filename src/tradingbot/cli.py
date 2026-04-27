@@ -3220,6 +3220,12 @@ def ml_tune_thresholds_all(
         "--write-meta/--no-write-meta",
         help="Persist best thresholds back into each model's meta file",
     ),
+    workers: int = typer.Option(
+        0,
+        "--workers",
+        "-w",
+        help="Parallel workers (0=auto: cpu_count//2, 1=sequential)",
+    ),
 ) -> None:
     """Sweep entry/exit thresholds across every saved (symbol, timeframe) model.
 
@@ -3233,14 +3239,7 @@ def ml_tune_thresholds_all(
     setup_logging()
 
     import json
-
-    from tradingbot.data.storage import load_candles
-    from tradingbot.ml.threshold_tuner import (
-        ThresholdTuner,
-        patch_meta_thresholds,
-    )
-
-    app_config = load_config(overrides={"trading": {"initial_balance": balance}})
+    import multiprocessing as mp
 
     try:
         entry_values = tuple(float(x) for x in entry_grid.split(",") if x.strip())
@@ -3279,15 +3278,26 @@ def ml_tune_thresholds_all(
         )
         raise typer.Exit(1)
 
+    cpu_count = mp.cpu_count()
+    if workers <= 0:
+        n_workers = max(1, min(cpu_count // 2, len(targets)))
+    else:
+        n_workers = min(workers, len(targets))
+
     console.print(
         f"[bold]Threshold tuning — {len(targets)} (symbol, timeframe) models[/bold]"
     )
     console.print(f"  Entry grid: {list(entry_values)}")
     console.print(f"  Exit grid:  {list(exit_values)}")
     console.print(f"  Baseline:   entry={baseline_entry} exit={baseline_exit}")
+    console.print(f"  Workers:    {n_workers}")
 
     ext_dir = Path(data_dir) / EXTERNAL_SUBDIR
     ext_dir_for_runner = ext_dir if ext_dir.exists() else None
+    ext_dir_abs = str(ext_dir.resolve()) if ext_dir_for_runner else None
+    data_dir_abs = str(Path(data_dir).resolve())
+    model_dir_abs = str(model_path.resolve())
+    output_dir_abs = str(Path(output_dir).resolve())
 
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -3295,98 +3305,218 @@ def ml_tune_thresholds_all(
     rows: list[dict] = []
     failed: list[tuple[str, str, str]] = []
 
-    with _progress_context() as progress:
-        task = progress.add_task("Tuning thresholds", total=len(targets))
-        for sym, tf in targets:
-            progress.update(task, description=f"Tuning {sym} {tf}")
-            try:
-                df = load_candles(sym, tf, Path(data_dir))
-            except FileNotFoundError:
-                failed.append((sym, tf, "no_data"))
+    def _record_result(sym: str, tf: str, r) -> None:
+        """Translate a worker result into a summary row or failure entry."""
+        # Non-fatal sentinel: search returned no usable grid (e.g. missing
+        # meta.holdout_start, all combos zero-trade). The full reason is in
+        # ``r.error``; keep the per-model JSON for drilling.
+        if r.error and r.best_sharpe == float("-inf"):
+            failed.append((sym, tf, r.error))
+            return
+        rows.append(
+            {
+                "symbol": sym,
+                "timeframe": tf,
+                "best_entry": r.best_entry,
+                "best_exit": r.best_exit,
+                "best_sharpe": r.best_sharpe,
+                "best_return_pct": r.best_return_pct,
+                "best_trades": r.best_trades,
+                "best_win_rate": r.best_win_rate,
+                "best_max_dd_pct": r.best_max_dd_pct,
+                "baseline_sharpe": r.baseline_sharpe,
+                "baseline_return_pct": r.baseline_return_pct,
+                "baseline_trades": r.baseline_trades,
+                "delta_sharpe": (
+                    r.best_sharpe - r.baseline_sharpe
+                    if r.baseline_sharpe != float("-inf")
+                    else None
+                ),
+                "n_combos_evaluated": r.n_combos_evaluated,
+                "holdout_start": r.holdout_start,
+                "holdout_end": r.holdout_end,
+                "meta_patched": r.meta_patched,
+            }
+        )
+
+    if n_workers == 1:
+        # Sequential — single process, broad per-model try/except so one
+        # crash inside ThresholdTuner / patch_meta / file I/O doesn't kill
+        # the batch (Gemini #33 review).
+        from tradingbot.data.storage import load_candles
+        from tradingbot.ml.parallel import ThresholdTunePairResult
+        from tradingbot.ml.threshold_tuner import (
+            ThresholdTuner,
+            patch_meta_thresholds,
+        )
+
+        app_config = load_config(overrides={"trading": {"initial_balance": balance}})
+
+        with _progress_context() as progress:
+            task = progress.add_task("Tuning thresholds", total=len(targets))
+            for sym, tf in targets:
+                progress.update(task, description=f"Tuning {sym} {tf}")
+                try:
+                    try:
+                        df = load_candles(sym, tf, Path(data_dir))
+                    except FileNotFoundError:
+                        failed.append((sym, tf, "no_data"))
+                        progress.advance(task)
+                        continue
+
+                    tuner = ThresholdTuner(
+                        symbol=sym,
+                        timeframe=tf,
+                        model_dir=model_path,
+                        external_data_dir=ext_dir_for_runner,
+                        config=app_config,
+                        balance=balance,
+                        baseline_entry=baseline_entry,
+                        baseline_exit=baseline_exit,
+                    )
+                    result = tuner.search(
+                        df, entry_grid=entry_values, exit_grid=exit_values
+                    )
+
+                    if result.error and not result.grid:
+                        failed.append((sym, tf, result.error))
+                        progress.advance(task)
+                        continue
+
+                    meta_path: Path | None = None
+                    if write_meta:
+                        meta_path = patch_meta_thresholds(
+                            sym, tf, model_path, result
+                        )
+
+                    base = f"{label}_{sym.replace('/', '_')}_{tf}"
+                    (out_dir / f"{base}.json").write_text(
+                        json.dumps(
+                            {
+                                "symbol": result.symbol,
+                                "timeframe": result.timeframe,
+                                "holdout_start": result.holdout_start,
+                                "holdout_end": result.holdout_end,
+                                "best_entry": result.best_entry,
+                                "best_exit": result.best_exit,
+                                "best_sharpe": result.best_sharpe,
+                                "best_return_pct": result.best_return_pct,
+                                "best_trades": result.best_trades,
+                                "best_win_rate": result.best_win_rate,
+                                "best_max_dd_pct": result.best_max_dd_pct,
+                                "baseline_entry": result.baseline_entry,
+                                "baseline_exit": result.baseline_exit,
+                                "baseline_sharpe": result.baseline_sharpe,
+                                "baseline_return_pct": result.baseline_return_pct,
+                                "baseline_trades": result.baseline_trades,
+                                "n_combos_evaluated": result.n_combos_evaluated,
+                                "n_combos_skipped": result.n_combos_skipped,
+                                "entry_grid": list(entry_values),
+                                "exit_grid": list(exit_values),
+                                "grid": result.grid,
+                                "meta_path": str(meta_path) if meta_path else None,
+                                "error": result.error,
+                            },
+                            indent=2,
+                            default=str,
+                        )
+                    )
+
+                    pair_result = ThresholdTunePairResult(
+                        symbol=sym,
+                        timeframe=tf,
+                        best_entry=float(result.best_entry),
+                        best_exit=float(result.best_exit),
+                        best_sharpe=float(result.best_sharpe),
+                        best_return_pct=float(result.best_return_pct),
+                        best_trades=int(result.best_trades),
+                        best_win_rate=float(result.best_win_rate),
+                        best_max_dd_pct=float(result.best_max_dd_pct),
+                        baseline_sharpe=float(result.baseline_sharpe),
+                        baseline_return_pct=float(result.baseline_return_pct),
+                        baseline_trades=int(result.baseline_trades),
+                        n_combos_evaluated=int(result.n_combos_evaluated),
+                        holdout_start=result.holdout_start,
+                        holdout_end=result.holdout_end,
+                        meta_patched=meta_path is not None,
+                        error=result.error,
+                    )
+                    _record_result(sym, tf, pair_result)
+                except Exception as exc:
+                    failed.append((sym, tf, f"unexpected: {exc}"))
+                    progress.log(f"[red]{sym} {tf}: unexpected error: {exc}[/red]")
                 progress.advance(task)
-                continue
+    else:
+        # Parallel — ProcessPoolExecutor with spawn context. Each worker
+        # writes its own per-model JSON; parent only aggregates summary
+        # rows. Broad except on the future result keeps one bad pair from
+        # killing the batch (Gemini #33 review).
+        from concurrent.futures import ProcessPoolExecutor, as_completed
 
-            tuner = ThresholdTuner(
-                symbol=sym,
-                timeframe=tf,
-                model_dir=model_path,
-                external_data_dir=ext_dir_for_runner,
-                config=app_config,
-                balance=balance,
-                baseline_entry=baseline_entry,
-                baseline_exit=baseline_exit,
-            )
-            result = tuner.search(df, entry_grid=entry_values, exit_grid=exit_values)
+        from tradingbot.ml.parallel import tune_thresholds_pair
 
-            if result.error and not result.grid:
-                failed.append((sym, tf, result.error))
-                progress.advance(task)
-                continue
+        ctx = mp.get_context("spawn")
+        # Pass the resolved config (YAML overrides + balance) into workers
+        # via model_dump so spawn pickling is trivial and the worker's
+        # backtests match the sequential path's sizing/fees/slippage.
+        parent_config = load_config(overrides={"trading": {"initial_balance": balance}})
+        config_dump = parent_config.model_dump()
 
-            meta_path: Path | None = None
-            if write_meta:
-                meta_path = patch_meta_thresholds(sym, tf, model_path, result)
-
-            # Per-model JSON+MD (same filename pattern as ml-tune-thresholds).
-            base = f"{label}_{sym.replace('/', '_')}_{tf}"
-            (out_dir / f"{base}.json").write_text(
-                json.dumps(
-                    {
-                        "symbol": result.symbol,
-                        "timeframe": result.timeframe,
-                        "holdout_start": result.holdout_start,
-                        "holdout_end": result.holdout_end,
-                        "best_entry": result.best_entry,
-                        "best_exit": result.best_exit,
-                        "best_sharpe": result.best_sharpe,
-                        "best_return_pct": result.best_return_pct,
-                        "best_trades": result.best_trades,
-                        "best_win_rate": result.best_win_rate,
-                        "best_max_dd_pct": result.best_max_dd_pct,
-                        "baseline_entry": result.baseline_entry,
-                        "baseline_exit": result.baseline_exit,
-                        "baseline_sharpe": result.baseline_sharpe,
-                        "baseline_return_pct": result.baseline_return_pct,
-                        "baseline_trades": result.baseline_trades,
-                        "n_combos_evaluated": result.n_combos_evaluated,
-                        "n_combos_skipped": result.n_combos_skipped,
-                        "entry_grid": list(entry_values),
-                        "exit_grid": list(exit_values),
-                        "grid": result.grid,
-                        "meta_path": str(meta_path) if meta_path else None,
-                        "error": result.error,
-                    },
-                    indent=2,
-                    default=str,
-                )
-            )
-
-            rows.append(
-                {
-                    "symbol": sym,
-                    "timeframe": tf,
-                    "best_entry": result.best_entry,
-                    "best_exit": result.best_exit,
-                    "best_sharpe": result.best_sharpe,
-                    "best_return_pct": result.best_return_pct,
-                    "best_trades": result.best_trades,
-                    "best_win_rate": result.best_win_rate,
-                    "best_max_dd_pct": result.best_max_dd_pct,
-                    "baseline_sharpe": result.baseline_sharpe,
-                    "baseline_return_pct": result.baseline_return_pct,
-                    "baseline_trades": result.baseline_trades,
-                    "delta_sharpe": (
-                        result.best_sharpe - result.baseline_sharpe
-                        if result.baseline_sharpe != float("-inf")
-                        else None
-                    ),
-                    "n_combos_evaluated": result.n_combos_evaluated,
-                    "holdout_start": result.holdout_start,
-                    "holdout_end": result.holdout_end,
-                    "meta_patched": meta_path is not None,
+        with _progress_context() as progress:
+            task = progress.add_task("Tuning thresholds", total=len(targets))
+            with ProcessPoolExecutor(
+                max_workers=n_workers, mp_context=ctx
+            ) as executor:
+                futures = {
+                    executor.submit(
+                        tune_thresholds_pair,
+                        sym,
+                        tf,
+                        data_dir_abs,
+                        model_dir_abs,
+                        ext_dir_abs,
+                        entry_values,
+                        exit_values,
+                        baseline_entry,
+                        baseline_exit,
+                        balance,
+                        write_meta,
+                        output_dir_abs,
+                        label,
+                        config_dump,
+                    ): (sym, tf)
+                    for sym, tf in targets
                 }
-            )
-            progress.advance(task)
+                try:
+                    for future in as_completed(futures):
+                        sym, tf = futures[future]
+                        try:
+                            r = future.result()
+                        except Exception as exc:
+                            failed.append((sym, tf, f"unexpected: {exc}"))
+                            progress.log(
+                                f"[red]{sym} {tf}: unexpected error: {exc}[/red]"
+                            )
+                            progress.advance(task)
+                            continue
+
+                        _record_result(sym, tf, r)
+                        if r.error and r.best_sharpe == float("-inf"):
+                            color = "yellow" if r.error == "no_data" else "red"
+                            progress.log(
+                                f"[{color}]{sym} {tf}: {r.error}[/{color}]"
+                            )
+                        else:
+                            progress.log(
+                                f"[green]{sym} {tf}: best entry={r.best_entry:.2f} "
+                                f"exit={r.best_exit:.2f} Sharpe={r.best_sharpe:.3f}[/green]"
+                            )
+                        progress.advance(task)
+                except KeyboardInterrupt:
+                    console.print("\n[yellow]Interrupted. Cancelling...[/yellow]")
+                    for f in futures:
+                        f.cancel()
+                    raise
 
     # Summary table — sort by best Sharpe descending.
     rows.sort(key=lambda r: r["best_sharpe"], reverse=True)
