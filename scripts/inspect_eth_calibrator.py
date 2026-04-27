@@ -22,7 +22,7 @@ from tradingbot.data.storage import load_candles
 from tradingbot.ml.features import build_feature_matrix
 from tradingbot.ml.trainer import LGBMTrainer
 
-ROOT = Path("/Users/matthew/develop/Projects/trading-bot")
+ROOT = Path(__file__).resolve().parent.parent
 SYMBOL = "ETH/KRW"
 TIMEFRAME = "4h"
 MODEL_DIR = ROOT / "models"
