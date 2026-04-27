@@ -902,6 +902,33 @@ def _validate_date_range(start: str | None, end: str | None) -> None:
             raise typer.Exit(1) from exc
 
 
+def _write_scan_markdown_report(
+    *,
+    output: Path,
+    title: str,
+    metadata: list[str],
+    section: str,
+    columns: list[str],
+    rows: list[list[str]],
+) -> None:
+    """Persist a scan / combine-scan result table as a markdown file.
+
+    Mirrors the format of ``personal/scan_holdout_result.md`` /
+    ``personal/combine_scan_holdout_result.md`` so reruns drop in cleanly:
+    the user can diff today's run against the last one without first
+    massaging Rich-rendered console output by hand.
+    """
+    lines: list[str] = [f"# {title}", ""]
+    lines.extend(f"- {item}" for item in metadata)
+    lines.extend(["", f"## {section}", ""])
+    lines.append("| " + " | ".join(columns) + " |")
+    lines.append("|" + "|".join("---" for _ in columns) + "|")
+    for row in rows:
+        lines.append("| " + " | ".join(row) + " |")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    output.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
 @app.command()
 def scan(
     top_n: int = typer.Option(10, "--top", help="Show top N results"),
@@ -915,6 +942,14 @@ def scan(
         False,
         "--include-train",
         help="Disable per-batch holdout filtering and scan over the full data range.",
+    ),
+    output: str | None = typer.Option(
+        None,
+        "--output",
+        help=(
+            "Write the Top-N table as markdown to this path "
+            "(e.g. personal/scan_holdout_result.md)."
+        ),
     ),
 ) -> None:
     """Scan all strategy × timeframe × symbol combinations to find the best.
@@ -1080,6 +1115,60 @@ def scan(
         )
 
     console.print(table)
+
+    if output:
+        from datetime import UTC, datetime
+
+        if start or end:
+            range_md = f"{start or 'start'} → {end or 'end'}"
+        elif include_train:
+            range_md = "full data range (--include-train)"
+        else:
+            range_md = "**각 (symbol, timeframe) 배치의 마지막 20%** (auto holdout)"
+        md_rows = [
+            [
+                str(i),
+                r["strategy"],
+                r["symbol"],
+                r["timeframe"],
+                f"{r['sharpe_ratio']:.2f}",
+                f"{r['total_return']:.2%}",
+                f"{r['max_drawdown']:.2%}",
+                f"{r['win_rate']:.1%}",
+                f"{r['profit_factor']:.2f}",
+                str(r["total_trades"]),
+            ]
+            for i, r in enumerate(results[:top_n], 1)
+        ]
+        n_top = min(top_n, len(results))
+        out_path = Path(output)
+        _write_scan_markdown_report(
+            output=out_path,
+            title=f"Scan Result — Top {n_top}",
+            metadata=[
+                f"일시: {datetime.now(UTC).strftime('%Y-%m-%d')}",
+                f"대상: {len(strategies)} strategies × {len(symbol_timeframes)} symbols × "
+                f"timeframes ({total} combinations)",
+                f"Workers: {n_workers}",
+                f"평가 기간: {range_md}",
+                f"정렬: {sort_by}",
+            ],
+            section=f"Best Combinations (Top {n_top})",
+            columns=[
+                "#",
+                "Strategy",
+                "Symbol",
+                "TF",
+                "Sharpe",
+                "Return",
+                "MaxDD",
+                "Win%",
+                "PF",
+                "Trades",
+            ],
+            rows=md_rows,
+        )
+        console.print(f"[green]Wrote {n_top} rows to {out_path}[/green]")
 
 
 @app.command()
@@ -1410,6 +1499,14 @@ def combine_scan(
         "--include-train",
         help="Disable per-batch holdout filtering and scan over the full data range.",
     ),
+    output: str | None = typer.Option(
+        None,
+        "--output",
+        help=(
+            "Write the Top-N table as markdown to this path "
+            "(e.g. personal/combine_scan_holdout_result.md)."
+        ),
+    ),
 ) -> None:
     """Scan predefined filter combinations across all symbols and timeframes.
 
@@ -1656,6 +1753,68 @@ def combine_scan(
         console.print(f"  #{i} {r['template']} ({r['symbol']} {r['timeframe']})")
         console.print(f"     Entry: {r['entry']}")
         console.print(f"     Exit:  {r['exit']}")
+
+    if output:
+        from datetime import UTC, datetime
+
+        if start or end:
+            range_md = f"{start or 'start'} → {end or 'end'}"
+        elif include_train:
+            range_md = "full data range (--include-train)"
+        else:
+            range_md = "**각 (symbol, timeframe) 배치의 마지막 20%** (auto holdout)"
+        n_top = min(top_n, len(results))
+        columns = [
+            "#",
+            "Template",
+            "Symbol",
+            "TF",
+            "Sharpe",
+            "Return",
+            "MaxDD",
+            "Win%",
+            "PF",
+            "Trades",
+        ]
+        if verify_top > 0:
+            columns.append("V")
+        md_rows: list[list[str]] = []
+        for i, r in enumerate(results[:n_top], 1):
+            row = [
+                str(i),
+                r["template"],
+                r["symbol"],
+                r["timeframe"],
+                f"{r['sharpe_ratio']:.2f}",
+                f"{r['total_return']:.2%}",
+                f"{r['max_drawdown']:.2%}",
+                f"{r['win_rate']:.1%}",
+                f"{r['profit_factor']:.2f}",
+                str(r["total_trades"]),
+            ]
+            if verify_top > 0:
+                key = (r["template"], r["symbol"], r["timeframe"])
+                row.append("✓" if key in verified_set else "")
+            md_rows.append(row)
+        out_path = Path(output)
+        metadata = [
+            f"일시: {datetime.now(UTC).strftime('%Y-%m-%d')}",
+            f"대상: {len(COMBINE_TEMPLATES)} templates × {len(symbol_timeframes)} symbols × "
+            f"timeframes ({total} combinations)",
+            f"Workers: {n_workers}",
+            f"평가 기간: {range_md}",
+        ]
+        if verify_top > 0:
+            metadata.append(f"Verify-Top: {verify_top} (✓ = 풀 엔진 재검증 통과)")
+        _write_scan_markdown_report(
+            output=out_path,
+            title=f"Combine-Scan Result — Top {n_top}",
+            metadata=metadata,
+            section=f"Best Filter Combinations (Top {n_top})",
+            columns=columns,
+            rows=md_rows,
+        )
+        console.print(f"[green]Wrote {n_top} rows to {out_path}[/green]")
 
 
 @app.command(name="download-external")
