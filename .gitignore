@@ -31,6 +31,9 @@ models/
 # Runtime state (paper/live trading)
 state/
 
+# log
+logs/
+
 # Jupyter
 .ipynb_checkpoints/
 notebooks/.ipynb_checkpoints/

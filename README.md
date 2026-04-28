@@ -72,7 +72,7 @@ Freqtrade의 전략 프레임워크, Jesse의 anti-lookahead 백테스트, Nauti
 
 ### Anti-Lookahead 백테스트 루프 (핵심 원칙)
 
-백테스트 엔진은 캔들을 하나씩 순회하며, 전략에는 **확정된(닫힌) 캔들만** 전달합니다. 현재 미완성 캔들이나 미래 데이터에 접근할 수 없으며, 이는 `backtest/engine.py`에서 구조적으로 강제됩니다.
+백테스트 엔진은 캔들을 하나씩 순회하며, 전략에는 **확정된(닫힌) 캔들만** 전달합니다. 현재 미완성 캔들이나 미래 데이터에 접근할 수 없으며, 이는 `src/tradingbot/backtest/engine.py`에서 구조적으로 강제됩니다.
 
 ```
 사전 계산: strategy.indicators(full_df) per symbol  ← O(N), 1회
@@ -439,8 +439,12 @@ trading-bot/
 │   │   ├── manager.py                #   포지션 사이징, 드로다운 서킷브레이커
 │   │   └── validators.py             #   최대 주문, 일일 손실 한도
 │   │
-│   ├── notifications/telegram.py     # 텔레그램 알림
-│   ├── dashboard/app.py              # Streamlit 웹 대시보드
+│   ├── notifications/                # 알림
+│   │   └── telegram.py               #   텔레그램 봇
+│   │
+│   ├── dashboard/                    # 대시보드
+│   │   └── app.py                    #   Streamlit 웹 대시보드
+│   │
 │   └── utils/                        # 유틸리티
 │       ├── logging.py                #   콘솔 + JSON 파일 로테이션
 │       └── time.py                   #   타임존/날짜 파싱
