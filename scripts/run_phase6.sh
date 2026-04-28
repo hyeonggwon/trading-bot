@@ -87,8 +87,12 @@ step "scan --top 50" \
 
 # 5. ML+filter combine-scan — measures combined alpha; verify-top re-runs
 #    the top 50 through the full backtest engine for a faithful Sharpe.
-step "combine-scan --verify-top 50" \
-    tradingbot combine-scan --verify-top 50 \
+#    --top 50 ensures the markdown writer emits 50 rows (default is 10),
+#    matching the size of the verified pool. Without it, only the top 10
+#    survive into the deliverable, and Plan §6's "Top 25에 ML 5+" check
+#    can't be evaluated.
+step "combine-scan --top 50 --verify-top 50" \
+    tradingbot combine-scan --top 50 --verify-top 50 \
     --output personal/combine_scan_holdout_result.md
 
 echo "" | tee -a "$LOG"
