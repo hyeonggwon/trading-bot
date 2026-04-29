@@ -38,7 +38,7 @@ while read -r local_ref local_sha remote_ref remote_sha; do
   # 소스 변경이 하나도 없으면 스킬 띄울 필요 없음 (docs/tests-only push)
   if ! git diff --name-only "$range" -- 2>/dev/null \
       | grep -vE '(CLAUDE\.md|anti-patterns\.md)$' \
-      | grep -qE '\.(py|ts|tsx|js|jsx|sql|go|rs|java|kt)$'; then
+      | grep -qE '\.(py|ts|tsx|js|jsx|sql|go|rs|java|kt|sh|bash|yaml|yml|toml)$'; then
     echo "[claude-md-sync] no source changes in $range — skip"
     continue
   fi
