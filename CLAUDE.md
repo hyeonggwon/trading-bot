@@ -6,6 +6,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 Python-based algorithmic trading bot for **Upbit** (Korean exchange, KRW markets). Features a backtesting engine with anti-lookahead enforcement (inspired by Jesse), strategy framework (inspired by Freqtrade's IStrategy), and risk management system. Spot trading only.
 
+## Module CLAUDE.md (compass per directory)
+
+Per-directory context lives in module-level `CLAUDE.md` files. Load the one matching your task scope before reading source:
+
+- [`src/tradingbot/CLAUDE.md`](src/tradingbot/CLAUDE.md) — package overview, CLI/strategy/backtest/ML conventions
+- [`scripts/CLAUDE.md`](scripts/CLAUDE.md) — operational scripts (healthcheck, Phase 6 pipeline, pre-push hook)
+- [`tests/CLAUDE.md`](tests/CLAUDE.md) — pytest suite layout and fixture conventions
+
+Each module also keeps an `anti-patterns.md` (append-only, build-breaking gotchas). Authoring rubric lives in the user-level `module-claude-md` skill.
+
 ## Commands
 
 ```bash

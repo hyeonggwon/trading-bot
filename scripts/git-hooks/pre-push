@@ -1,0 +1,103 @@
+#!/usr/bin/env bash
+# pre-push: push 직전 module-claude-md 스킬로 영향 모듈 CLAUDE.md를 동기화하고,
+# 필요한 경우 루트 CLAUDE.md(프로젝트 개요)도 갱신한 뒤 같은 push에 commit을 묻혀 보낸다.
+#
+# 우회:
+#   SKIP_CLAUDE_MD_SYNC=1 git push ...
+#   (claude CLI 미설치 시 자동 skip)
+
+set -uo pipefail
+
+[[ "${SKIP_CLAUDE_MD_SYNC:-0}" == "1" ]] && { echo "[claude-md-sync] skipped"; exit 0; }
+command -v claude >/dev/null 2>&1 || { echo "[claude-md-sync] claude CLI not found — skip"; exit 0; }
+
+REPO_ROOT="$(git rev-parse --show-toplevel)"
+ZERO="0000000000000000000000000000000000000000"
+
+cd "$REPO_ROOT"
+
+# 워킹트리 더러우면 자동 commit이 user 변경과 충돌. 안전하게 skip.
+if ! git diff --quiet || ! git diff --cached --quiet; then
+  echo "[claude-md-sync] working tree dirty — skip (commit/stash first)"
+  exit 0
+fi
+
+while read -r local_ref local_sha remote_ref remote_sha; do
+  [[ -z "${local_sha:-}" || "$local_sha" == "$ZERO" ]] && continue
+
+  # push 범위 계산
+  if [[ "$remote_sha" == "$ZERO" ]]; then
+    base="$(git merge-base "$local_sha" origin/HEAD 2>/dev/null \
+        || git merge-base "$local_sha" origin/main 2>/dev/null \
+        || echo "${local_sha}~1")"
+    range="${base}..${local_sha}"
+  else
+    range="${remote_sha}..${local_sha}"
+  fi
+
+  # 소스 변경이 하나도 없으면 스킬 띄울 필요 없음 (docs/tests-only push)
+  if ! git diff --name-only "$range" -- 2>/dev/null \
+      | grep -vE '(CLAUDE\.md|anti-patterns\.md)$' \
+      | grep -qE '\.(py|ts|tsx|js|jsx|sql|go|rs|java|kt)$'; then
+    echo "[claude-md-sync] no source changes in $range — skip"
+    continue
+  fi
+
+  echo "[claude-md-sync] syncing CLAUDE.md for range $range ..."
+
+  claude -p \
+    --permission-mode acceptEdits \
+    --add-dir "$REPO_ROOT" <<EOF || echo "[claude-md-sync] claude exited non-zero — push will continue"
+You are running as a pre-push doc-sync agent. The user is about to git push.
+
+PUSH RANGE: ${range}
+HEAD: $(git rev-parse "$local_sha")
+LAST COMMIT SUBJECT: $(git log -1 --pretty=%s "$local_sha" 2>/dev/null)
+
+CHANGED FILES IN RANGE:
+$(git diff --name-only "$range" --)
+
+DO THIS:
+1. **Identify directly-changed modules** — modules that own at least one of the
+   changed files above. Use the **module-claude-md** skill to sync their
+   CLAUDE.md (and anti-patterns.md). The skill knows the rubric — follow it
+   strictly. Skip modules with no material change in behavior / dependency /
+   decision (don't churn on pure refactors).
+
+2. **Identify dependent modules** — modules whose CLAUDE.md \`Where\` section
+   names a directly-changed module as Incoming/Outgoing, OR modules whose
+   source files import / call symbols from a directly-changed module. For each
+   such dependent module:
+     - Re-read its CLAUDE.md.
+     - If the change altered the public API the dependent uses (signature,
+       contract, side effect, return shape), update the dependent's
+       \`Where\` line and any \`How\` scenario that referenced the old API.
+     - If only the changed module's internals moved (no observable change at
+       the boundary), leave the dependent alone.
+   Quick discovery commands:
+     grep -rl "<changed-module-name>" --include="CLAUDE.md" "$REPO_ROOT"
+     grep -rl "from <pkg.changed_module>\|import <pkg.changed_module>" "$REPO_ROOT/src"
+
+3. **Root CLAUDE.md** — update only if the change touches the project's
+   overall architecture (new module, new external dependency, new top-level
+   CLI command, removed major capability). Localized internal changes: leave
+   the root alone.
+
+4. Do NOT modify any source code. Only CLAUDE.md and anti-patterns.md files.
+
+5. When done, stage only the .md files you changed and create one commit:
+     git add <changed .md files>
+     git commit -m "docs(<jira-ticket-from-last-commit-or-NO-TICKET>): sync CLAUDE.md after push" \\
+       -m "<Korean body: which modules updated (직접/의존/루트로 분리) and why>" \\
+       -m "Refs: <ticket>" \\
+       --no-verify
+   Use the project's commit convention (~/.gitmessage):
+     <type>(<jira>): <subject>   + Korean body + Refs footer.
+   If you cannot infer a Jira ticket from the last commit subject, use NO-TICKET.
+
+6. If nothing needed updating, do nothing and exit. Do NOT create empty commits.
+EOF
+
+done
+
+exit 0
