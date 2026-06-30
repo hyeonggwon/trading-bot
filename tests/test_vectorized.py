@@ -357,3 +357,92 @@ class TestRunBatchRouting:
         assert results[0].error is None
         assert results[0].total_trades >= 0
         assert results[0].strategy == "Trend+RSI"
+
+
+class TestEngineParity:
+    """Vectorized screen vs full candle-by-candle engine.
+
+    Both fill on the same bars (signal on candle T → fill at T+1's open, with
+    intrabar-low stop checks). The documented divergences (position sizing,
+    same-bar churn, force-close, gap-down stop fill — see vectorized.py's module
+    docstring) are isolated below so any *new* fill-timing drift is caught.
+    """
+
+    def _both_engine_entry_bars(self, df, entry, exit_, stop_loss_pct):
+        """Run `entry`/`exit_` filters through both engines; return (vec, full)
+        lists of entry-fill bar positions plus the same-bar signal count."""
+        from tradingbot.backtest.engine import BacktestEngine
+        from tradingbot.backtest.vectorized import _extract_trades
+        from tradingbot.config import (
+            AppConfig,
+            BacktestConfig,
+            RiskConfig,
+            TradingConfig,
+        )
+        from tradingbot.strategy.combined import CombinedStrategy
+
+        dfi = df.copy()
+        for f in (entry, exit_):
+            dfi = f.compute(dfi)
+        em = entry.vectorized_entry(dfi).fillna(False).values.astype(bool)
+        xm = exit_.vectorized_exit(dfi).fillna(False).values.astype(bool)
+        same_bar = int((em & xm).sum())
+        vtr, _ = _extract_trades(
+            em, xm, dfi["open"].values, dfi["high"].values, dfi["low"].values,
+            dfi["close"].values, 10_000_000, 0.0005, 0.001, stop_loss_pct, 0.10,
+            None, 0.0,
+        )
+        vec_bars = [t[0] for t in vtr]
+
+        strat = CombinedStrategy(entry_filters=[entry], exit_filters=[exit_])
+        strat.timeframe = "1h"
+        cfg = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h",
+                                  initial_balance=10_000_000),
+            risk=RiskConfig(default_stop_loss_pct=stop_loss_pct,
+                            max_position_size_pct=0.10, max_open_positions=1,
+                            max_drawdown_pct=0.99),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+        rep = BacktestEngine(strategy=strat, config=cfg).run({"BTC/KRW": df})
+        full_bars = [df.index.get_loc(t.entry_order.filled_at) for t in rep.trades]
+        return vec_bars, full_bars, same_bar
+
+    @pytest.mark.parametrize("seed", [1, 2, 42, 123])
+    def test_identical_trade_bars_on_exclusive_signals(self, seed):
+        """RSI-oversold entry and RSI-overbought exit can never fire on the same
+        candle, and wide stops remove stop-fill-timing/churn divergence — so the
+        two engines MUST open trades on exactly the same bars."""
+        from tradingbot.strategy.filters.momentum import (
+            RsiOverboughtFilter,
+            RsiOversoldFilter,
+        )
+
+        df = _make_ohlcv(600, seed=seed)
+        vec_bars, full_bars, same_bar = self._both_engine_entry_bars(
+            df,
+            RsiOversoldFilter(period=14, threshold=35.0),
+            RsiOverboughtFilter(period=14, threshold=65.0),
+            stop_loss_pct=0.99,  # effectively no stop
+        )
+        assert same_bar == 0  # precondition: signals are mutually exclusive
+        assert len(vec_bars) > 0  # non-degenerate
+        assert vec_bars == full_bars
+
+    def test_full_engine_churns_more_on_coinciding_signals(self):
+        """When entry (price>EMA) and exit (RSI>70) can hold on the same candle,
+        the full engine exits and re-enters that bar while the single-pass screen
+        cannot — so the full engine reports strictly more trades. This locks the
+        documented divergence so it stays intentional."""
+        from tradingbot.strategy.filters.momentum import RsiOverboughtFilter
+        from tradingbot.strategy.filters.price import EmaAboveFilter
+
+        df = _make_ohlcv(500, seed=99)
+        vec_bars, full_bars, same_bar = self._both_engine_entry_bars(
+            df,
+            EmaAboveFilter(period=20),
+            RsiOverboughtFilter(period=14, threshold=70.0),
+            stop_loss_pct=0.02,
+        )
+        assert same_bar > 0  # entry & exit DO coincide on some candles
+        assert len(full_bars) > len(vec_bars)

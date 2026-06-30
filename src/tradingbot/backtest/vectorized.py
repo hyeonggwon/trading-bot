@@ -4,9 +4,26 @@ Computes entry/exit signals as boolean arrays across the full DataFrame,
 then extracts trades in a single O(N) pass. ~100x faster than the
 candle-by-candle engine for screening purposes.
 
-NOT a replacement for the full BacktestEngine — simplified position sizing
-and equity tracking. Use for ranking strategies, then re-verify top results
-with the full engine.
+NOT a replacement for the full BacktestEngine — it is a *screen*. Use it to
+rank strategies, then re-verify top results with the full engine
+(``combine-scan --verify-top``).
+
+Fill *timing* matches the full engine exactly (signal on candle T → fill at
+T+1's open, intrabar-low stop checks), so on mutually-exclusive entry/exit
+signals the two engines produce identical trade bars (see
+``tests/test_vectorized.py::TestEngineParity``). They diverge on:
+
+- **Position sizing**: this engine sizes a flat ``max_position_pct`` of cash;
+  the full engine uses the risk manager's fixed-fractional sizing (risk per
+  trade scaled by stop distance). Absolute returns/Sharpe therefore differ.
+- **Same-bar churn**: when entry AND exit signals fire on the same candle
+  (e.g. price above EMA *and* RSI overbought), the full engine exits and
+  re-enters on that bar; this single pass cannot, so its trade count is lower
+  in overbought trends.
+- **Force-close**: a position still open on the last bar is closed here (one
+  extra trade); the full engine leaves it open.
+- **Gap-down stops**: the full engine fills a gapped stop at ``min(open, stop)``;
+  this engine fills at the stop price.
 """
 
 from __future__ import annotations
