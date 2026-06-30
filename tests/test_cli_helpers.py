@@ -693,12 +693,39 @@ class TestResolveHoldoutWindow:
         s, _e, note = _resolve_holdout_window(
             {"BTC/KRW": df_real, "ETH/KRW": df_empty}, None, None, False,
         )
-        # Empty df is filtered out; cutoff is computed from the remaining df's
-        # span (multi-symbol path uses timestamp span, not index position).
-        cutoff = pd.Timestamp(s)
-        expected = df_real.index[0] + (df_real.index[-1] - df_real.index[0]) * 0.8
-        assert abs((cutoff - expected).total_seconds()) < 60
+        # Empty df is filtered out; the remaining df's cutoff is row-based
+        # (int(len * 0.8)), matching the single-symbol path exactly.
+        single_s, _, _ = _resolve_holdout_window(df_real, None, None, False)
+        assert s == single_s == str(df_real.index[80])
         assert "holdout window (last 20%)" in note
+
+    def test_multi_symbol_cutoff_row_based_matches_single_under_gaps(self):
+        """Multi-symbol holdout must use a row-based cutoff (like single-symbol
+        and ML's int(len * 0.8)), not a time-fraction of the elapsed span.
+
+        With a large time gap the two diverge sharply: the old time-based
+        cutoff landed deep in empty time (~hour 800 here), slicing away nearly
+        every candle and breaking comparability with the single-symbol /
+        ml-backtest holdout.
+        """
+        from tradingbot.cli import _resolve_holdout_window
+
+        base = pd.Timestamp("2024-01-01", tz="UTC")
+        # 9 dense hourly candles, then one candle ~1000h in the future.
+        times = pd.DatetimeIndex(
+            [base + pd.Timedelta(hours=h) for h in range(9)]
+            + [base + pd.Timedelta(hours=1000)]
+        )
+        df = pd.DataFrame({"close": range(10)}, index=times)
+
+        single_s, _, _ = _resolve_holdout_window(df, None, None, False)
+        multi_s, _, _ = _resolve_holdout_window(
+            {"AAA/KRW": df, "BBB/KRW": df.copy()}, None, None, False,
+        )
+        # Row-based: index[int(10 * 0.8)] == index[8] == hour 8.
+        assert single_s == str(times[8])
+        # Multi must agree with single (consistency), not land near hour ~800.
+        assert multi_s == single_s
 
     def test_multi_symbol_all_empty_returns_none(self):
         from tradingbot.cli import _resolve_holdout_window
