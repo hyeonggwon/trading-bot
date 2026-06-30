@@ -1997,7 +1997,6 @@ def ml_walk_forward(
 
     import json
 
-    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
 
@@ -2018,10 +2017,16 @@ def ml_walk_forward(
     console.print(f"  Entry threshold: {entry_threshold}, Exit threshold: {exit_threshold}")
     console.print(f"  External data dir: {ext_dir if has_external else '(none)'}")
 
-    config = AppConfig(
-        trading=TradingConfig(symbols=[symbol], timeframe=timeframe, initial_balance=balance),
-        risk=RiskConfig(),
-        backtest=BacktestConfig(),
+    # Route through load_config so risk/backtest (fee rate, slippage, stop
+    # loss, etc.) honor config/*.yaml instead of hardcoded defaults.
+    config = load_config(
+        overrides={
+            "trading": {
+                "symbols": [symbol],
+                "timeframe": timeframe,
+                "initial_balance": balance,
+            }
+        }
     )
 
     runner = MLStrategyWalkForward(
@@ -2536,7 +2541,6 @@ def ml_diagnostics(
 
     import json
 
-    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
     from tradingbot.data.external_fetcher import build_external_df
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.diagnostics import (
@@ -2620,10 +2624,16 @@ def ml_diagnostics(
     # ---- Step 3: strategy walk-forward (per-window backtest) ----
     strategy_report = None
     if not skip_backtest:
-        config = AppConfig(
-            trading=TradingConfig(symbols=[symbol], timeframe=timeframe, initial_balance=balance),
-            risk=RiskConfig(),
-            backtest=BacktestConfig(),
+        # Route through load_config so risk/backtest (fee rate, slippage, stop
+        # loss, etc.) honor config/*.yaml instead of hardcoded defaults.
+        config = load_config(
+            overrides={
+                "trading": {
+                    "symbols": [symbol],
+                    "timeframe": timeframe,
+                    "initial_balance": balance,
+                }
+            }
         )
         runner = MLStrategyWalkForward(
             symbol=symbol,
