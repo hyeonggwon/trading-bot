@@ -326,3 +326,197 @@ class TestEquityRecording:
         await engine._tick_all(["BTC/KRW"], "1h")
 
         assert len(state.equity_history) == 2
+
+
+# --- Bug: Signal.strength must scale position size (ML Half-Kelly) ---
+
+class TestSignalStrengthSizing:
+    @pytest.mark.asyncio
+    async def test_strength_scales_position_size(self, tmp_path):
+        """Entry quantity must scale linearly with Signal.strength.
+
+        The backtest engine multiplies size by signal.strength; the live path
+        must match or ML probability-based sizing silently over-trades.
+        """
+
+        async def _entry(strength: float) -> float:
+            feed = MockDataFeed(price=50_000_000)
+            paper = PaperExchange(
+                data_feed=feed, initial_balance=10_000_000,
+                fee_rate=0.0005, slippage_pct=0.001,
+            )
+            paper.update_prices({"BTC/KRW": 50_000_000})
+            config = AppConfig(risk=RiskConfig(
+                default_stop_loss_pct=0.02,
+                risk_per_trade_pct=0.01,
+                max_position_size_pct=0.5,
+            ))
+            state = StateManager(tmp_path / f"state_{strength}.json")
+            engine = LiveEngine(
+                strategy=StubStrategy(), exchange=paper, config=config,
+                state_manager=state,
+            )
+            signal = Signal(
+                timestamp=datetime.now(UTC),
+                symbol="BTC/KRW",
+                signal_type=SignalType.LONG_ENTRY,
+                price=50_000_000,
+                strength=strength,
+            )
+            await engine._handle_entry(signal, "BTC/KRW", 50_000_000)
+            pos = state.positions.get("BTC/KRW")
+            return pos.size if pos else 0.0
+
+        full = await _entry(1.0)
+        half = await _entry(0.5)
+        assert full > 0
+        # strength is applied after sizing, so half is exactly half of full.
+        assert half == pytest.approx(full * 0.5, rel=1e-9)
+
+
+# --- Bug: stop loss must be enforced between candles, not only at close ---
+
+class TestMonitorStopEnforcement:
+    @pytest.mark.asyncio
+    async def test_monitor_closes_position_on_stop_breach(self, tmp_path):
+        """_monitor_prices must close a stopped-out position without a new candle.
+
+        On a 4h timeframe, waiting for candle close leaves a breached stop
+        unguarded for hours. The between-candle monitor must enforce it.
+        """
+        feed = MockDataFeed(price=48_000_000)  # below the stop
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=10_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 48_000_000})
+        paper._holdings["BTC"] = 0.001  # holdings to sell on exit
+
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=0.001,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+
+        # No candle is processed here — only the monitor runs.
+        await engine._monitor_prices(["BTC/KRW"])
+
+        assert "BTC/KRW" not in state.positions
+
+    @pytest.mark.asyncio
+    async def test_monitor_keeps_position_above_stop(self, tmp_path):
+        """Monitor must not close a position whose price is above the stop."""
+        feed = MockDataFeed(price=51_000_000)
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=10_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 51_000_000})
+
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=0.001,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+
+        await engine._monitor_prices(["BTC/KRW"])
+
+        assert "BTC/KRW" in state.positions
+
+
+# --- Bug: partial WS staleness must not drop a symbol from price resolution ---
+
+class StubWsClient:
+    """WS client stub whose fresh_prices returns only a chosen subset."""
+
+    def __init__(self, fresh: dict):
+        self._fresh = fresh
+
+    def fresh_prices(self, max_age_seconds):
+        return dict(self._fresh)
+
+
+class TestResolveTickersPartialStaleness:
+    @pytest.mark.asyncio
+    async def test_stale_symbol_falls_back_to_rest_per_symbol(self, tmp_path):
+        """A symbol absent from fresh WS prices must still get a REST ticker.
+
+        Previously _resolve_tickers was all-or-nothing: any single fresh WS
+        price made it return the WS-only dict and skip REST for everyone, so a
+        quiet symbol that hadn't ticked within the staleness window got no
+        price at all — and its stop loss was silently dropped from monitoring.
+        Each missing symbol must fall back to REST individually.
+        """
+        feed = MockDataFeed(price=3_000_000)  # REST price (distinct from WS)
+        config = AppConfig(risk=RiskConfig())
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+            ws_client=StubWsClient({"BTC/KRW": 50_000_000}),  # only BTC is fresh
+        )
+
+        tickers = await engine._resolve_tickers(["BTC/KRW", "ETH/KRW"])
+
+        # Fresh WS price used where available...
+        assert tickers["BTC/KRW"]["last"] == 50_000_000
+        # ...and the stale symbol is REST-filled rather than dropped.
+        assert "ETH/KRW" in tickers
+        assert tickers["ETH/KRW"]["last"] == 3_000_000
+
+
+# --- Bug: real-money safety rails must survive a restart ---
+
+class TestStatePersistenceAcrossRestart:
+    @pytest.mark.asyncio
+    async def test_peak_equity_and_daily_pnl_survive_restart(self, tmp_path):
+        """peak_equity (drawdown breaker) and daily PnL (loss limit) must persist.
+
+        A restart that zeroes either one silently disarms a real-money safety
+        rail: the drawdown circuit breaker re-baselines and the daily-loss
+        counter forgets losses already booked.
+        """
+        from tradingbot.risk.validators import TradeValidator
+
+        state_path = tmp_path / "state.json"
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(data_feed=feed, initial_balance=10_000_000)
+        config = AppConfig(risk=RiskConfig())
+
+        # First session: accumulate safety-rail state, then persist.
+        v1 = TradeValidator(daily_loss_limit_krw=200_000)
+        v1.record_trade_pnl(-150_000)
+        engine1 = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=StateManager(state_path), trade_validator=v1,
+        )
+        engine1.risk_manager.peak_equity = 12_345_678.0
+        engine1._persist_state()
+
+        # Second session (restart): fresh objects load from the same file.
+        v2 = TradeValidator(daily_loss_limit_krw=200_000)
+        engine2 = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=StateManager(state_path), trade_validator=v2,
+        )
+        engine2._restore_state()
+
+        assert engine2.risk_manager.peak_equity == 12_345_678.0
+        assert v2.daily_state()[0] == -150_000

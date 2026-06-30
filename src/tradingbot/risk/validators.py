@@ -92,6 +92,19 @@ class TradeValidator:
         self._daily_pnl += pnl
         logger.debug("daily_pnl_updated", daily_pnl=f"{self._daily_pnl:,.0f}")
 
+    def daily_state(self) -> tuple[float, date | None]:
+        """Return (daily_pnl, daily_reset_date) for persistence across restarts."""
+        return self._daily_pnl, self._daily_reset_date
+
+    def restore_daily_state(self, daily_pnl: float, reset_date: date | None) -> None:
+        """Restore persisted daily PnL tracking after a restart.
+
+        Without this a restart would zero the daily-loss counter, letting the
+        bot keep trading past a daily loss limit it had already breached.
+        """
+        self._daily_pnl = daily_pnl
+        self._daily_reset_date = reset_date
+
     def _reset_daily_if_needed(self) -> None:
         """Reset daily PnL at midnight UTC."""
         today = datetime.now(timezone.utc).date()

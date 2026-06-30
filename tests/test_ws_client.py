@@ -113,3 +113,40 @@ class TestUpbitWebSocketClient:
             "type": "ticker", "code": "KRW-BTC", "trade_price": 0,
         }))
         assert "BTC/KRW" not in client.last_prices
+
+
+class TestFreshPrices:
+    """Regression: stale cached WS prices must not be served as current."""
+
+    def test_drops_stale_keeps_fresh(self):
+        from datetime import datetime, timedelta, timezone
+
+        from tradingbot.exchange.ws_client import UpbitWebSocketClient
+
+        client = UpbitWebSocketClient(["BTC/KRW", "ETH/KRW"])
+        now = datetime.now(timezone.utc)
+        client._last_prices = {"BTC/KRW": 50_000_000, "ETH/KRW": 3_000_000}
+        client._last_price_ts = {
+            "BTC/KRW": now,  # fresh
+            "ETH/KRW": now - timedelta(seconds=120),  # stale
+        }
+        assert client.fresh_prices(max_age_seconds=60) == {"BTC/KRW": 50_000_000}
+
+    def test_price_without_timestamp_is_dropped(self):
+        from tradingbot.exchange.ws_client import UpbitWebSocketClient
+
+        client = UpbitWebSocketClient(["BTC/KRW"])
+        client._last_prices = {"BTC/KRW": 50_000_000}  # no receive timestamp
+        assert client.fresh_prices(max_age_seconds=60) == {}
+
+    def test_handle_message_records_timestamp(self):
+        import asyncio
+
+        from tradingbot.exchange.ws_client import UpbitWebSocketClient
+
+        client = UpbitWebSocketClient(["BTC/KRW"])
+        asyncio.run(client._handle_message({
+            "type": "ticker", "code": "KRW-BTC", "trade_price": 50_000_000,
+        }))
+        # A just-received price is fresh under any sane age bound.
+        assert client.fresh_prices(max_age_seconds=60) == {"BTC/KRW": 50_000_000}

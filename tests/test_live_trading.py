@@ -192,3 +192,24 @@ class TestTradeValidator:
         # Simulate day change by resetting the date
         v._daily_reset_date = None
         assert v.validate_daily_loss() is True  # Reset on "new day"
+
+    def test_daily_state_survives_restart(self):
+        """Restarting must not zero a daily loss the bot already booked.
+
+        Without restore_daily_state(), a process restart resets _daily_pnl to 0
+        and lets the bot keep trading past a daily-loss limit it had breached.
+        """
+        v = TradeValidator(daily_loss_limit_krw=200_000)
+        v.record_trade_pnl(-250_000)
+        assert v.validate_daily_loss() is False  # breached
+
+        daily_pnl, reset_date = v.daily_state()
+        assert daily_pnl == -250_000
+        assert reset_date is not None
+
+        # Fresh validator (simulating a restart) restores the persisted state.
+        restored = TradeValidator(daily_loss_limit_krw=200_000)
+        restored.restore_daily_state(daily_pnl, reset_date)
+        assert restored.daily_state() == (-250_000, reset_date)
+        # The breach is still in force after the "restart".
+        assert restored.validate_daily_loss() is False

@@ -108,8 +108,12 @@ class CcxtExchange(BaseExchange):
         ccxt_side = "buy" if side == OrderSide.BUY else "sell"
         ccxt_type = "market" if order_type == OrderType.MARKET else "limit"
 
-        result = await self._retry(
-            self._exchange.create_order,
+        # Order submission is intentionally NOT wrapped in self._retry: it is
+        # non-idempotent. A NetworkError raised *after* the exchange accepted
+        # the order (lost response) would, on retry, place a second order.
+        # We let the network error surface — the entry is skipped and the next
+        # candle re-evaluates — rather than risk a duplicate fill.
+        result = await self._exchange.create_order(
             symbol, ccxt_type, ccxt_side, quantity, price,
         )
 
