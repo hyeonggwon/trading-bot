@@ -64,6 +64,13 @@ class ThresholdTunerResult:
     n_combos_skipped: int = 0
     holdout_start: str = ""
     holdout_end: str = ""
+    # Disjoint sub-windows: the grid is graded on [selection_start, selection_end]
+    # and the winning combo + baseline are re-scored on [validation_start,
+    # validation_end]. ``best_*`` / ``baseline_*`` are validation-window metrics.
+    selection_start: str = ""
+    selection_end: str = ""
+    validation_start: str = ""
+    validation_end: str = ""
     min_trades_applied: int = 1
     grid: list[dict] = field(default_factory=list)
     error: str | None = None
@@ -191,16 +198,31 @@ class ThresholdTuner:
             result.error = "indicator_precompute_failed"
             return result
 
-        # Baseline: evaluate the user-specified defaults so we always have a
-        # comparison point even when the grid happens to skip those values.
+        # Disjoint selection / validation split. The grid is graded on the
+        # first half of the holdout; the winning combo and the baseline are
+        # then re-scored on the second (validation) half. This removes the
+        # in-sample selection bias of grading the recommended thresholds on
+        # the very bars that chose them — ``best_*`` / ``baseline_*`` are
+        # therefore out-of-sample relative to the grid search.
+        split = len(eval_df) // 2
+        select_df, select_ind = eval_df.iloc[:split], eval_indicators.iloc[:split]
+        valid_df, valid_ind = eval_df.iloc[split:], eval_indicators.iloc[split:]
+        result.selection_start = str(select_df.index[0])
+        result.selection_end = str(select_df.index[-1])
+        result.validation_start = str(valid_df.index[0])
+        result.validation_end = str(valid_df.index[-1])
+
+        # Baseline is scored on the *validation* window so the best-vs-baseline
+        # comparison is apples-to-apples (both out-of-sample).
         baseline_metrics = self._evaluate(
-            eval_df, eval_indicators, self.baseline_entry, self.baseline_exit
+            valid_df, valid_ind, self.baseline_entry, self.baseline_exit
         )
         if baseline_metrics is not None:
             result.baseline_sharpe = baseline_metrics["sharpe"]
             result.baseline_return_pct = baseline_metrics["return_pct"]
             result.baseline_trades = baseline_metrics["trades"]
 
+        # Grid search runs on the selection window only.
         for entry_thr, exit_thr in product(entry_grid, exit_grid):
             # Skip nonsensical combos: an exit threshold above entry would
             # close a position the moment it opened.
@@ -208,7 +230,7 @@ class ThresholdTuner:
                 result.n_combos_skipped += 1
                 continue
 
-            metrics = self._evaluate(eval_df, eval_indicators, entry_thr, exit_thr)
+            metrics = self._evaluate(select_df, select_ind, entry_thr, exit_thr)
             if metrics is None:
                 result.n_combos_skipped += 1
                 continue
@@ -236,11 +258,27 @@ class ThresholdTuner:
         if best is not None:
             result.best_entry = float(best["entry"])
             result.best_exit = float(best["exit"])
-            result.best_sharpe = float(best["sharpe"])
-            result.best_return_pct = float(best["return_pct"])
-            result.best_trades = int(best["trades"])
-            result.best_win_rate = float(best["win_rate"])
-            result.best_max_dd_pct = float(best["max_dd_pct"])
+            # Re-score the chosen combo out-of-sample on the validation window;
+            # the reported best_* metrics come from there, not the selection grid.
+            val_metrics = self._evaluate(
+                valid_df, valid_ind, result.best_entry, result.best_exit
+            )
+            if val_metrics is not None:
+                result.best_sharpe = float(val_metrics["sharpe"])
+                result.best_return_pct = float(val_metrics["return_pct"])
+                result.best_trades = int(val_metrics["trades"])
+                result.best_win_rate = float(val_metrics["win_rate"])
+                result.best_max_dd_pct = float(val_metrics["max_dd_pct"])
+            else:
+                # Validation re-eval hit an engine error; fall back to the
+                # selection-window metrics so the combo is still recorded,
+                # and flag that the report is in-sample for this run.
+                result.best_sharpe = float(best["sharpe"])
+                result.best_return_pct = float(best["return_pct"])
+                result.best_trades = int(best["trades"])
+                result.best_win_rate = float(best["win_rate"])
+                result.best_max_dd_pct = float(best["max_dd_pct"])
+                result.error = result.error or "validation_eval_failed"
         else:
             result.error = result.error or "no_combo_with_trades"
 
@@ -455,6 +493,10 @@ def patch_meta_thresholds(
         "min_trades_applied": result.min_trades_applied,
         "holdout_start": result.holdout_start,
         "holdout_end": result.holdout_end,
+        "selection_start": result.selection_start,
+        "selection_end": result.selection_end,
+        "validation_start": result.validation_start,
+        "validation_end": result.validation_end,
     }
 
     tmp_path = meta_path.with_suffix(".json.tmp")

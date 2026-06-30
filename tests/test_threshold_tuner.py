@@ -7,6 +7,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
 from tradingbot.ml.features import WARMUP_CANDLES, build_feature_matrix
@@ -133,6 +134,56 @@ class TestThresholdTuner:
             assert result.best_entry in (0.30, 0.40, 0.50)
             assert result.best_exit in (0.20, 0.30)
             assert result.best_exit < result.best_entry
+
+    def test_selection_and_reporting_use_disjoint_windows(self, tmp_path):
+        """Thresholds are chosen on the selection window; the reported best/
+        baseline metrics come from a strictly later, disjoint validation
+        window. Guards against grading the recommended thresholds on the same
+        bars that selected them (in-sample selection bias)."""
+        df = _make_data(600)
+        # Holdout at the midpoint so each split half clears the LGBM warmup
+        # with room to trade.
+        holdout_start = df.index[int(len(df) * 0.5)]
+        _train_and_save(df, tmp_path, holdout_start)
+
+        tuner = ThresholdTuner(
+            symbol="BTC/KRW",
+            timeframe="1h",
+            model_dir=tmp_path,
+            config=_config(),
+            balance=10_000_000,
+        )
+        result = tuner.search(df, entry_grid=(0.40, 0.50), exit_grid=(0.20, 0.30))
+
+        # Structural: both windows recorded, ordered, and non-overlapping.
+        assert result.selection_start and result.validation_start
+        assert result.selection_start < result.validation_start
+        assert result.selection_end <= result.validation_start
+
+        # Behavioural: the reported best_* is the validation-window re-eval of
+        # the chosen combo — NOT the selection grid's in-sample metric.
+        if result.grid and result.best_sharpe > float("-inf"):
+            df_sorted = df[~df.index.duplicated(keep="last")].sort_index()
+            slice_df = tuner._slice_holdout(df_sorted, str(holdout_start), None)
+            eval_df, eval_ind = tuner._precompute_indicators(
+                slice_df, str(holdout_start)
+            )
+            valid_start = pd.Timestamp(result.validation_start)
+            valid_df = eval_df[eval_df.index >= valid_start]
+            valid_ind = eval_ind[eval_ind.index >= valid_start]
+            reeval = tuner._evaluate(
+                valid_df, valid_ind, result.best_entry, result.best_exit
+            )
+            assert reeval is not None
+            # Reported best == independent validation re-eval (out-of-sample).
+            assert result.best_sharpe == pytest.approx(reeval["sharpe"])
+            # The same combo's selection-grid Sharpe is a different window, so
+            # the reported number is genuinely not the in-sample selection value.
+            sel = next(
+                g for g in result.grid
+                if g["entry"] == result.best_entry and g["exit"] == result.best_exit
+            )
+            assert sel["sharpe"] != pytest.approx(result.best_sharpe)
 
     def test_skips_combos_with_exit_above_entry(self, tmp_path):
         df = _make_data(600)
