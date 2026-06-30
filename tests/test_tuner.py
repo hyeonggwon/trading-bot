@@ -6,7 +6,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tradingbot.ml.tuner import LGBMTuner, LGBMTunerResult
+from tradingbot.ml.tuner import (
+    TUNING_OUTER_HOLDOUT_FRACTION,
+    LGBMTuner,
+    LGBMTunerResult,
+    reserve_tuning_window,
+)
 
 
 def _synthetic_ohlcv(n: int = 1500) -> pd.DataFrame:
@@ -81,3 +86,20 @@ class TestLGBMTuner:
             assert "trial" in t
             assert "score" in t
             assert "params" in t
+
+
+class TestReserveTuningWindow:
+    """Regression: Optuna must not optimize on the final model's holdout."""
+
+    def test_reserves_trailing_outer_holdout(self):
+        df = _synthetic_ohlcv(1000)
+        inner = reserve_tuning_window(df)
+        expected = int(1000 * (1.0 - TUNING_OUTER_HOLDOUT_FRACTION))
+        assert len(inner) == expected
+        # The inner window is a strict prefix; the reserved tail is unseen.
+        assert inner.index.equals(df.index[:expected])
+        assert inner.index[-1] < df.index[expected]
+
+    def test_tiny_df_left_unchanged(self):
+        df = _synthetic_ohlcv(5)
+        assert reserve_tuning_window(df).index.equals(df.index)

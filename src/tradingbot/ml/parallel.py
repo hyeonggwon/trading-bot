@@ -196,7 +196,7 @@ def tune_pair(
     from tradingbot.config import AppConfig
     from tradingbot.data.external_fetcher import build_external_df
     from tradingbot.data.storage import load_candles
-    from tradingbot.ml.tuner import LGBMTuner
+    from tradingbot.ml.tuner import LGBMTuner, reserve_tuning_window
     from tradingbot.ml.walk_forward import MLWalkForwardTrainer
 
     # LightGBM honours OMP_NUM_THREADS for its OpenMP parallelism. Set it
@@ -255,7 +255,11 @@ def tune_pair(
             objective=objective,
             seed=seed,
         )
-        result = tuner.search(df, n_trials=trials, time_budget_sec=time_budget_sec)
+        # Tune on the inner window only; reserve the trailing outer-holdout so
+        # the final model's holdout stays unseen by the search.
+        result = tuner.search(
+            reserve_tuning_window(df), n_trials=trials, time_budget_sec=time_budget_sec
+        )
 
         if not result.best_params:
             return TunePairResult(

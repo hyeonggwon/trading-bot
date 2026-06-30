@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 
 import numpy as np
 import pandas as pd
+import pytest
 
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
@@ -405,3 +406,39 @@ class TestBugFixes:
         if report_with.trades:
             for t in report_with.trades:
                 assert t.entry_order.filled_at >= df.index[100].to_pydatetime()
+
+
+class TestStopLossGapDown:
+    """Regression: a stop can't fill above the candle open on a gap-down."""
+
+    def _sim(self):
+        from tradingbot.backtest.simulator import OrderSimulator
+
+        return OrderSimulator(BacktestConfig(slippage_pct=0.001, fee_rate=0.0005))
+
+    def _candle(self, *, open_, high, low, close):
+        from tradingbot.core.models import Candle
+
+        return Candle(
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            open=open_, high=high, low=low, close=close, volume=1.0,
+        )
+
+    def test_gap_down_fills_at_open_not_stop(self):
+        # Candle opens at 90 — below the 100 stop — so the earliest realistic
+        # fill is the open, not the (unreachable) stop price.
+        candle = self._candle(open_=90.0, high=92.0, low=80.0, close=85.0)
+        result = self._sim().check_stop_loss(100.0, candle, 1.0)
+        assert result is not None
+        assert result.fill_price == pytest.approx(90.0 * (1 - 0.001))
+
+    def test_intrabar_pierce_fills_at_stop(self):
+        # Candle opens above the stop and dips through it intrabar → fill at stop.
+        candle = self._candle(open_=105.0, high=106.0, low=99.0, close=101.0)
+        result = self._sim().check_stop_loss(100.0, candle, 1.0)
+        assert result is not None
+        assert result.fill_price == pytest.approx(100.0 * (1 - 0.001))
+
+    def test_no_trigger_when_low_above_stop(self):
+        candle = self._candle(open_=105.0, high=107.0, low=101.0, close=104.0)
+        assert self._sim().check_stop_loss(100.0, candle, 1.0) is None

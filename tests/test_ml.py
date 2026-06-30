@@ -475,6 +475,18 @@ class TestWalkForward:
         # train_end is the actual cut, not the last data point.
         assert train_end < data_end
 
+        # holdout_eval_end marks the calibrator-leak-free eval slice (first
+        # half of the holdout). ml-backtest caps its window here so it never
+        # scores on candles the isotonic calibrator was fit on.
+        assert "holdout_eval_end" in meta
+        holdout_eval_end = pd.Timestamp(meta["holdout_eval_end"])
+        holdout_end = pd.Timestamp(meta["holdout_end"])
+        # With 4000 candles the holdout is well over 60 rows, so it is split:
+        # the eval end must mark the first half, strictly before the holdout
+        # end (the calibrator-fit second half). Equality would mean the eval
+        # set spans the whole holdout — the leak this guards against.
+        assert holdout_start <= holdout_eval_end < holdout_end
+
 
 class TestMLStrategyWalkForward:
     def test_run_produces_time_honest_windows(self):
@@ -538,6 +550,77 @@ class TestMLStrategyWalkForward:
         first = _run()
         second = _run()
         assert first == second
+
+
+class TestWindowCalibratorLeak:
+    """Regression: fixed-rounds fallback must not fit the calibrator in-sample.
+
+    The leaky path calibrated isotonic probabilities on the same rows used to
+    fit the booster, inflating holdout calibration metrics. The fix keeps the
+    calibration tail disjoint (embargo gap) and skips calibration entirely when
+    the window is too small to leave one.
+    """
+
+    def _prepare(self):
+        from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+
+        df = _make_data(1500)
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        fwd_return = df_feat["close"].pct_change(4).shift(-4)
+        mask = (
+            df_feat[feature_cols].notna().all(axis=1)
+            & target.notna()
+            & fwd_return.notna()
+        )
+        dfv = df_feat[mask]
+        tv = target[mask]
+        fv = fwd_return[mask]
+        runner = MLStrategyWalkForward(symbol="BTC/KRW", timeframe="1h")
+        return runner, dfv, tv, fv, feature_cols
+
+    def test_small_window_skips_calibration(self):
+        """Too small to leave an embargoed calibration tail → no calibrator."""
+        runner, dfv, tv, fv, feature_cols = self._prepare()
+        _, calibrator, _ = runner._train_one_window(
+            dfv.iloc[:280], tv.iloc[:280], fv.iloc[:280], feature_cols
+        )
+        assert calibrator is None
+
+    def test_large_window_fits_disjoint_calibrator(self):
+        """Enough data for an embargoed tail → calibrator is fit on rows the
+        booster never trained on.
+
+        The leaky path trained the booster on *all* rows while fitting the
+        calibrator on the last 15% — overlapping. Asserting only
+        ``calibrator is not None`` does not catch that (both old and new
+        produce a calibrator). We spy on the trainer to capture the booster's
+        training-row count and assert it ends an embargo gap before the
+        calibration tail begins, which fails on the old code.
+        """
+        from tradingbot.ml.strategy_walk_forward import EMBARGO_CANDLES
+
+        runner, dfv, tv, fv, feature_cols = self._prepare()
+        window = 900
+        cal_start = int(window * 0.85)  # calibration tail = iloc[cal_start:]
+
+        trained_rows: dict[str, int] = {}
+        original_train = runner.trainer.train
+
+        def _spy_train(X_tr, *args, **kwargs):
+            trained_rows["n"] = len(X_tr)
+            return original_train(X_tr, *args, **kwargs)
+
+        runner.trainer.train = _spy_train
+        _, calibrator, _ = runner._train_one_window(
+            dfv.iloc[:window], tv.iloc[:window], fv.iloc[:window], feature_cols
+        )
+
+        assert calibrator is not None
+        # Booster's training slice must end before the calibration tail (with an
+        # embargo gap). Old leaky path trained on all `window` rows → n == 900,
+        # overlapping the calibration tail at cal_start=765.
+        assert trained_rows["n"] <= cal_start - EMBARGO_CANDLES
 
 
 class TestLGBMStrategy:
