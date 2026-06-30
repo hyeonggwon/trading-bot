@@ -109,12 +109,42 @@ class OrderManager:
                 # Fully filled during cancel race — return the filled order
                 return final_state if filled_qty > 0 else filled_order
 
-            # Re-submit remaining as market order
-            return await self.submit_and_wait(
+            # Re-submit the remaining quantity as a market order.
+            market_order = await self.submit_and_wait(
                 symbol=symbol,
                 side=side,
                 order_type=OrderType.MARKET,
                 quantity=remaining,
+            )
+
+            # Nothing filled on the original limit — the market order alone
+            # represents the whole position.
+            if filled_qty <= 0:
+                return market_order
+
+            # Combine the already-filled limit portion with the market
+            # re-order so the returned Order reflects the CUMULATIVE fill:
+            # total quantity, quantity-weighted fill price, and summed fee.
+            # Returning only the re-order would silently drop the portion
+            # already filled at the limit price, under-sizing the position.
+            total_qty = filled_qty + market_order.quantity
+            limit_price = final_state.filled_price or price or 0.0
+            market_price = market_order.filled_price or limit_price
+            weighted_price = (
+                limit_price * filled_qty + market_price * market_order.quantity
+            ) / total_qty
+            return Order(
+                id=market_order.id,
+                symbol=symbol,
+                side=side,
+                order_type=OrderType.MARKET,
+                quantity=total_qty,
+                price=price,
+                status=market_order.status,
+                created_at=order.created_at,
+                filled_at=market_order.filled_at,
+                filled_price=weighted_price,
+                fee=(final_state.fee or 0.0) + (market_order.fee or 0.0),
             )
 
         # Market order timeout (unusual) — return last polled state

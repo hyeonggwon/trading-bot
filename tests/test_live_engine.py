@@ -9,7 +9,7 @@ import pytest
 
 from tradingbot.config import AppConfig, RiskConfig
 from tradingbot.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, SignalType
-from tradingbot.core.models import Position, Signal
+from tradingbot.core.models import Order, Position, Signal
 from tradingbot.exchange.base import BaseExchange
 from tradingbot.exchange.paper import PaperExchange
 from tradingbot.live.engine import LiveEngine
@@ -753,3 +753,52 @@ class TestSafetyRailEnforcement:
         await engine._monitor_prices(["BTC/KRW"])
 
         assert "BTC/KRW" not in state.positions
+
+
+# --- Bug: a partial exit fill must not orphan the unsold remainder ---
+
+class TestExitPartialFill:
+    @pytest.mark.asyncio
+    async def test_partial_exit_keeps_residual_position(self, tmp_path):
+        """A market sell that fills less than the position must NOT delete the
+        whole position. The unsold remainder would otherwise become an
+        unmanaged orphan with no stop loss while the engine believes it is flat.
+        """
+
+        class PartialSellFeed(MockDataFeed):
+            SOLD = 0.6  # of the requested 1.0
+
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                return Order(
+                    id="sell-partial", symbol=symbol, side=side,
+                    order_type=order_type, quantity=self.SOLD,  # < requested
+                    status=OrderStatus.FILLED,
+                    filled_price=self._price, fee=1_000.0,
+                    filled_at=datetime.now(UTC),
+                )
+
+        feed = PartialSellFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+        state.entry_fees["BTC/KRW"] = 1_000.0
+
+        sig = Signal(
+            timestamp=datetime.now(UTC), symbol="BTC/KRW",
+            signal_type=SignalType.LONG_EXIT, price=50_000_000,
+        )
+        await engine._handle_exit(sig, "BTC/KRW", state.positions["BTC/KRW"])
+
+        # Position retained (still managed, keeps its stop), size reduced to the
+        # unsold remainder rather than deleted.
+        assert "BTC/KRW" in state.positions
+        assert state.positions["BTC/KRW"].size == pytest.approx(1.0 - PartialSellFeed.SOLD)
+        assert state.positions["BTC/KRW"].stop_loss == 49_000_000

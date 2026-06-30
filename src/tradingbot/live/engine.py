@@ -686,16 +686,43 @@ class LiveEngine:
 
             fill_price = order.filled_price or 0
             exit_fee = order.fee or 0
-            entry_fee = self.state.entry_fees.pop(symbol, 0)
-            pnl = (fill_price - position.entry_price) * position.size - entry_fee - exit_fee
+            # A market sell can fill less than requested on thin liquidity.
+            # Settle PnL on the quantity actually sold and keep any unsold
+            # remainder as a managed position (it retains its stop) instead of
+            # deleting the whole position and orphaning the residual.
+            sold_qty = (
+                min(order.quantity, position.size)
+                if order.quantity > 0
+                else position.size
+            )
+            fully_closed = sold_qty >= position.size - 1e-12
+
+            entry_fee_total = self.state.entry_fees.get(symbol, 0)
+            entry_fee = (
+                entry_fee_total
+                if fully_closed
+                else entry_fee_total * (sold_qty / position.size)
+            )
+            pnl = (fill_price - position.entry_price) * sold_qty - entry_fee - exit_fee
 
             # Track PnL for daily loss limit
             if self.trade_validator is not None:
                 self.trade_validator.record_trade_pnl(pnl)
 
-            del self.state.positions[symbol]
+            if fully_closed:
+                self.state.entry_fees.pop(symbol, None)
+                del self.state.positions[symbol]
+            else:
+                self.state.entry_fees[symbol] = entry_fee_total - entry_fee
+                position.size -= sold_qty
+                logger.warning(
+                    "exit_partial_fill",
+                    symbol=symbol,
+                    sold=f"{sold_qty:.8f}",
+                    remaining=f"{position.size:.8f}",
+                )
             logger.info(
-                "position_closed",
+                "position_closed" if fully_closed else "position_reduced",
                 symbol=symbol,
                 entry=f"{position.entry_price:,.0f}",
                 exit=f"{fill_price:,.0f}",
