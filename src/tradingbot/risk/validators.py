@@ -72,6 +72,26 @@ class TradeValidator:
             return False
         return True
 
+    def daily_loss_breached(self, unrealized_pnl: float = 0.0) -> bool:
+        """Return True if realized + unrealized daily PnL breaches the limit.
+
+        The realized-only ``validate_daily_loss`` gate fires only after a loss
+        is booked. Folding in open-position unrealized PnL lets the limit halt
+        trading while a position is still bleeding, before the loss is locked
+        in by an exit.
+        """
+        self._reset_daily_if_needed()
+        total = self._daily_pnl + unrealized_pnl
+        if total < -self.daily_loss_limit_krw:
+            logger.warning(
+                "daily_loss_breached",
+                realized=f"{self._daily_pnl:,.0f}",
+                unrealized=f"{unrealized_pnl:,.0f}",
+                limit=f"{-self.daily_loss_limit_krw:,.0f}",
+            )
+            return True
+        return False
+
     def validate_all(self, quantity: float, price: float) -> bool:
         """Run all validations. Returns True if order is safe to execute."""
         if not self.validate_order_size(quantity, price):

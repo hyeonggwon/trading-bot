@@ -665,3 +665,91 @@ class TestExchangeReconciliation:
         assert pos is not None  # orphan fill adopted
         assert pos.size == pytest.approx(0.1)
         assert pos.stop_loss is not None and pos.stop_loss < pos.entry_price
+
+
+# --- HIGH: per-tick safety-rail enforcement (drawdown breaker + daily loss) ---
+
+class TestSafetyRailEnforcement:
+    @pytest.mark.asyncio
+    async def test_circuit_breaker_flattens_open_position(self, tmp_path):
+        """A drawdown breach must flatten open positions every tick — even with
+        no candle and a price above the position's own stop. Previously the
+        breaker was consulted only at entry-signal time and never closed an
+        existing position, so a held position could bleed past the limit."""
+        feed = MockDataFeed(price=49_500_000)  # above the 49M stop
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=8_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 49_500_000})
+        paper._holdings["BTC"] = 0.001  # holdings to sell on flatten
+
+        config = AppConfig(risk=RiskConfig(
+            max_drawdown_pct=0.10, default_stop_loss_pct=0.02,
+        ))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        # Peak well above current equity -> drawdown breaches the 10% limit.
+        engine.risk_manager.peak_equity = 10_000_000.0
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.001,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,  # below current price: no stop-out
+        )
+
+        await engine._monitor_prices(["BTC/KRW"])
+
+        assert "BTC/KRW" not in state.positions
+
+    def test_daily_loss_breached_folds_unrealized(self):
+        """The daily-loss limit must account for open-position unrealized PnL,
+        not just realized PnL booked on exit."""
+        from tradingbot.risk.validators import TradeValidator
+
+        v = TradeValidator(daily_loss_limit_krw=200_000)
+        v.record_trade_pnl(-50_000)  # realized so far
+
+        # Realized -50k alone is within the -200k limit.
+        assert v.daily_loss_breached(0.0) is False
+        # Realized -50k + unrealized -100k = -150k: still within limit.
+        assert v.daily_loss_breached(-100_000) is False
+        # Realized -50k + unrealized -160k = -210k: breaches the -200k limit.
+        assert v.daily_loss_breached(-160_000) is True
+
+    @pytest.mark.asyncio
+    async def test_daily_loss_unrealized_flattens_position(self, tmp_path):
+        """An open position whose unrealized loss breaches the daily-loss limit
+        must be flattened per tick, even when the drawdown breaker is calm and
+        the price is above the position's own stop."""
+        from tradingbot.risk.validators import TradeValidator
+
+        feed = MockDataFeed(price=45_000_000)  # above the 40M stop
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=1_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 45_000_000})
+        paper._holdings["BTC"] = 0.01
+
+        config = AppConfig(risk=RiskConfig(
+            max_drawdown_pct=0.99, default_stop_loss_pct=0.02,
+        ))
+        state = StateManager(tmp_path / "state.json")
+        validator = TradeValidator(daily_loss_limit_krw=40_000)
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state, trade_validator=validator,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.01,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=40_000_000,  # far below price: no stop-out
+        )
+        # Unrealized = (45M - 50M) * 0.01 = -50,000 < -40,000 limit.
+
+        await engine._monitor_prices(["BTC/KRW"])
+
+        assert "BTC/KRW" not in state.positions

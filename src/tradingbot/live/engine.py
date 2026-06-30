@@ -188,6 +188,13 @@ class LiveEngine:
         self.risk_manager.update_peak_equity(equity)
         self.state.record_equity(equity)
 
+        # Enforce safety rails continuously (drawdown breaker + daily-loss
+        # limit incl. unrealized PnL). On breach, positions are flattened and
+        # new entries stay blocked, so skip this tick's symbol processing.
+        if await self._enforce_safety_rails(equity, tickers):
+            self._persist_state()
+            return
+
         # Process each symbol
         for sym, result in zip(symbols, ohlcv_results):
             if isinstance(result, Exception):
@@ -244,6 +251,11 @@ class LiveEngine:
         equity = await self._calculate_equity(tickers)
         self.risk_manager.update_peak_equity(equity)
         self.state.record_equity(equity)
+        # Enforce safety rails between candles too — a 4h timeframe would
+        # otherwise leave a drawdown/daily-loss breach unaddressed for hours.
+        if await self._enforce_safety_rails(equity, tickers):
+            self._persist_state()
+            return
         for sym in symbols:
             position = self.state.positions.get(sym)
             if position is None:
@@ -292,10 +304,76 @@ class LiveEngine:
             )
         self.state.save()
 
-    async def _notify_reconcile(self, message: str) -> None:
-        """Send a reconciliation alert through the notifier if one is wired."""
+    async def _notify_alert(self, message: str) -> None:
+        """Send an operator alert through the notifier if one is wired."""
         if self.notifier and hasattr(self.notifier, "send_error"):
             await self.notifier.send_error(message)
+
+    async def _enforce_safety_rails(
+        self, equity: float, tickers: dict[str, dict]
+    ) -> bool:
+        """Continuously enforce the drawdown breaker and daily-loss limit.
+
+        Both rails are evaluated every tick on live equity — not only when an
+        entry signal fires — and the daily-loss check folds in open-position
+        unrealized PnL. Otherwise a position bleeding out between entries would
+        breach neither rail until it was finally closed. On breach all open
+        positions are flattened; new entries then stay blocked by the existing
+        entry-time gates (the breaker keeps firing while drawdown persists, and
+        the now-realized loss keeps the daily-loss check tripped).
+
+        Returns True if a rail was breached (this tick's normal processing
+        should be skipped).
+        """
+        # Unrealized PnL of open positions at current prices.
+        unrealized = 0.0
+        for sym, position in self.state.positions.items():
+            ticker = tickers.get(sym)
+            price = float(ticker["last"]) if ticker and ticker.get("last") else None
+            if price is not None:
+                unrealized += position.unrealized_pnl(price)
+
+        breaker = self.risk_manager.check_circuit_breaker(equity)
+        daily_loss = (
+            self.trade_validator.daily_loss_breached(unrealized)
+            if self.trade_validator is not None
+            and hasattr(self.trade_validator, "daily_loss_breached")
+            else False
+        )
+        if not breaker and not daily_loss:
+            return False
+
+        if not self.state.positions:
+            return True  # rail breached but nothing to flatten
+
+        reason = "circuit_breaker" if breaker else "daily_loss_limit"
+        logger.warning(
+            "safety_rail_breached",
+            reason=reason,
+            equity=f"{equity:,.0f}",
+            unrealized=f"{unrealized:,.0f}",
+            positions=len(self.state.positions),
+        )
+        await self._notify_alert(
+            f"SAFETY HALT ({reason}): flattening {len(self.state.positions)} "
+            f"position(s), equity={equity:,.0f}, unrealized={unrealized:,.0f}"
+        )
+        for sym, position in list(self.state.positions.items()):
+            ticker = tickers.get(sym)
+            price = (
+                float(ticker["last"])
+                if ticker and ticker.get("last")
+                else position.entry_price
+            )
+            flat_signal = Signal(
+                timestamp=datetime.now(UTC),
+                symbol=sym,
+                signal_type=SignalType.LONG_EXIT,
+                price=price,
+                strength=1.0,
+            )
+            await self._handle_exit(flat_signal, sym, position)
+        return True
 
     async def _reconcile_with_exchange(self) -> None:
         """Reconcile local position state against the exchange's real holdings.
@@ -357,7 +435,7 @@ class LiveEngine:
                 price=f"{price:,.0f}",
                 stop_loss=f"{stop_loss:,.0f}",
             )
-            await self._notify_reconcile(
+            await self._notify_alert(
                 f"RECONCILE: adopted orphan {symbol} qty={qty:.8f} "
                 f"@ ~{price:,.0f}, stop={stop_loss:,.0f}"
             )
@@ -379,7 +457,7 @@ class LiveEngine:
                     local_size=f"{position.size:.8f}",
                     held=f"{held:.8f}",
                 )
-                await self._notify_reconcile(
+                await self._notify_alert(
                     f"RECONCILE: dropped phantom {symbol} "
                     f"(local={position.size:.8f}, exchange={held:.8f})"
                 )
@@ -393,7 +471,7 @@ class LiveEngine:
                     local_size=f"{old_size:.8f}",
                     held=f"{held:.8f}",
                 )
-                await self._notify_reconcile(
+                await self._notify_alert(
                     f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}"
                 )
 
@@ -542,7 +620,7 @@ class LiveEngine:
         except Exception as e:
             logger.error("entry_order_failed", symbol=symbol, error=str(e))
             await self._reconcile_with_exchange()
-            await self._notify_reconcile(f"Entry order failed {symbol}: {e}")
+            await self._notify_alert(f"Entry order failed {symbol}: {e}")
             return
 
         if order.status == OrderStatus.FILLED:
@@ -599,7 +677,7 @@ class LiveEngine:
         except Exception as e:
             logger.error("exit_order_failed", symbol=symbol, error=str(e))
             await self._reconcile_with_exchange()
-            await self._notify_reconcile(f"Exit order failed {symbol}: {e}")
+            await self._notify_alert(f"Exit order failed {symbol}: {e}")
             return
 
         if order.status == OrderStatus.FILLED:
