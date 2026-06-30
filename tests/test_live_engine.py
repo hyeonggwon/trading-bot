@@ -520,3 +520,148 @@ class TestStatePersistenceAcrossRestart:
 
         assert engine2.risk_manager.peak_equity == 12_345_678.0
         assert v2.daily_state()[0] == -150_000
+
+
+# --- CRITICAL: exchange <-> local state reconciliation ---
+
+class TestExchangeReconciliation:
+    @pytest.mark.asyncio
+    async def test_adopts_orphan_holding_with_stop(self, tmp_path):
+        """A tradable holding the exchange reports but local state has no
+        position for (e.g. a fill whose response was lost) must be adopted with
+        a synthesized stop — otherwise it runs unmanaged and the engine, still
+        believing it is flat, could buy more and double exposure."""
+
+        class OrphanFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000, "BTC": 0.1}
+
+        feed = OrphanFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+
+        assert "BTC/KRW" not in engine.state.positions
+        await engine._reconcile_with_exchange()
+
+        pos = engine.state.positions.get("BTC/KRW")
+        assert pos is not None
+        assert pos.size == pytest.approx(0.1)
+        assert pos.entry_price == pytest.approx(50_000_000)
+        assert pos.stop_loss is not None and pos.stop_loss < pos.entry_price
+
+    @pytest.mark.asyncio
+    async def test_ignores_untracked_currency(self, tmp_path):
+        """A holding in a currency the strategy does not trade is not ours to
+        manage and must be left alone."""
+
+        class EthFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000, "ETH": 1.0}
+
+        feed = EthFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig())
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+
+        await engine._reconcile_with_exchange()
+        assert engine.state.positions == {}
+
+    @pytest.mark.asyncio
+    async def test_drops_phantom_position(self, tmp_path):
+        """A locally-tracked position the exchange no longer holds must be
+        dropped — selling it would fail and PnL accounting would be wrong."""
+
+        class FlatFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000}  # no BTC held
+
+        feed = FlatFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig())
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+        engine.state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.1,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+
+        await engine._reconcile_with_exchange()
+        assert "BTC/KRW" not in engine.state.positions
+
+    @pytest.mark.asyncio
+    async def test_shrinks_partially_backed_position(self, tmp_path):
+        """If the exchange holds less than the tracked size, shrink to the real
+        amount so an exit never tries to over-sell."""
+
+        class PartialFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000, "BTC": 0.04}
+
+        feed = PartialFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig())
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+        engine.state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.1,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+
+        await engine._reconcile_with_exchange()
+        pos = engine.state.positions.get("BTC/KRW")
+        assert pos is not None
+        assert pos.size == pytest.approx(0.04)
+
+    @pytest.mark.asyncio
+    async def test_entry_exception_reconciles_orphan_fill(self, tmp_path):
+        """If the buy raises after executing on the exchange (lost response),
+        _handle_entry must reconcile so the resulting holding is adopted with a
+        stop rather than propagating the error and leaving an unmanaged orphan."""
+
+        class LostResponseFeed(MockDataFeed):
+            def __init__(self, price):
+                super().__init__(price)
+                self._executed = False
+
+            async def get_balance(self):
+                # After the (lost) fill the exchange reports the BTC holding.
+                if self._executed:
+                    return {"KRW": 0, "BTC": 0.1}
+                return {"KRW": 5_000_000}
+
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                # The order executes on the exchange, then the response is lost.
+                self._executed = True
+                raise ConnectionError("response lost")
+
+        feed = LostResponseFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig(
+            default_stop_loss_pct=0.02,
+            risk_per_trade_pct=0.01,
+            max_position_size_pct=0.5,
+        ))
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+        signal = Signal(
+            timestamp=datetime.now(UTC), symbol="BTC/KRW",
+            signal_type=SignalType.LONG_ENTRY, price=50_000_000, strength=1.0,
+        )
+
+        # Must not raise — the lost-response order is reconciled internally.
+        await engine._handle_entry(signal, "BTC/KRW", 50_000_000)
+
+        pos = engine.state.positions.get("BTC/KRW")
+        assert pos is not None  # orphan fill adopted
+        assert pos.size == pytest.approx(0.1)
+        assert pos.stop_loss is not None and pos.stop_loss < pos.entry_price

@@ -105,6 +105,11 @@ class LiveEngine:
 
         # Load persisted state + restore real-money safety rails
         self._restore_state()
+        # Reconcile against the exchange's real holdings so a fill whose
+        # response was lost before the Position was recorded is adopted (with a
+        # protective stop) instead of running unmanaged, and a position the
+        # exchange no longer backs is dropped before we try to sell it.
+        await self._reconcile_with_exchange()
         if self.state.positions:
             logger.info("restored_positions", count=len(self.state.positions))
 
@@ -287,6 +292,111 @@ class LiveEngine:
             )
         self.state.save()
 
+    async def _notify_reconcile(self, message: str) -> None:
+        """Send a reconciliation alert through the notifier if one is wired."""
+        if self.notifier and hasattr(self.notifier, "send_error"):
+            await self.notifier.send_error(message)
+
+    async def _reconcile_with_exchange(self) -> None:
+        """Reconcile local position state against the exchange's real holdings.
+
+        On startup (after a crash/restart) or after an order call returns an
+        unknown outcome, the exchange is the source of truth for what we hold.
+        Two divergences are dangerous on real money:
+
+        * Orphan holding — the exchange holds a tradable base currency that
+          local state has no position for (e.g. a fill whose response was lost
+          before the Position was recorded). Unmanaged it carries no stop loss
+          and, believing it is flat, the engine could buy more and double
+          exposure. We adopt it with a synthesized stop at the current price.
+        * Phantom position — local state holds a position the exchange no
+          longer fully backs (e.g. recorded then sold out-of-band). Selling the
+          full tracked size would over-sell; we drop it (nothing held) or
+          shrink it to the real amount.
+
+        Each adjustment emits a warning notification so the operator is alerted.
+        """
+        try:
+            balance = await self.exchange.get_balance()
+        except Exception as e:
+            logger.error("reconcile_balance_failed", error=str(e))
+            return
+
+        tradable = set(self.strategy.symbols)
+
+        # 1) Adopt orphan holdings the exchange reports but we don't track.
+        for symbol in tradable:
+            if symbol in self.state.positions:
+                continue
+            currency = symbol.split("/")[0]
+            qty = float(balance.get(currency, 0.0))
+            if qty <= 0:
+                continue
+            try:
+                ticker = await self.exchange.fetch_ticker(symbol)
+                price = float(ticker["last"])
+            except Exception as e:
+                logger.error("reconcile_price_failed", symbol=symbol, error=str(e))
+                continue
+            stop_loss = self.risk_manager.calculate_stop_loss(price)
+            self.state.positions[symbol] = Position(
+                symbol=symbol,
+                side=PositionSide.LONG,
+                size=qty,
+                entry_price=price,
+                entry_time=datetime.now(UTC),
+                stop_loss=stop_loss,
+            )
+            # Unknown real entry fee — record 0 so exit PnL doesn't subtract a
+            # fee we never observed.
+            self.state.entry_fees.setdefault(symbol, 0.0)
+            logger.warning(
+                "reconcile_adopted_orphan",
+                symbol=symbol,
+                size=f"{qty:.8f}",
+                price=f"{price:,.0f}",
+                stop_loss=f"{stop_loss:,.0f}",
+            )
+            await self._notify_reconcile(
+                f"RECONCILE: adopted orphan {symbol} qty={qty:.8f} "
+                f"@ ~{price:,.0f}, stop={stop_loss:,.0f}"
+            )
+
+        # 2) Reconcile tracked positions against the real held amount.
+        for symbol in list(self.state.positions.keys()):
+            currency = symbol.split("/")[0]
+            held = float(balance.get(currency, 0.0))
+            position = self.state.positions[symbol]
+            if held >= position.size * 0.99:
+                continue  # exchange backs the tracked size (dust tolerance)
+            if held <= position.size * 0.01:
+                # Exchange holds essentially nothing — phantom position.
+                del self.state.positions[symbol]
+                self.state.entry_fees.pop(symbol, None)
+                logger.warning(
+                    "reconcile_dropped_phantom",
+                    symbol=symbol,
+                    local_size=f"{position.size:.8f}",
+                    held=f"{held:.8f}",
+                )
+                await self._notify_reconcile(
+                    f"RECONCILE: dropped phantom {symbol} "
+                    f"(local={position.size:.8f}, exchange={held:.8f})"
+                )
+            else:
+                # Exchange holds less than tracked — shrink to avoid over-sell.
+                old_size = position.size
+                position.size = held
+                logger.warning(
+                    "reconcile_shrank_position",
+                    symbol=symbol,
+                    local_size=f"{old_size:.8f}",
+                    held=f"{held:.8f}",
+                )
+                await self._notify_reconcile(
+                    f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}"
+                )
+
     async def _tick_symbol(
         self, symbol: str, df: pd.DataFrame, ticker: dict | None = None
     ) -> None:
@@ -409,21 +519,31 @@ class LiveEngine:
                 logger.info("signal_rejected_by_validator", symbol=symbol)
                 return
 
-        # Execute order (via OrderManager if available, else direct)
-        if self.order_manager is not None:
-            order = await self.order_manager.submit_and_wait(
-                symbol=symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.MARKET,
-                quantity=quantity,
-            )
-        else:
-            order = await self.exchange.create_order(
-                symbol=symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.MARKET,
-                quantity=quantity,
-            )
+        # Execute order (via OrderManager if available, else direct).
+        # A raised exception means the outcome is unknown: the order may have
+        # executed before the response was lost. Reconcile so any resulting
+        # holding is adopted with a stop instead of becoming an unmanaged
+        # orphan, then bail out of this entry.
+        try:
+            if self.order_manager is not None:
+                order = await self.order_manager.submit_and_wait(
+                    symbol=symbol,
+                    side=OrderSide.BUY,
+                    order_type=OrderType.MARKET,
+                    quantity=quantity,
+                )
+            else:
+                order = await self.exchange.create_order(
+                    symbol=symbol,
+                    side=OrderSide.BUY,
+                    order_type=OrderType.MARKET,
+                    quantity=quantity,
+                )
+        except Exception as e:
+            logger.error("entry_order_failed", symbol=symbol, error=str(e))
+            await self._reconcile_with_exchange()
+            await self._notify_reconcile(f"Entry order failed {symbol}: {e}")
+            return
 
         if order.status == OrderStatus.FILLED:
             if self.trade_validator is not None:
@@ -458,20 +578,29 @@ class LiveEngine:
         self, signal_obj: Signal, symbol: str, position: Position
     ) -> None:
         """Process an exit signal."""
-        if self.order_manager is not None:
-            order = await self.order_manager.submit_and_wait(
-                symbol=symbol,
-                side=OrderSide.SELL,
-                order_type=OrderType.MARKET,
-                quantity=position.size,
-            )
-        else:
-            order = await self.exchange.create_order(
-                symbol=symbol,
-                side=OrderSide.SELL,
-                order_type=OrderType.MARKET,
-                quantity=position.size,
-            )
+        # A raised exception means the outcome is unknown: the sell may have
+        # executed before the response was lost. Reconcile so local state
+        # matches the exchange (position dropped if sold, kept if not).
+        try:
+            if self.order_manager is not None:
+                order = await self.order_manager.submit_and_wait(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    order_type=OrderType.MARKET,
+                    quantity=position.size,
+                )
+            else:
+                order = await self.exchange.create_order(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    order_type=OrderType.MARKET,
+                    quantity=position.size,
+                )
+        except Exception as e:
+            logger.error("exit_order_failed", symbol=symbol, error=str(e))
+            await self._reconcile_with_exchange()
+            await self._notify_reconcile(f"Exit order failed {symbol}: {e}")
+            return
 
         if order.status == OrderStatus.FILLED:
             if self.trade_validator is not None:
