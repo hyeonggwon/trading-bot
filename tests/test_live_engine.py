@@ -802,3 +802,129 @@ class TestExitPartialFill:
         assert "BTC/KRW" in state.positions
         assert state.positions["BTC/KRW"].size == pytest.approx(1.0 - PartialSellFeed.SOLD)
         assert state.positions["BTC/KRW"].stop_loss == 49_000_000
+
+
+# --- Bug: one symbol's tick error must not abort the rest or skip persist ---
+
+class TestTickAllPerSymbolIsolation:
+    @pytest.mark.asyncio
+    async def test_one_symbol_error_does_not_abort_others_or_skip_persist(self, tmp_path):
+        """A single symbol raising in _tick_symbol must not abort the rest of
+        the batch nor skip _persist_state. Otherwise one bad symbol silently
+        halts processing for every other symbol and drops the tick's state
+        snapshot (equity history + any state mutated this tick).
+        """
+
+        class FlakyStrategy(Strategy):
+            def __init__(self):
+                self.entry_calls: list[str] = []
+
+            @property
+            def symbols(self):
+                return ["AAA/KRW", "BBB/KRW"]
+
+            @property
+            def timeframe(self):
+                return "1h"
+
+            def indicators(self, df):
+                return df
+
+            def should_entry(self, df, symbol):
+                self.entry_calls.append(symbol)
+                if symbol == "AAA/KRW":
+                    raise RuntimeError("boom")
+                return None
+
+            def should_exit(self, df, symbol, position=None):
+                return None
+
+        feed = MockDataFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig())
+        state = StateManager(tmp_path / "state.json")
+        strat = FlakyStrategy()
+        engine = LiveEngine(
+            strategy=strat, exchange=feed, config=config,
+            state_manager=state,
+        )
+
+        # AAA is first and raises; on old code this propagated out of _tick_all.
+        await engine._tick_all(["AAA/KRW", "BBB/KRW"], "1h")
+
+        # BBB was still processed despite AAA's error...
+        assert "BBB/KRW" in strat.entry_calls
+        # ...and the post-loop state snapshot was still written.
+        assert (tmp_path / "state.json").exists()
+
+
+# --- Bug: a position held across restart must get its exit re-evaluated ---
+
+class TestRestartExitReeval:
+    @pytest.mark.asyncio
+    async def test_held_position_exit_reevaluated_on_restart(self, tmp_path):
+        """Warmup marks the last closed candle as already seen. A position held
+        across restart whose strategy wants OUT on that candle would otherwise
+        be stranded until the next candle closes (up to a full timeframe on a 4h
+        chart) — the first tick must re-evaluate the exit once.
+        """
+
+        class ExitingStrategy(Strategy):
+            def __init__(self):
+                self._symbols = ["BTC/KRW"]
+                self._timeframe = "1h"
+
+            @property
+            def symbols(self):
+                return self._symbols
+
+            @property
+            def timeframe(self):
+                return self._timeframe
+
+            def indicators(self, df):
+                return df
+
+            def should_entry(self, df, symbol):
+                return None
+
+            def should_exit(self, df, symbol, position=None):
+                return Signal(
+                    timestamp=datetime.now(UTC), symbol=symbol,
+                    signal_type=SignalType.LONG_EXIT, price=50_000_000,
+                )
+
+        class FullSellFeed(MockDataFeed):
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                return Order(
+                    id="sell-full", symbol=symbol, side=side,
+                    order_type=order_type, quantity=quantity,
+                    status=OrderStatus.FILLED,
+                    filled_price=self._price, fee=1_000.0,
+                    filled_at=datetime.now(UTC),
+                )
+
+        feed = FullSellFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=ExitingStrategy(), exchange=feed, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.001,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=40_000_000,  # far below price → no stop-out
+        )
+
+        # Mark the last CLOSED candle as already processed, exactly as warmup
+        # does — so this is NOT a new candle.
+        df = await feed.fetch_ohlcv("BTC/KRW", "1h", limit=10)
+        engine._last_candle_ts["BTC/KRW"] = df.index[-2].to_pydatetime()
+        # The restart flag is the fix: warmup sets it for symbols held at start.
+        if hasattr(engine, "_pending_restart_exit"):
+            engine._pending_restart_exit.add("BTC/KRW")
+
+        await engine._tick_symbol("BTC/KRW", df, {"last": 50_000_000})
+
+        # Exit re-evaluated → position closed despite the candle being "seen".
+        assert "BTC/KRW" not in state.positions

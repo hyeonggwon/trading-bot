@@ -80,6 +80,10 @@ class LiveEngine:
         self._running = False
         # Per-symbol last confirmed candle timestamp
         self._last_candle_ts: dict[str, datetime] = {}
+        # Symbols held at startup whose exit must be re-evaluated on the first
+        # tick — warmup marks the last closed candle as seen, which would
+        # otherwise strand a strategy exit until the next candle closes.
+        self._pending_restart_exit: set[str] = set()
 
     async def run(self) -> None:
         """Start the trading loop. Supports multiple symbols."""
@@ -126,6 +130,11 @@ class LiveEngine:
                 continue
             if len(result) >= 2:
                 self._last_candle_ts[sym] = result.index[-2].to_pydatetime()
+                # Hold a position across restart? The strategy may want OUT on
+                # this last closed candle — flag it for a one-shot exit re-eval
+                # on the first tick (entries on a pre-restart candle stay gated).
+                if sym in self.state.positions:
+                    self._pending_restart_exit.add(sym)
                 logger.info("warmup_complete", symbol=sym, candles=len(result))
 
         # Start WebSocket in background if available (real-time price updates)
@@ -200,7 +209,16 @@ class LiveEngine:
             if isinstance(result, Exception):
                 logger.warning("fetch_error", symbol=sym, error=str(result))
                 continue
-            await self._tick_symbol(sym, result, tickers.get(sym))
+            # Isolate each symbol: one symbol raising must not abort the rest
+            # of the batch nor skip the _persist_state below (which would drop
+            # equity history and any state already mutated this tick).
+            try:
+                await self._tick_symbol(sym, result, tickers.get(sym))
+            except Exception as e:
+                logger.error(
+                    "symbol_tick_error", symbol=sym,
+                    error=str(e), type=type(e).__name__,
+                )
 
         # Persist state after processing all symbols
         self._persist_state()
@@ -485,12 +503,19 @@ class LiveEngine:
         confirmed_df = df.iloc[:-1].copy()
         confirmed_ts = confirmed_df.index[-1].to_pydatetime()
 
-        # Check if we've already processed this candle for this symbol
+        # Check if we've already processed this candle for this symbol.
         last_ts = self._last_candle_ts.get(symbol)
-        if last_ts is not None and confirmed_ts <= last_ts:
+        is_new_candle = last_ts is None or confirmed_ts > last_ts
+
+        # A restart exit re-eval lets the exit path run once on an already-seen
+        # candle (a position held across restart whose strategy wants out).
+        restart_exit = symbol in self._pending_restart_exit
+        self._pending_restart_exit.discard(symbol)  # one-shot
+        if not is_new_candle and not restart_exit:
             return
 
-        self._last_candle_ts[symbol] = confirmed_ts
+        if is_new_candle:
+            self._last_candle_ts[symbol] = confirmed_ts
 
         logger.debug(
             "new_candle",
@@ -516,8 +541,10 @@ class LiveEngine:
                 if exit_signal:
                     await self._handle_exit(exit_signal, symbol, position)
 
-        # Check entry signals (only if no position in this symbol)
-        if symbol not in self.state.positions:
+        # Check entry signals (only if no position in this symbol). Entries are
+        # gated to genuinely new candles so a restart exit re-eval never opens a
+        # position on a candle that closed before the bot came back up.
+        if is_new_candle and symbol not in self.state.positions:
             entry_signal = self.strategy.should_entry(confirmed_df, symbol)
             if entry_signal:
                 await self._handle_entry(entry_signal, symbol, current_price)
