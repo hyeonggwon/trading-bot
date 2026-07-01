@@ -1,4 +1,4 @@
-"""Exit signal filters — Stochastic, CCI, MFI overbought, Z-score, PctFromMA, ATR trailing."""
+"""Exit filters — Stochastic, CCI, MFI overbought, Z-score, PctFromMA, ATR trailing, time stop."""
 
 from __future__ import annotations
 
@@ -261,3 +261,35 @@ class AtrTrailingExitFilter(BaseFilter):
         if pd.isna(highest):
             return False
         return close < highest - atr * self.multiplier
+
+
+class TimeStopExitFilter(BaseFilter):
+    """Time stop — exit after holding a position for ``max_bars`` confirmed candles.
+
+    Caps holding period regardless of price. Like ``AtrTrailingExitFilter`` it is
+    entry-relative: it needs the entry candle's positional index (threaded by
+    CombinedStrategy for trailing-style exits). When that index is unknown — the
+    plain ``Strategy.should_exit`` path never passes it, and CombinedStrategy
+    passes ``None`` after a restart or once the entry scrolls out of the visible
+    window — it cannot measure holding time and stays silent rather than firing
+    on the oldest visible bar.
+    """
+
+    name = "time_stop"
+    role = "exit"
+
+    def __init__(self, max_bars: int = 24):
+        super().__init__(max_bars=max_bars)
+        self.max_bars = max_bars
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+    def check_entry(self, df: pd.DataFrame) -> bool:
+        return False
+
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        if entry_index is None or not (0 <= entry_index < len(df)):
+            return False
+        bars_held = (len(df) - 1) - entry_index
+        return bars_held >= self.max_bars

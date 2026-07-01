@@ -17,9 +17,10 @@ import pytest
 
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
-from tradingbot.core.enums import OrderSide
+from tradingbot.core.enums import OrderSide, SignalType
+from tradingbot.core.models import Signal
+from tradingbot.strategy.base import Strategy, StrategyParams
 from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
-from tradingbot.strategy.base import StrategyParams
 
 
 def _make_trending_data(n: int = 200) -> pd.DataFrame:
@@ -442,3 +443,235 @@ class TestStopLossGapDown:
     def test_no_trigger_when_low_above_stop(self):
         candle = self._candle(open_=105.0, high=107.0, low=101.0, close=104.0)
         assert self._sim().check_stop_loss(100.0, candle, 1.0) is None
+
+
+class TestTakeProfitGapUp:
+    """Regression: a take profit can't fill below the candle open on a gap-up."""
+
+    def _sim(self):
+        from tradingbot.backtest.simulator import OrderSimulator
+
+        return OrderSimulator(BacktestConfig(slippage_pct=0.001, fee_rate=0.0005))
+
+    def _candle(self, *, open_, high, low, close):
+        from tradingbot.core.models import Candle
+
+        return Candle(
+            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            open=open_, high=high, low=low, close=close, volume=1.0,
+        )
+
+    def test_gap_up_fills_at_open_not_target(self):
+        # Candle opens at 110 — above the 100 target — so the earliest realistic
+        # fill is the open, not the (already-passed) target price.
+        candle = self._candle(open_=110.0, high=115.0, low=108.0, close=112.0)
+        result = self._sim().check_take_profit(100.0, candle, 1.0)
+        assert result is not None
+        assert result.fill_price == pytest.approx(110.0 * (1 - 0.001))
+
+    def test_intrabar_touch_fills_at_target(self):
+        # Candle opens below the target and rises through it intrabar → fill at target.
+        candle = self._candle(open_=95.0, high=101.0, low=94.0, close=100.0)
+        result = self._sim().check_take_profit(100.0, candle, 1.0)
+        assert result is not None
+        assert result.fill_price == pytest.approx(100.0 * (1 - 0.001))
+
+    def test_no_trigger_when_high_below_target(self):
+        candle = self._candle(open_=95.0, high=99.0, low=90.0, close=96.0)
+        assert self._sim().check_take_profit(100.0, candle, 1.0) is None
+
+
+# --- Signal.strength scaling + clamp at the backtest sizer (Half-Kelly) ---
+
+
+class _StrengthStrategy(Strategy):
+    """Fires one LONG_ENTRY at a fixed strength, then one LONG_EXIT."""
+
+    def __init__(self, strength: float):
+        self._strength = strength
+        self._entered = False
+        self._exit_calls = 0
+
+    @property
+    def symbols(self):
+        return ["BTC/KRW"]
+
+    @property
+    def timeframe(self):
+        return "1h"
+
+    def indicators(self, df):
+        return df
+
+    def should_entry(self, df, symbol):
+        if self._entered or len(df) < 2:
+            return None
+        self._entered = True
+        return Signal(
+            timestamp=df.index[-1],
+            symbol=symbol,
+            signal_type=SignalType.LONG_ENTRY,
+            price=float(df["close"].iloc[-1]),
+            strength=self._strength,
+        )
+
+    def should_exit(self, df, symbol, position=None):
+        if position is None:
+            return None
+        self._exit_calls += 1
+        if self._exit_calls < 2:
+            return None
+        return Signal(
+            timestamp=df.index[-1],
+            symbol=symbol,
+            signal_type=SignalType.LONG_EXIT,
+            price=float(df["close"].iloc[-1]),
+            strength=1.0,
+        )
+
+
+class TestBacktestStrengthSizing:
+    def _config(self) -> AppConfig:
+        return AppConfig(
+            trading=TradingConfig(
+                symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000,
+            ),
+            risk=RiskConfig(
+                max_position_size_pct=0.5, max_open_positions=1,
+                max_drawdown_pct=0.99, default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+    def _entry_qty(self, strength: float) -> float:
+        df = _make_trending_data(60)
+        engine = BacktestEngine(strategy=_StrengthStrategy(strength), config=self._config())
+        report = engine.run({"BTC/KRW": df})
+        return report.trades[0].entry_order.quantity if report.trades else 0.0
+
+    def test_strength_scales_entry_quantity(self):
+        """Backtest entry size must scale linearly with Signal.strength (parity
+        with the live path — otherwise ML Half-Kelly silently over/under-sizes)."""
+        full = self._entry_qty(1.0)
+        half = self._entry_qty(0.5)
+        assert full > 0
+        assert half == pytest.approx(full * 0.5, rel=1e-9)
+
+    def test_zero_strength_opens_no_position(self):
+        """strength=0 (Half-Kelly below breakeven) → no trade."""
+        df = _make_trending_data(60)
+        engine = BacktestEngine(strategy=_StrengthStrategy(0.0), config=self._config())
+        report = engine.run({"BTC/KRW": df})
+        assert report.trades == []
+
+    def test_strength_above_one_is_clamped_to_cap(self):
+        """strength > 1.0 must not breach max_position_size_pct: the [0,1] clamp
+        sizes it identically to strength=1.0, never larger."""
+        full = self._entry_qty(1.0)
+        over = self._entry_qty(5.0)
+        assert over == pytest.approx(full, rel=1e-9)
+
+
+# --- Take profit enforcement + stop-vs-target priority in the backtest engine ---
+
+
+def _ohlcv_df(rows: list[tuple[float, float, float, float]]) -> pd.DataFrame:
+    """Build a small OHLCV frame from (open, high, low, close) rows."""
+    dates = pd.date_range("2024-01-01", periods=len(rows), freq="h", tz="UTC")
+    return pd.DataFrame(
+        {
+            "open": [r[0] for r in rows],
+            "high": [r[1] for r in rows],
+            "low": [r[2] for r in rows],
+            "close": [r[3] for r in rows],
+            "volume": [1.0] * len(rows),
+        },
+        index=dates,
+    )
+
+
+class _EnterOnceStrategy(Strategy):
+    """Enters LONG once on the first eligible candle and never exits by signal,
+    so only the stop loss / take profit can close the position."""
+
+    def __init__(self):
+        self._entered = False
+
+    @property
+    def symbols(self):
+        return ["BTC/KRW"]
+
+    @property
+    def timeframe(self):
+        return "1h"
+
+    def indicators(self, df):
+        return df
+
+    def should_entry(self, df, symbol):
+        if self._entered or len(df) < 1:
+            return None
+        self._entered = True
+        return Signal(
+            timestamp=df.index[-1],
+            symbol=symbol,
+            signal_type=SignalType.LONG_ENTRY,
+            price=float(df["close"].iloc[-1]),
+            strength=1.0,
+        )
+
+    def should_exit(self, df, symbol, position=None):
+        return None
+
+
+class TestBacktestTakeProfit:
+    def _config(self, take_profit_pct: float) -> AppConfig:
+        return AppConfig(
+            trading=TradingConfig(
+                symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000,
+            ),
+            risk=RiskConfig(
+                max_position_size_pct=0.5, max_open_positions=1,
+                max_drawdown_pct=0.99, default_stop_loss_pct=0.05,
+                default_take_profit_pct=take_profit_pct, risk_per_trade_pct=0.02,
+            ),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+    def test_take_profit_closes_winning_trade(self):
+        # Entry fills at candle 1's open (100 * 1.001 = 100.1); the 10% target
+        # sits at 110.11. Candle 3 gaps up through it → exit at the target.
+        df = _ohlcv_df([
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),   # entry fills here at open=100
+            (100, 101, 99, 100),
+            (105, 115, 104, 112),  # high pierces the take profit
+            (112, 113, 111, 112),
+        ])
+        engine = BacktestEngine(strategy=_EnterOnceStrategy(), config=self._config(0.10))
+        report = engine.run({"BTC/KRW": df})
+
+        assert len(report.trades) == 1
+        t = report.trades[0]
+        entry_fill = 100.0 * 1.001
+        assert t.exit_order.filled_price == pytest.approx(entry_fill * 1.10 * (1 - 0.001))
+        assert t.exit_order.filled_price > t.entry_order.filled_price
+
+    def test_stop_wins_when_stop_and_target_hit_same_candle(self):
+        # One candle reaches BOTH the stop (low 90 <= 95.095) and the target
+        # (high 115 >= 110.11). Phase-1 checks the stop first via `or`
+        # short-circuit, so it must exit at the stop (a loss), never the target.
+        df = _ohlcv_df([
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),   # entry fills here at open=100
+            (100, 115, 90, 100),   # stop AND target both reachable this candle
+        ])
+        engine = BacktestEngine(strategy=_EnterOnceStrategy(), config=self._config(0.10))
+        report = engine.run({"BTC/KRW": df})
+
+        assert len(report.trades) == 1
+        t = report.trades[0]
+        entry_fill = 100.0 * 1.001
+        assert t.exit_order.filled_price == pytest.approx(entry_fill * 0.95 * (1 - 0.001))
+        assert t.exit_order.filled_price < t.entry_order.filled_price

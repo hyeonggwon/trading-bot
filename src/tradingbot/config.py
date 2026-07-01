@@ -1,35 +1,45 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any
+from typing import Annotated, Any
 
 import yaml
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from pydantic_settings import BaseSettings
+
+VALID_TIMEFRAMES = frozenset({"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"})
 
 
 class ExchangeConfig(BaseModel):
     name: str = "upbit"
-    rate_limit_per_sec: int = 10
+    rate_limit_per_sec: Annotated[int, Field(ge=1)] = 10
 
 
 class TradingConfig(BaseModel):
     symbols: list[str] = ["BTC/KRW"]
     timeframe: str = "1h"
-    initial_balance: float = 1_000_000  # KRW
+    initial_balance: Annotated[float, Field(gt=0)] = 1_000_000  # KRW
+
+    @field_validator("timeframe")
+    @classmethod
+    def _validate_timeframe(cls, v: str) -> str:
+        if v not in VALID_TIMEFRAMES:
+            raise ValueError(f"invalid timeframe '{v}'; expected one of {sorted(VALID_TIMEFRAMES)}")
+        return v
 
 
 class RiskConfig(BaseModel):
-    max_position_size_pct: float = 0.1
-    max_open_positions: int = 3
-    max_drawdown_pct: float = 0.20
-    default_stop_loss_pct: float = 0.02
-    risk_per_trade_pct: float = 0.01
+    max_position_size_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.1
+    max_open_positions: Annotated[int, Field(ge=1)] = 3
+    max_drawdown_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.20
+    default_stop_loss_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.02
+    default_take_profit_pct: Annotated[float, Field(gt=0, le=1.0)] | None = None
+    risk_per_trade_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.01
 
 
 class BacktestConfig(BaseModel):
-    fee_rate: float = 0.0005
-    slippage_pct: float = 0.001
+    fee_rate: Annotated[float, Field(ge=0, le=1.0)] = 0.0005
+    slippage_pct: Annotated[float, Field(ge=0, le=1.0)] = 0.001
     start_date: str | None = None
     end_date: str | None = None
 

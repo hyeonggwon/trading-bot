@@ -1,0 +1,53 @@
+name: CI
+
+# pytest 는 차단(blocking) 게이트 — 현재 그린. ruff/mypy 는 informational
+# (continue-on-error): 기존 부채(ruff 162·format 47·mypy 324)를 리포트만 하고
+# 머지를 막지 않는다(스텝별 continue-on-error 라 잡 자체는 green). 부채 정리 후
+# 각 스텝의 continue-on-error 를 제거해 차단 게이트로 승격(래칫)하는 것이 다음 단계.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    name: pytest (blocking)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install OpenMP runtime (LightGBM)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
+      - name: Install package
+        run: pip install -e ".[dev,ml]"
+      - name: Run tests
+        run: pytest tests/ -q
+
+  lint:
+    name: lint & types (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+      - name: Install OpenMP runtime (LightGBM)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
+      - name: Install package
+        run: pip install -e ".[dev,ml]"
+      - name: ruff check
+        continue-on-error: true
+        run: ruff check src/ tests/
+      - name: ruff format --check
+        continue-on-error: true
+        run: ruff format --check src/ tests/
+      - name: mypy
+        continue-on-error: true
+        run: mypy src/

@@ -282,7 +282,10 @@ class LiveEngine:
             price = float(ticker["last"]) if ticker and ticker.get("last") else None
             if price is None:
                 continue
-            await self._maybe_stop_out(sym, position, price)
+            # Stop first, then take profit — only check TP if the stop didn't
+            # already close the position (avoids a double-sell on the same tick).
+            if not await self._maybe_stop_out(sym, position, price):
+                await self._maybe_take_profit(sym, position, price)
         self._persist_state()
 
     def _restore_state(self) -> None:
@@ -461,6 +464,7 @@ class LiveEngine:
                 logger.error("reconcile_price_failed", symbol=symbol, error=str(e))
                 continue
             stop_loss = self.risk_manager.calculate_stop_loss(price)
+            take_profit = self.risk_manager.calculate_take_profit(price)
             self.state.positions[symbol] = Position(
                 symbol=symbol,
                 side=PositionSide.LONG,
@@ -468,6 +472,7 @@ class LiveEngine:
                 entry_price=price,
                 entry_time=datetime.now(UTC),
                 stop_loss=stop_loss,
+                take_profit=take_profit,
             )
             # Unknown real entry fee — record 0 so exit PnL doesn't subtract a
             # fee we never observed.
@@ -563,6 +568,8 @@ class LiveEngine:
         if position is not None:
             stopped = await self._maybe_stop_out(symbol, position, current_price)
             if not stopped:
+                stopped = await self._maybe_take_profit(symbol, position, current_price)
+            if not stopped:
                 exit_signal = self.strategy.should_exit(confirmed_df, symbol, position)
                 if exit_signal:
                     await self._handle_exit(exit_signal, symbol, position)
@@ -611,27 +618,75 @@ class LiveEngine:
         logger.error("stop_loss_exit_failed", symbol=symbol)
         return False
 
+    async def _maybe_take_profit(
+        self, symbol: str, position: Position, current_price: float
+    ) -> bool:
+        """Close the position if ``current_price`` reached its take profit.
+
+        Returns True if the target fired and the position was closed. Sibling of
+        ``_maybe_stop_out``; runs in the same pre-entry exit block on both the
+        candle path (``_tick_symbol``) and the between-candle monitor so the
+        target is honored in real time, not only at candle close.
+        """
+        if not position.take_profit or current_price < position.take_profit:
+            return False
+
+        logger.info(
+            "take_profit_triggered",
+            symbol=symbol,
+            current_price=f"{current_price:,.0f}",
+            take_profit=f"{position.take_profit:,.0f}",
+        )
+        tp_signal = Signal(
+            timestamp=datetime.now(UTC),
+            symbol=symbol,
+            signal_type=SignalType.LONG_EXIT,
+            price=current_price,
+            strength=1.0,
+        )
+        await self._handle_exit(tp_signal, symbol, position)
+        if symbol not in self.state.positions:
+            if self.notifier and hasattr(self.notifier, 'send_signal'):
+                await self.notifier.send_signal(
+                    f"TAKE PROFIT {symbol}: price={current_price:,.0f}, "
+                    f"target={position.take_profit:,.0f}"
+                )
+            return True
+        logger.error("take_profit_exit_failed", symbol=symbol)
+        return False
+
     async def _handle_entry(
         self, signal_obj: Signal, symbol: str, current_price: float
     ) -> None:
         """Process an entry signal."""
         balance = await self.exchange.get_balance()
         cash = balance.get("KRW", 0)
-        equity = await self._calculate_equity(balance=balance)
+        # Mark every open position to market so the risk gate (drawdown circuit
+        # breaker / peak equity) and the sizer judge the SAME equity — matching
+        # the backtest, which marks all positions. Without out_prices, positions
+        # other than `symbol` fall back to entry_price (cost basis) in
+        # PortfolioState.equity and the breaker goes blind to unrealized losses.
+        prices: dict[str, float] = {}
+        equity = await self._calculate_equity(balance=balance, out_prices=prices)
+        prices[symbol] = current_price
 
-        # Validate with risk manager using actual cash balance
+        # Validate with risk manager using mark-to-market equity
         from tradingbot.core.models import PortfolioState
         portfolio = PortfolioState(
             timestamp=datetime.now(UTC),
             cash=cash,
             positions=list(self.state.positions.values()),
         )
-        prices = {symbol: current_price}
         if not self.risk_manager.validate_signal(signal_obj, portfolio, prices):
             logger.info("signal_rejected_by_risk_manager", symbol=symbol)
             return
 
-        # Estimate fill price with slippage for conservative sizing
+        # Estimate fill price with slippage for conservative sizing. Sizing uses
+        # this pre-order estimate; after the real fill only the stop loss is
+        # recalculated from the actual price (below), not the quantity — so
+        # realized risk can drift slightly from risk_per_trade_pct when the fill
+        # deviates from the estimate. Accepted: re-sizing a filled market order
+        # would require cancel/replace round-trips.
         slippage_pct = getattr(self.exchange, '_slippage_pct', 0.001)
         expected_price = current_price * (1 + slippage_pct)
 
@@ -640,7 +695,25 @@ class LiveEngine:
         quantity = self.risk_manager.calculate_position_size(
             expected_price, stop_loss, equity
         )
-        quantity = quantity * signal_obj.strength  # ML probability-based sizing (matches backtest)
+        # ML sizing; the [0,1] clamp keeps strength from breaching the cap
+        quantity = quantity * max(0.0, min(1.0, signal_obj.strength))
+
+        # Clamp to spendable KRW (fee-inclusive) so an order sized on total
+        # mark-to-market equity can't exceed free cash — mirrors backtest
+        # _execute_buy / paper truncation and keeps live reproducible (a real
+        # exchange rejects an over-budget order rather than truncating).
+        fee_rate = getattr(self.exchange, "_fee_rate", 0.0005)
+        if expected_price > 0:
+            max_affordable = cash / (expected_price * (1 + fee_rate))
+            if quantity > max_affordable:
+                logger.warning(
+                    "entry_size_clamped_to_cash",
+                    symbol=symbol,
+                    requested=f"{quantity:.8f}",
+                    affordable=f"{max_affordable:.8f}",
+                    cash=f"{cash:,.0f}",
+                )
+                quantity = max_affordable
         if quantity <= 0:
             return
 
@@ -682,6 +755,7 @@ class LiveEngine:
 
             actual_price = order.filled_price or current_price
             actual_stop_loss = self.risk_manager.calculate_stop_loss(actual_price)
+            actual_take_profit = self.risk_manager.calculate_take_profit(actual_price)
 
             self.state.positions[symbol] = Position(
                 symbol=symbol,
@@ -690,6 +764,7 @@ class LiveEngine:
                 entry_price=actual_price,
                 entry_time=datetime.now(UTC),
                 stop_loss=actual_stop_loss,
+                take_profit=actual_take_profit,
             )
             # Track entry fee for accurate PnL on exit
             self.state.entry_fees[symbol] = order.fee or 0
@@ -790,10 +865,14 @@ class LiveEngine:
         self,
         cached_tickers: dict | None = None,
         balance: dict | None = None,
+        out_prices: dict[str, float] | None = None,
     ) -> float:
         """Calculate total equity from exchange balances.
 
         Uses cached_tickers/balance if provided to avoid redundant API calls.
+        If out_prices is given, it is populated with {symbol: last_price} for
+        each priced holding so callers (e.g. the entry risk gate) can mark every
+        open position to market instead of falling back to cost basis.
         """
         if balance is None:
             balance = await self.exchange.get_balance()
@@ -808,10 +887,14 @@ class LiveEngine:
                 price = ticker.get("last")
                 if price:
                     equity += float(price) * qty
+                    if out_prices is not None:
+                        out_prices[symbol] = float(price)
             else:
                 try:
                     fetched = await self.exchange.fetch_ticker(symbol)
                     equity += fetched["last"] * qty
+                    if out_prices is not None:
+                        out_prices[symbol] = float(fetched["last"])
                 except Exception:
                     pass
         return equity

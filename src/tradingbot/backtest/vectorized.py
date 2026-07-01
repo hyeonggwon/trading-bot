@@ -36,7 +36,7 @@ import pandas as pd
 
 from tradingbot.backtest.report import PERIODS_PER_YEAR
 from tradingbot.strategy.filters.base import BaseFilter
-from tradingbot.strategy.filters.exit import AtrTrailingExitFilter
+from tradingbot.strategy.filters.exit import AtrTrailingExitFilter, TimeStopExitFilter
 
 
 @dataclass
@@ -81,12 +81,19 @@ def vectorized_backtest(
             return VectorizedResult(0.0, 0.0, 0.0, 0.0, 0.0, 0)
         entry_mask = entry_mask & f.vectorized_entry(df)
 
-    # Separate ATR trailing from other exit filters
+    # Separate ATR trailing and time-stop from other exit filters — neither fits
+    # the row-absolute vectorized_exit contract (both are entry-relative), so
+    # they are handled inside the trade-extraction loop instead of as a mask.
+    # Without this, a time_stop-only exit would produce an all-False mask and
+    # combine-scan would silently report zero trades.
     atr_filter: AtrTrailingExitFilter | None = None
+    time_stop_filter: TimeStopExitFilter | None = None
     regular_exit_filters: list[BaseFilter] = []
     for f in exit_filters:
         if isinstance(f, AtrTrailingExitFilter):
             atr_filter = f
+        elif isinstance(f, TimeStopExitFilter):
+            time_stop_filter = f
         else:
             regular_exit_filters.append(f)
 
@@ -115,6 +122,8 @@ def vectorized_backtest(
             atr_values = df[atr_col].values.astype(np.float64)
             atr_multiplier = atr_filter.multiplier
 
+    max_holding_bars = time_stop_filter.max_bars if time_stop_filter is not None else None
+
     # --- Extract trades ---
     trades, final_balance = _extract_trades(
         entry_signals=entry_signals,
@@ -130,6 +139,7 @@ def vectorized_backtest(
         max_position_pct=max_position_pct,
         atr_values=atr_values,
         atr_multiplier=atr_multiplier,
+        max_holding_bars=max_holding_bars,
     )
 
     # --- Compute metrics ---
@@ -158,6 +168,7 @@ def _extract_trades(
     max_position_pct: float,
     atr_values: np.ndarray | None,
     atr_multiplier: float,
+    max_holding_bars: int | None = None,
 ) -> tuple[list[tuple[int, int, float, float, float, float, float]], float]:
     """Extract trades from signal arrays in a single O(N) pass.
 
@@ -208,7 +219,28 @@ def _extract_trades(
                 in_position = False
                 continue
 
-            # 3. Exit signal → sell at next candle's open
+            # 3. Time stop — cap holding period (entry-relative; exits at the
+            # next open like a signal exit, mirroring TimeStopExitFilter).
+            # The exit fills at opens[i+1], so the fill-to-fill hold is
+            # (i+1) - entry_idx; fire once that reaches max_bars so the screen
+            # holds exactly max_bars bars, matching the full engine (which exits
+            # at entry_fill + max_bars). The entry-candle skip above means i is
+            # always > entry_idx here, so max_bars == 1 bottoms out at a 2-bar
+            # hold — a bounded screening approximation for that degenerate case.
+            if (
+                max_holding_bars is not None
+                and (i + 1) - entry_idx >= max_holding_bars
+                and i + 1 < n
+            ):
+                exit_price = opens[i + 1] * (1 - slippage_pct)
+                fee = exit_price * quantity * fee_rate
+                pnl = (exit_price - entry_price) * quantity - entry_fee - fee
+                cash += exit_price * quantity - fee
+                trades.append((entry_idx, i + 1, entry_price, exit_price, quantity, entry_fee, pnl))
+                in_position = False
+                continue
+
+            # 4. Exit signal → sell at next candle's open
             if exit_signals[i] and i + 1 < n:
                 exit_price = opens[i + 1] * (1 - slippage_pct)
                 fee = exit_price * quantity * fee_rate

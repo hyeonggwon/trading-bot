@@ -57,9 +57,6 @@ personal/
 # CLI output (results/ml_walkforward, etc.)
 results/
 
-# Docker
-docker-compose.yml
-
 # Markdown
 plan.md
 research.md

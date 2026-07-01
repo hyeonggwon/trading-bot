@@ -13,6 +13,7 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
         MfiOverboughtFilter,
         PctFromMaExitFilter,
         StochOverboughtFilter,
+        TimeStopExitFilter,
         ZscoreExtremeFilter,
     )
     from tradingbot.strategy.filters.ml import LgbmProbFilter
@@ -87,6 +88,7 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
         "zscore_extreme": ZscoreExtremeFilter,
         "pct_from_ma_exit": PctFromMaExitFilter,
         "atr_trailing_exit": AtrTrailingExitFilter,
+        "time_stop": TimeStopExitFilter,
         # ML filter
         "lgbm_prob": LgbmProbFilter,
     }
@@ -281,6 +283,10 @@ def _parse_filter_params(
             kwargs["period"] = int(parts[1])
         if len(parts) >= 3:
             kwargs["multiplier"] = float(parts[2])
+
+    elif name == "time_stop":
+        if len(parts) >= 2:
+            kwargs["max_bars"] = int(parts[1])
 
     elif name == "lgbm_prob":
         if len(parts) >= 2:

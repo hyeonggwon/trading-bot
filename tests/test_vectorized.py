@@ -267,6 +267,66 @@ class TestVectorizedEngine:
         assert len(trades) == 1
         assert trades[0][1] == n - 1  # exit at last bar
 
+    def test_time_stop_caps_holding(self):
+        """max_holding_bars must close the position N bars after entry (at the
+        next open), not let it ride to the force-close at the last bar."""
+        n = 20
+        entry_signals = np.zeros(n, dtype=bool)
+        entry_signals[1] = True  # entry fills at bar 2
+        exit_signals = np.zeros(n, dtype=bool)  # no signal exit
+
+        opens = np.full(n, 100.0)
+        highs = np.full(n, 101.0)
+        lows = np.full(n, 99.0)
+        closes = np.full(n, 100.0)
+
+        trades, _ = _extract_trades(
+            entry_signals=entry_signals,
+            exit_signals=exit_signals,
+            opens=opens, highs=highs, lows=lows, closes=closes,
+            initial_balance=10_000_000,
+            fee_rate=0.0005,
+            slippage_pct=0.001,
+            stop_loss_pct=0.50,  # very wide so no SL
+            max_position_pct=0.10,
+            atr_values=None,
+            atr_multiplier=0.0,
+            max_holding_bars=3,
+        )
+        assert len(trades) == 1
+        entry_idx, exit_idx = trades[0][0], trades[0][1]
+        assert entry_idx == 2
+        # Fill-to-fill hold equals max_bars (3): entry fills at bar 2, exit fills
+        # at bar 5 — matching the full engine's entry_fill + max_bars, well before
+        # the last-bar force close (bar 19).
+        assert exit_idx == 5
+        assert exit_idx - entry_idx == 3
+
+    def test_time_stop_only_exit_produces_trades(self):
+        """Silent-zero guard: a time_stop-only exit is entry-relative and cannot be
+        a row-absolute vectorized_exit mask. It is special-cased in the extraction
+        loop; if that wiring regresses, the position never cycles and collapses to a
+        single force-closed trade. Repeated capping must yield many trades."""
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+        from tradingbot.strategy.filters.price import EmaAboveFilter
+
+        df = _make_ohlcv(500, seed=7)
+        entry = EmaAboveFilter(period=20)
+        exit_ = TimeStopExitFilter(max_bars=5)
+        df = entry.compute(df)
+        df = exit_.compute(df)
+
+        result = vectorized_backtest(
+            df=df,
+            entry_filters=[entry],
+            exit_filters=[exit_],
+            initial_balance=10_000_000,
+            timeframe="1h",
+        )
+        # Without the special-case, exit_mask is all-False → exactly 1 force-closed
+        # trade. With it, the 5-bar cap recycles the position many times.
+        assert result.total_trades > 1
+
     def test_metrics_with_known_trades(self):
         """Verify win_rate and profit_factor with hand-crafted trades."""
         # 3 winning trades, 1 losing trade
@@ -446,3 +506,63 @@ class TestEngineParity:
         )
         assert same_bar > 0  # entry & exit DO coincide on some candles
         assert len(full_bars) > len(vec_bars)
+
+    @pytest.mark.parametrize("max_bars", [2, 3, 5])
+    def test_time_stop_exit_bars_match_full_engine(self, max_bars):
+        """The vectorized screen must close a time_stop trade on the SAME bar the
+        full engine does — entry_fill + max_bars. Guards the parity fix at
+        vectorized.py: without it the screen held one extra bar, so combine-scan
+        ranked time_stop templates on a longer hold than --verify-top/live."""
+        from tradingbot.backtest.engine import BacktestEngine
+        from tradingbot.backtest.vectorized import _extract_trades
+        from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
+        from tradingbot.strategy.combined import CombinedStrategy
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+        from tradingbot.strategy.filters.price import EmaAboveFilter
+
+        # Tight range so the 99% stop never fires and time_stop alone drives exits.
+        df = _make_ohlcv(120, seed=11)
+
+        # --- vectorized screen ---
+        entry = EmaAboveFilter(period=20)
+        ts = TimeStopExitFilter(max_bars=max_bars)
+        dfi = ts.compute(entry.compute(df.copy()))
+        em = entry.vectorized_entry(dfi).fillna(False).values.astype(bool)
+        xm = np.zeros(len(dfi), dtype=bool)
+        vtr, _ = _extract_trades(
+            em, xm, dfi["open"].values, dfi["high"].values, dfi["low"].values,
+            dfi["close"].values, 10_000_000, 0.0005, 0.001, 0.99, 0.10,
+            None, 0.0, max_holding_bars=max_bars,
+        )
+        vec = {t[0]: t[1] for t in vtr}  # entry_fill_bar -> exit_fill_bar
+
+        # --- full engine ---
+        strat = CombinedStrategy(
+            entry_filters=[EmaAboveFilter(period=20)],
+            exit_filters=[TimeStopExitFilter(max_bars=max_bars)],
+        )
+        strat.timeframe = "1h"
+        cfg = AppConfig(
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h",
+                                  initial_balance=10_000_000),
+            risk=RiskConfig(default_stop_loss_pct=0.99, max_position_size_pct=0.10,
+                            max_open_positions=1, max_drawdown_pct=0.99),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+        rep = BacktestEngine(strategy=strat, config=cfg).run({"BTC/KRW": df})
+        full = {
+            df.index.get_loc(t.entry_order.filled_at): df.index.get_loc(t.exit_order.filled_at)
+            for t in rep.trades if t.exit_order is not None
+        }
+
+        # Only compare trades whose time_stop exit lands before the last bar —
+        # a position opened near the end is force-closed at n-1 in both engines
+        # (hold < max_bars), which is a separate documented divergence.
+        n = len(df)
+        checkable = [e for e in (set(vec) & set(full)) if e + max_bars < n - 1]
+        assert len(checkable) >= 3  # non-degenerate overlap
+        for e in checkable:
+            # both engines hold exactly max_bars bars, fill-to-fill
+            assert vec[e] - e == max_bars
+            assert full[e] - e == max_bars
+            assert vec[e] == full[e]
