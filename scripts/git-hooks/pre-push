@@ -45,10 +45,10 @@ else
   echo "[arch-sync] drift detected — regenerating mermaid ..."
   python3 "$ARCH_HOME/scripts/extract.py" "$REPO_ROOT/src" --module tradingbot --output "$ARCH_MMD"
   touch "$ARCH_DOC"  # mtime 을 코드 파일 뒤로 밀어 drift 해소
-  if git diff --quiet -- src/tradingbot/doc/; then
+  if git diff --quiet -- "$ARCH_DOC" "$ARCH_MMD"; then
     echo "[arch-sync] import graph unchanged (mtime only) — no commit"
   else
-    git add -- src/tradingbot/doc/
+    git add -- "$ARCH_DOC" "$ARCH_MMD"
     git commit --no-verify \
       -m "docs(NO-TICKET): regenerate architecture mermaid on drift" \
       -m "pre-push arch-sync: src/tradingbot import graph 를 architecture-mapper extract.py 로 재생성." \
