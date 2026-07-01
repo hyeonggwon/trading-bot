@@ -1,0 +1,211 @@
+%% tradingbot internal dependencies
+graph TB
+    subgraph tradingbot[tradingbot]
+        tradingbot[tradingbot]
+        tradingbot_backtest[backtest]
+        tradingbot_backtest_engine[backtest.engine]
+        tradingbot_backtest_holdout[backtest.holdout]
+        tradingbot_backtest_optimizer[backtest.optimizer]
+        tradingbot_backtest_parallel[backtest.parallel]
+        tradingbot_backtest_report[backtest.report]
+        tradingbot_backtest_simulator[backtest.simulator]
+        tradingbot_backtest_vectorized[backtest.vectorized]
+        tradingbot_backtest_walk_forward[backtest.walk_forward]
+        tradingbot_cli[cli]
+        tradingbot_config[config]
+        tradingbot_core[core]
+        tradingbot_core_enums[core.enums]
+        tradingbot_core_events[core.events]
+        tradingbot_core_models[core.models]
+        tradingbot_dashboard[dashboard]
+        tradingbot_dashboard_app[dashboard.app]
+        tradingbot_data[data]
+        tradingbot_data_external_fetcher[data.external_fetcher]
+        tradingbot_data_fetcher[data.fetcher]
+        tradingbot_data_indicators[data.indicators]
+        tradingbot_data_storage[data.storage]
+        tradingbot_exchange[exchange]
+        tradingbot_exchange_base[exchange.base]
+        tradingbot_exchange_ccxt_exchange[exchange.ccxt_exchange]
+        tradingbot_exchange_paper[exchange.paper]
+        tradingbot_exchange_ws_client[exchange.ws_client]
+        tradingbot_live[live]
+        tradingbot_live_engine[live.engine]
+        tradingbot_live_order_manager[live.order_manager]
+        tradingbot_live_state[live.state]
+        tradingbot_ml[ml]
+        tradingbot_ml_diagnostics[ml.diagnostics]
+        tradingbot_ml_features[ml.features]
+        tradingbot_ml_parallel[ml.parallel]
+        tradingbot_ml_strategy_walk_forward[ml.strategy_walk_forward]
+        tradingbot_ml_targets[ml.targets]
+        tradingbot_ml_threshold_tuner[ml.threshold_tuner]
+        tradingbot_ml_trainer[ml.trainer]
+        tradingbot_ml_tuner[ml.tuner]
+        tradingbot_ml_utils[ml.utils]
+        tradingbot_ml_walk_forward[ml.walk_forward]
+        tradingbot_notifications[notifications]
+        tradingbot_notifications_telegram[notifications.telegram]
+        tradingbot_risk[risk]
+        tradingbot_risk_manager[risk.manager]
+        tradingbot_risk_validators[risk.validators]
+        tradingbot_strategy[strategy]
+        tradingbot_strategy_base[strategy.base]
+        tradingbot_strategy_combined[strategy.combined]
+        tradingbot_strategy_examples[strategy.examples]
+        tradingbot_strategy_filters[strategy.filters]
+        tradingbot_strategy_lgbm_strategy[strategy.lgbm_strategy]
+        tradingbot_strategy_registry[strategy.registry]
+        tradingbot_utils[utils]
+        tradingbot_utils_logging[utils.logging]
+        tradingbot_utils_time[utils.time]
+    end
+    tradingbot_backtest_engine --> tradingbot_backtest_report
+    tradingbot_backtest_engine --> tradingbot_backtest_simulator
+    tradingbot_backtest_engine --> tradingbot_config
+    tradingbot_backtest_engine --> tradingbot_core_enums
+    tradingbot_backtest_engine --> tradingbot_core_models
+    tradingbot_backtest_engine --> tradingbot_data_storage
+    tradingbot_backtest_engine --> tradingbot_risk_manager
+    tradingbot_backtest_engine --> tradingbot_strategy_base
+    tradingbot_backtest_optimizer --> tradingbot_backtest_engine
+    tradingbot_backtest_optimizer --> tradingbot_backtest_report
+    tradingbot_backtest_optimizer --> tradingbot_config
+    tradingbot_backtest_optimizer --> tradingbot_strategy_base
+    tradingbot_backtest_parallel --> tradingbot_backtest_engine
+    tradingbot_backtest_parallel --> tradingbot_backtest_holdout
+    tradingbot_backtest_parallel --> tradingbot_backtest_vectorized
+    tradingbot_backtest_parallel --> tradingbot_config
+    tradingbot_backtest_parallel --> tradingbot_data_storage
+    tradingbot_backtest_parallel --> tradingbot_strategy_combined
+    tradingbot_backtest_parallel --> tradingbot_strategy_filters
+    tradingbot_backtest_parallel --> tradingbot_strategy_registry
+    tradingbot_backtest_report --> tradingbot_core_models
+    tradingbot_backtest_simulator --> tradingbot_config
+    tradingbot_backtest_simulator --> tradingbot_core_enums
+    tradingbot_backtest_simulator --> tradingbot_core_models
+    tradingbot_backtest_vectorized --> tradingbot_backtest_report
+    tradingbot_backtest_vectorized --> tradingbot_strategy_filters
+    tradingbot_backtest_walk_forward --> tradingbot_backtest_engine
+    tradingbot_backtest_walk_forward --> tradingbot_backtest_optimizer
+    tradingbot_backtest_walk_forward --> tradingbot_backtest_report
+    tradingbot_backtest_walk_forward --> tradingbot_config
+    tradingbot_backtest_walk_forward --> tradingbot_strategy_base
+    tradingbot_cli --> tradingbot_backtest_engine
+    tradingbot_cli --> tradingbot_backtest_holdout
+    tradingbot_cli --> tradingbot_backtest_optimizer
+    tradingbot_cli --> tradingbot_backtest_parallel
+    tradingbot_cli --> tradingbot_backtest_report
+    tradingbot_cli --> tradingbot_backtest_walk_forward
+    tradingbot_cli --> tradingbot_config
+    tradingbot_cli --> tradingbot_data_external_fetcher
+    tradingbot_cli --> tradingbot_data_fetcher
+    tradingbot_cli --> tradingbot_data_storage
+    tradingbot_cli --> tradingbot_exchange_ccxt_exchange
+    tradingbot_cli --> tradingbot_exchange_paper
+    tradingbot_cli --> tradingbot_exchange_ws_client
+    tradingbot_cli --> tradingbot_live_engine
+    tradingbot_cli --> tradingbot_live_order_manager
+    tradingbot_cli --> tradingbot_live_state
+    tradingbot_cli --> tradingbot_ml_diagnostics
+    tradingbot_cli --> tradingbot_ml_parallel
+    tradingbot_cli --> tradingbot_ml_strategy_walk_forward
+    tradingbot_cli --> tradingbot_ml_threshold_tuner
+    tradingbot_cli --> tradingbot_ml_trainer
+    tradingbot_cli --> tradingbot_ml_tuner
+    tradingbot_cli --> tradingbot_ml_walk_forward
+    tradingbot_cli --> tradingbot_notifications_telegram
+    tradingbot_cli --> tradingbot_risk_validators
+    tradingbot_cli --> tradingbot_strategy_base
+    tradingbot_cli --> tradingbot_strategy_combined
+    tradingbot_cli --> tradingbot_strategy_filters
+    tradingbot_cli --> tradingbot_strategy_lgbm_strategy
+    tradingbot_cli --> tradingbot_strategy_registry
+    tradingbot_cli --> tradingbot_utils_logging
+    tradingbot_cli --> tradingbot_utils_time
+    tradingbot_core_events --> tradingbot_core_models
+    tradingbot_core_models --> tradingbot_core_enums
+    tradingbot_dashboard_app --> tradingbot_backtest_engine
+    tradingbot_dashboard_app --> tradingbot_config
+    tradingbot_dashboard_app --> tradingbot_data_storage
+    tradingbot_dashboard_app --> tradingbot_strategy_registry
+    tradingbot_data_external_fetcher --> tradingbot_data_storage
+    tradingbot_data_fetcher --> tradingbot_config
+    tradingbot_exchange_base --> tradingbot_core_enums
+    tradingbot_exchange_base --> tradingbot_core_models
+    tradingbot_exchange_ccxt_exchange --> tradingbot_config
+    tradingbot_exchange_ccxt_exchange --> tradingbot_core_enums
+    tradingbot_exchange_ccxt_exchange --> tradingbot_core_models
+    tradingbot_exchange_ccxt_exchange --> tradingbot_exchange_base
+    tradingbot_exchange_paper --> tradingbot_core_enums
+    tradingbot_exchange_paper --> tradingbot_core_models
+    tradingbot_exchange_paper --> tradingbot_exchange_base
+    tradingbot_live_engine --> tradingbot_config
+    tradingbot_live_engine --> tradingbot_core_enums
+    tradingbot_live_engine --> tradingbot_core_models
+    tradingbot_live_engine --> tradingbot_exchange_base
+    tradingbot_live_engine --> tradingbot_live_state
+    tradingbot_live_engine --> tradingbot_risk_manager
+    tradingbot_live_engine --> tradingbot_strategy_base
+    tradingbot_live_order_manager --> tradingbot_core_enums
+    tradingbot_live_order_manager --> tradingbot_core_models
+    tradingbot_live_order_manager --> tradingbot_exchange_base
+    tradingbot_live_state --> tradingbot_core_enums
+    tradingbot_live_state --> tradingbot_core_models
+    tradingbot_ml_features --> tradingbot_data_indicators
+    tradingbot_ml_parallel --> tradingbot_config
+    tradingbot_ml_parallel --> tradingbot_data_external_fetcher
+    tradingbot_ml_parallel --> tradingbot_data_storage
+    tradingbot_ml_parallel --> tradingbot_ml_threshold_tuner
+    tradingbot_ml_parallel --> tradingbot_ml_tuner
+    tradingbot_ml_parallel --> tradingbot_ml_walk_forward
+    tradingbot_ml_strategy_walk_forward --> tradingbot_backtest_engine
+    tradingbot_ml_strategy_walk_forward --> tradingbot_backtest_report
+    tradingbot_ml_strategy_walk_forward --> tradingbot_config
+    tradingbot_ml_strategy_walk_forward --> tradingbot_data_external_fetcher
+    tradingbot_ml_strategy_walk_forward --> tradingbot_ml_features
+    tradingbot_ml_strategy_walk_forward --> tradingbot_ml_trainer
+    tradingbot_ml_strategy_walk_forward --> tradingbot_ml_walk_forward
+    tradingbot_ml_strategy_walk_forward --> tradingbot_strategy_base
+    tradingbot_ml_strategy_walk_forward --> tradingbot_strategy_lgbm_strategy
+    tradingbot_ml_threshold_tuner --> tradingbot_backtest_engine
+    tradingbot_ml_threshold_tuner --> tradingbot_config
+    tradingbot_ml_threshold_tuner --> tradingbot_ml_features
+    tradingbot_ml_threshold_tuner --> tradingbot_ml_trainer
+    tradingbot_ml_threshold_tuner --> tradingbot_strategy_base
+    tradingbot_ml_threshold_tuner --> tradingbot_strategy_lgbm_strategy
+    tradingbot_ml_tuner --> tradingbot_config
+    tradingbot_ml_tuner --> tradingbot_ml_strategy_walk_forward
+    tradingbot_ml_walk_forward --> tradingbot_ml_features
+    tradingbot_ml_walk_forward --> tradingbot_ml_targets
+    tradingbot_ml_walk_forward --> tradingbot_ml_trainer
+    tradingbot_notifications_telegram --> tradingbot_config
+    tradingbot_risk_manager --> tradingbot_config
+    tradingbot_risk_manager --> tradingbot_core_enums
+    tradingbot_risk_manager --> tradingbot_core_models
+    tradingbot_strategy_base --> tradingbot_core_enums
+    tradingbot_strategy_base --> tradingbot_core_models
+    tradingbot_strategy_combined --> tradingbot_core_enums
+    tradingbot_strategy_combined --> tradingbot_core_models
+    tradingbot_strategy_combined --> tradingbot_strategy_base
+    tradingbot_strategy_combined --> tradingbot_strategy_filters
+    tradingbot_strategy_examples --> tradingbot_core_enums
+    tradingbot_strategy_examples --> tradingbot_core_models
+    tradingbot_strategy_examples --> tradingbot_data_indicators
+    tradingbot_strategy_examples --> tradingbot_strategy_base
+    tradingbot_strategy_filters --> tradingbot_data_external_fetcher
+    tradingbot_strategy_filters --> tradingbot_data_indicators
+    tradingbot_strategy_filters --> tradingbot_ml_features
+    tradingbot_strategy_filters --> tradingbot_ml_trainer
+    tradingbot_strategy_filters --> tradingbot_ml_utils
+    tradingbot_strategy_filters --> tradingbot_strategy_examples
+    tradingbot_strategy_lgbm_strategy --> tradingbot_core_enums
+    tradingbot_strategy_lgbm_strategy --> tradingbot_core_models
+    tradingbot_strategy_lgbm_strategy --> tradingbot_data_external_fetcher
+    tradingbot_strategy_lgbm_strategy --> tradingbot_ml_features
+    tradingbot_strategy_lgbm_strategy --> tradingbot_ml_trainer
+    tradingbot_strategy_lgbm_strategy --> tradingbot_ml_utils
+    tradingbot_strategy_lgbm_strategy --> tradingbot_strategy_base
+    tradingbot_strategy_registry --> tradingbot_strategy_base
+    tradingbot_strategy_registry --> tradingbot_strategy_examples
+    tradingbot_strategy_registry --> tradingbot_strategy_lgbm_strategy

@@ -21,6 +21,7 @@
 - **Incoming**: `tradingbot` console_script(`pyproject.toml`) → `cli.py:app`. 외부 사용자는 CLI만 쓴다.
 - **Outgoing**: `ccxt`(Upbit), `lightgbm`/`scikit-learn`/`optuna`(ML), `pandas`/`pyarrow`(Parquet), `typer`/`rich`(CLI), `streamlit`(`dashboard/`, optional), `httpx`/`websockets`(`exchange/ws_client.py`).
 - **모듈 간**: `strategy` → `core/models`·`data/indicators`. `backtest/engine` → `strategy`·`risk/manager`·`backtest/simulator`. `live/engine` → `exchange/*`·`risk`·`notifications/telegram`. `ml/*` → `data/*`·`strategy/lgbm_strategy`. 직접 cross-call 보다 `core/models` 의 dataclass 경유.
+- **아키텍처 도식**: 서브패키지 의존 그래프 + layer 경계 규칙은 [`doc/architecture.md`](./doc/architecture.md) (자동 생성 mermaid, pre-push 훅이 drift 시 재생성).
 
 ## Why — 코드에 안 적힌 부족 지식
 
