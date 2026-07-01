@@ -478,3 +478,32 @@ class TestTrailingExitTimestampAnchor:
         # New code: anchors on persisted entry_time -> highest=160 -> exits.
         exit_sig = strategy.should_exit(df_exit, "BTC/KRW", position)
         assert exit_sig is not None
+
+    def test_scrolled_out_entry_falls_back_to_none(self):
+        """When the entry candle has aged out of the rolling window, the entry
+        timestamp predates every bar. The anchor must fall back to None (the
+        filter's own heuristic), not silently snap to the oldest bar (index 0).
+        Old code returns 0 for that scrolled-off case; the fix returns None."""
+        from tradingbot.core.enums import PositionSide
+        from tradingbot.core.models import Position
+
+        # Current fetch window starts 2024-01-05; the position entered on
+        # 2024-01-01, long before every bar still in the window.
+        dates = pd.date_range("2024-01-05", periods=20, freq="h", tz="UTC")
+        df = pd.DataFrame(
+            {"open": [100.0] * 20, "high": [100.0] * 20, "low": [100.0] * 20,
+             "close": [100.0] * 20, "volume": [100.0] * 20},
+            index=dates,
+        )
+        strategy = CombinedStrategy(
+            entry_filters=[_AlwaysEnter()],
+            exit_filters=[AtrTrailingExitFilter(period=3, multiplier=1.0)],
+        )
+        position = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0, entry_price=100.0,
+            entry_time=pd.Timestamp("2024-01-01", tz="UTC").to_pydatetime(),
+            stop_loss=None,
+        )
+        # No cached entry time -> uses persisted position.entry_time, which
+        # predates the window: index-0 snap is wrong, None is the contract.
+        assert strategy._resolve_entry_index(df, "BTC/KRW", position) is None

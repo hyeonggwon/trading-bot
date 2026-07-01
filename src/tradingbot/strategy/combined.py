@@ -151,6 +151,13 @@ class CombinedStrategy(Strategy):
         pos = int(index.searchsorted(ts, side="left"))
         if pos >= len(index):
             pos = len(index) - 1
+        # When the entry candle has scrolled out of the current window (held
+        # longer than the rolling fetch window), its timestamp predates every
+        # bar and searchsorted returns 0 for a bar that is NOT the entry candle.
+        # Returning 0 would silently anchor "highest high since entry" on the
+        # oldest available bar; fall back to the filter's own heuristic instead.
+        if pos == 0 and len(index) > 0 and index[0] > ts:
+            return None
         return max(pos, 0)
 
     def describe(self) -> str:
