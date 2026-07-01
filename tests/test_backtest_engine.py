@@ -17,9 +17,10 @@ import pytest
 
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
-from tradingbot.core.enums import OrderSide
+from tradingbot.core.enums import OrderSide, SignalType
+from tradingbot.core.models import Signal
+from tradingbot.strategy.base import Strategy, StrategyParams
 from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
-from tradingbot.strategy.base import StrategyParams
 
 
 def _make_trending_data(n: int = 200) -> pd.DataFrame:
@@ -442,3 +443,95 @@ class TestStopLossGapDown:
     def test_no_trigger_when_low_above_stop(self):
         candle = self._candle(open_=105.0, high=107.0, low=101.0, close=104.0)
         assert self._sim().check_stop_loss(100.0, candle, 1.0) is None
+
+
+# --- Signal.strength scaling + clamp at the backtest sizer (Half-Kelly) ---
+
+
+class _StrengthStrategy(Strategy):
+    """Fires one LONG_ENTRY at a fixed strength, then one LONG_EXIT."""
+
+    def __init__(self, strength: float):
+        self._strength = strength
+        self._entered = False
+        self._exit_calls = 0
+
+    @property
+    def symbols(self):
+        return ["BTC/KRW"]
+
+    @property
+    def timeframe(self):
+        return "1h"
+
+    def indicators(self, df):
+        return df
+
+    def should_entry(self, df, symbol):
+        if self._entered or len(df) < 2:
+            return None
+        self._entered = True
+        return Signal(
+            timestamp=df.index[-1],
+            symbol=symbol,
+            signal_type=SignalType.LONG_ENTRY,
+            price=float(df["close"].iloc[-1]),
+            strength=self._strength,
+        )
+
+    def should_exit(self, df, symbol, position=None):
+        if position is None:
+            return None
+        self._exit_calls += 1
+        if self._exit_calls < 2:
+            return None
+        return Signal(
+            timestamp=df.index[-1],
+            symbol=symbol,
+            signal_type=SignalType.LONG_EXIT,
+            price=float(df["close"].iloc[-1]),
+            strength=1.0,
+        )
+
+
+class TestBacktestStrengthSizing:
+    def _config(self) -> AppConfig:
+        return AppConfig(
+            trading=TradingConfig(
+                symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000,
+            ),
+            risk=RiskConfig(
+                max_position_size_pct=0.5, max_open_positions=1,
+                max_drawdown_pct=0.99, default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
+            backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+        )
+
+    def _entry_qty(self, strength: float) -> float:
+        df = _make_trending_data(60)
+        engine = BacktestEngine(strategy=_StrengthStrategy(strength), config=self._config())
+        report = engine.run({"BTC/KRW": df})
+        return report.trades[0].entry_order.quantity if report.trades else 0.0
+
+    def test_strength_scales_entry_quantity(self):
+        """Backtest entry size must scale linearly with Signal.strength (parity
+        with the live path — otherwise ML Half-Kelly silently over/under-sizes)."""
+        full = self._entry_qty(1.0)
+        half = self._entry_qty(0.5)
+        assert full > 0
+        assert half == pytest.approx(full * 0.5, rel=1e-9)
+
+    def test_zero_strength_opens_no_position(self):
+        """strength=0 (Half-Kelly below breakeven) → no trade."""
+        df = _make_trending_data(60)
+        engine = BacktestEngine(strategy=_StrengthStrategy(0.0), config=self._config())
+        report = engine.run({"BTC/KRW": df})
+        assert report.trades == []
+
+    def test_strength_above_one_is_clamped_to_cap(self):
+        """strength > 1.0 must not breach max_position_size_pct: the [0,1] clamp
+        sizes it identically to strength=1.0, never larger."""
+        full = self._entry_qty(1.0)
+        over = self._entry_qty(5.0)
+        assert over == pytest.approx(full, rel=1e-9)

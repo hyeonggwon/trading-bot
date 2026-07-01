@@ -329,7 +329,8 @@ class BacktestEngine:
             quantity = self.risk_manager.calculate_position_size(
                 fill.fill_price, stop_loss, equity
             )
-            quantity = quantity * signal.strength  # ML probability-based sizing
+            # ML sizing; the [0,1] clamp keeps strength from breaching the cap
+            quantity = quantity * max(0.0, min(1.0, signal.strength))
             if quantity <= 0:
                 return
 
