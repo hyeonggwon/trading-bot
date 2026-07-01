@@ -2,14 +2,14 @@
 
 ## What — 무엇을 하는가
 
-운영·진단 보조 스크립트 모음. Docker healthcheck, Phase 6 ML 파이프라인 실행, 모델별 calibrator 분포 확인, pre-push 단계의 CLAUDE.md 동기화 훅 소스를 둔다. `tradingbot` CLI 외부에서 도는 것만 여기에 둔다 — CLI로 흡수 가능한 로직은 `src/tradingbot/cli.py` 쪽으로.
+운영·진단 보조 스크립트 모음. Docker healthcheck, Phase 6 ML 파이프라인 실행, 모델별 calibrator 분포 확인, pre-push 단계의 문서 동기화 훅(정적 아키텍처 mermaid 재생성 + LLM 기반 CLAUDE.md 동기화) 소스를 둔다. `tradingbot` CLI 외부에서 도는 것만 여기에 둔다 — CLI로 흡수 가능한 로직은 `src/tradingbot/cli.py` 쪽으로.
 
 ## How — 일반적인 수정
 
 - **Phase 파이프라인 변경**: `run_phase6.sh` 의 5단계(`ml-train-all` → `ml-tune-all` → `ml-tune-thresholds-all` → `scan` → `combine-scan`) 인자 수정. train/tune-all 의 `--train-months 6 --test-months 2` 정렬은 깨지 않게 유지.
 - **헬스체크 정책 변경**: `healthcheck.py` 의 `MAX_STALE_SECONDS` 기본값 또는 `STATE_FILE` 환경변수 해석 수정. exit 0/1 계약은 Dockerfile 의 HEALTHCHECK 기대값.
 - **새 진단 스크립트**: `inspect_<topic>.py` 네이밍으로 추가. 모델·calibrator 로드는 `inspect_eth_calibrator.py` 패턴 차용.
-- **pre-push 훅 변경**: `git-hooks/pre-push` 수정 후 반드시 `cp scripts/git-hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push` (직접 복사, symlink 안 씀).
+- **pre-push 훅 변경**: `git-hooks/pre-push` 수정 후 반드시 `cp scripts/git-hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push` (직접 복사, symlink 안 씀). 훅은 2단계 — (1) architecture-mapper `drift.py`/`extract.py` 로 `src/tradingbot/doc/mermaid` 정적 재생성(LLM 없음, `SKIP_ARCH_SYNC=1` 우회), (2) `claude -p` 로 영향 모듈 CLAUDE.md 동기화(`SKIP_CLAUDE_MD_SYNC=1` 우회). 아키텍처 문서(`src/tradingbot/doc/architecture.md`)가 없으면 1단계는 조용히 skip.
 
 ## How not — 빌드를 깨뜨리는 비명백한 패턴
 
@@ -18,7 +18,7 @@
 ## Where — 의존성
 
 - **Incoming**: `Dockerfile`(healthcheck.py 복사), 사람이 수동 실행(`run_phase6.sh`, `inspect_*.py`), git push(`git-hooks/pre-push`).
-- **Outgoing**: `tradingbot` CLI(`run_phase6.sh`가 호출), `tradingbot.data.external_fetcher` / `tradingbot.ml`(`inspect_eth_calibrator.py`), `state.json`(healthcheck), `claude` CLI(`git-hooks/pre-push`).
+- **Outgoing**: `tradingbot` CLI(`run_phase6.sh`가 호출), `tradingbot.data.external_fetcher` / `tradingbot.ml`(`inspect_eth_calibrator.py`), `state.json`(healthcheck), `claude` CLI + `python3` + `~/.claude/skills/architecture-mapper`(`git-hooks/pre-push` 의 2단계).
 
 ## Why — 코드에 안 적힌 부족 지식
 
