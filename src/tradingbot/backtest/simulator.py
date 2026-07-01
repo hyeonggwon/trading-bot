@@ -87,3 +87,21 @@ class OrderSimulator:
             fee = fill_price * quantity * self.config.fee_rate
             return FillResult(filled=True, fill_price=fill_price, fee=fee)
         return None
+
+    def check_take_profit(
+        self, take_profit_price: float, candle: Candle, quantity: float
+    ) -> FillResult | None:
+        """Check if a take profit was triggered during this candle.
+
+        Returns a FillResult if triggered, None otherwise.
+        """
+        if candle.high >= take_profit_price:
+            # Take profit triggered. Gap-up mirror of the stop's gap-down rule:
+            # a resting limit-sell can only fill at the open when the candle
+            # gaps up past the target, otherwise at the target on an intrabar
+            # touch — never above the open on a gap.
+            effective_tp = max(candle.open, take_profit_price)
+            fill_price = effective_tp * (1 - self.config.slippage_pct)
+            fee = fill_price * quantity * self.config.fee_rate
+            return FillResult(filled=True, fill_price=fill_price, fee=fee)
+        return None

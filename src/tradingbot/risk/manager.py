@@ -120,3 +120,9 @@ class RiskManager:
     def calculate_stop_loss(self, entry_price: float) -> float:
         """Calculate default stop loss price."""
         return entry_price * (1 - self.config.default_stop_loss_pct)
+
+    def calculate_take_profit(self, entry_price: float) -> float | None:
+        """Calculate default take profit price (None when not configured)."""
+        if self.config.default_take_profit_pct is None:
+            return None
+        return entry_price * (1 + self.config.default_take_profit_pct)

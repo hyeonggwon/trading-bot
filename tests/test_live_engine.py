@@ -442,6 +442,128 @@ class TestMonitorStopEnforcement:
         assert "BTC/KRW" in state.positions
 
 
+# --- Take profit enforcement (sibling of the stop loss rails) ---
+
+class TestTakeProfitEnforcement:
+    @pytest.mark.asyncio
+    async def test_take_profit_triggers_exit(self, tmp_path):
+        """When current_price >= take_profit, the position should be closed."""
+        feed = MockDataFeed(price=52_000_000)  # above the target
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=10_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 52_000_000})
+        paper._holdings["BTC"] = 0.001  # holdings to sell on exit
+
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=0.001,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,   # far below — must not trigger here
+            take_profit=51_500_000,
+        )
+
+        df = await paper.fetch_ohlcv("BTC/KRW", "1h", limit=10)
+        ticker = {"last": 52_000_000}  # at/above the target
+        await engine._tick_symbol("BTC/KRW", df, ticker)
+
+        assert "BTC/KRW" not in state.positions
+
+    @pytest.mark.asyncio
+    async def test_take_profit_no_trigger_below(self, tmp_path):
+        """When current_price < take_profit, the position should remain open."""
+        feed = MockDataFeed(price=50_500_000)
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=10_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 50_500_000})
+
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.001,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000, take_profit=51_500_000,
+        )
+
+        df = await paper.fetch_ohlcv("BTC/KRW", "1h", limit=10)
+        await engine._tick_symbol("BTC/KRW", df, {"last": 50_500_000})
+
+        assert "BTC/KRW" in state.positions
+
+    @pytest.mark.asyncio
+    async def test_monitor_closes_position_on_take_profit(self, tmp_path):
+        """_monitor_prices must realize a hit take profit between candle closes."""
+        feed = MockDataFeed(price=52_000_000)
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=10_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 52_000_000})
+        paper._holdings["BTC"] = 0.001
+
+        config = AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.001,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000, take_profit=51_500_000,
+        )
+
+        await engine._monitor_prices(["BTC/KRW"])
+
+        assert "BTC/KRW" not in state.positions
+
+    @pytest.mark.asyncio
+    async def test_take_profit_set_on_entry(self, tmp_path):
+        """A new position must carry a take profit derived from its filled price
+        when default_take_profit_pct is configured."""
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=10_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 50_000_000})
+
+        config = AppConfig(risk=RiskConfig(
+            default_stop_loss_pct=0.02, default_take_profit_pct=0.03,
+            risk_per_trade_pct=0.01, max_position_size_pct=0.1,
+        ))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        signal = Signal(
+            timestamp=datetime.now(UTC), symbol="BTC/KRW",
+            signal_type=SignalType.LONG_ENTRY, price=50_000_000, strength=1.0,
+        )
+        await engine._handle_entry(signal, "BTC/KRW", 50_000_000)
+
+        pos = state.positions.get("BTC/KRW")
+        assert pos is not None
+        expected_fill = 50_000_000 * 1.001
+        assert pos.take_profit == pytest.approx(expected_fill * 1.03, rel=1e-4)
+
+
 # --- Bug: partial WS staleness must not drop a symbol from price resolution ---
 
 class StubWsClient:

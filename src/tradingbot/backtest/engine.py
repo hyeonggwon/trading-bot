@@ -212,10 +212,14 @@ class BacktestEngine:
                 )
                 fill_candles[sym] = fill_candle
 
-                # Stop losses
-                if self._check_stop_losses(sym, fill_candle):
+                # Stop losses & take profits (Phase-1 protective exits, stop-first).
+                # `or` short-circuits: if the stop fires the position is already
+                # gone, so the take-profit check never double-sells this candle.
+                if self._check_stop_losses(sym, fill_candle) or self._check_take_profits(
+                    sym, fill_candle
+                ):
                     stop_loss_fired_symbols.add(sym)
-                    # Clear strategy's entry_index cache for stopped-out positions
+                    # Clear strategy's entry_index cache for the closed position
                     if hasattr(self.strategy, "_entry_indices"):
                         self.strategy._entry_indices.pop(sym, None)
 
@@ -326,6 +330,7 @@ class BacktestEngine:
 
             equity = self._calculate_equity(prices)
             stop_loss = self.risk_manager.calculate_stop_loss(fill.fill_price)
+            take_profit = self.risk_manager.calculate_take_profit(fill.fill_price)
             quantity = self.risk_manager.calculate_position_size(
                 fill.fill_price, stop_loss, equity
             )
@@ -336,7 +341,9 @@ class BacktestEngine:
 
             order.quantity = quantity
             fee = fill.fill_price * quantity * self.config.backtest.fee_rate
-            self._execute_buy(order, fill.fill_price, fee, fill_candle.timestamp, stop_loss)
+            self._execute_buy(
+                order, fill.fill_price, fee, fill_candle.timestamp, stop_loss, take_profit
+            )
 
         elif signal.signal_type == SignalType.LONG_EXIT:
             if signal.symbol in self.positions:
@@ -355,7 +362,7 @@ class BacktestEngine:
 
     def _execute_buy(
         self, order: Order, fill_price: float, fee: float,
-        timestamp: datetime, stop_loss: float,
+        timestamp: datetime, stop_loss: float, take_profit: float | None = None,
     ) -> None:
         cost = fill_price * order.quantity + fee
         if cost > self.cash:
@@ -380,6 +387,7 @@ class BacktestEngine:
             entry_price=fill_price,
             entry_time=timestamp,
             stop_loss=stop_loss,
+            take_profit=take_profit,
         )
         self._entry_orders[order.symbol] = order
 
@@ -429,6 +437,27 @@ class BacktestEngine:
             return True
         return False
 
+    def _check_take_profits(self, symbol: str, candle: Candle) -> bool:
+        if symbol not in self.positions:
+            return False
+        pos = self.positions[symbol]
+        if pos.take_profit is None:
+            return False
+        result = self.simulator.check_take_profit(pos.take_profit, candle, pos.size)
+        if result is not None and result.filled:
+            order = Order(
+                id=str(uuid.uuid4())[:8],
+                symbol=symbol,
+                side=OrderSide.SELL,
+                order_type=OrderType.MARKET,
+                quantity=pos.size,
+                created_at=candle.timestamp,
+            )
+            self._execute_sell(order, result.fill_price, result.fee, candle.timestamp)
+            logger.debug("take_profit_triggered", symbol=symbol, price=result.fill_price)
+            return True
+        return False
+
     def _process_pending_orders(self, candle: Candle, symbol: str | None = None) -> None:
         """Process pending orders. If symbol is given, only process that symbol's orders."""
         remaining = []
@@ -440,8 +469,10 @@ class BacktestEngine:
             if fill.filled:
                 if order.side == OrderSide.BUY:
                     stop_loss = self.risk_manager.calculate_stop_loss(fill.fill_price)
+                    take_profit = self.risk_manager.calculate_take_profit(fill.fill_price)
                     self._execute_buy(
-                        order, fill.fill_price, fill.fee, candle.timestamp, stop_loss
+                        order, fill.fill_price, fill.fee, candle.timestamp,
+                        stop_loss, take_profit,
                     )
                 else:
                     self._execute_sell(

@@ -56,7 +56,8 @@ class TestFilterRegistry:
         assert "volume_spike" in fmap
         assert "ema_above" in fmap
         assert "lgbm_prob" in fmap
-        assert len(fmap) == 31
+        assert "time_stop" in fmap
+        assert len(fmap) == 32
 
     def test_parse_simple(self):
         f = parse_filter_spec("rsi_oversold:30")
@@ -124,6 +125,21 @@ class TestFilterRegistry:
         assert f.obv_sma_period == 20
         assert f.role == "volume"
 
+    def test_parse_time_stop(self):
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+
+        f = parse_filter_spec("time_stop:12")
+        assert isinstance(f, TimeStopExitFilter)
+        assert f.max_bars == 12
+        assert f.role == "exit"
+
+    def test_parse_time_stop_default(self):
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+
+        f = parse_filter_spec("time_stop")
+        assert isinstance(f, TimeStopExitFilter)
+        assert f.max_bars == 24  # default
+
     def test_parse_stoch_oversold(self):
         f = parse_filter_spec("stoch_oversold:20:14:3")
         assert isinstance(f, StochOversoldFilter)
@@ -172,6 +188,88 @@ class TestFilterRegistry:
         f = parse_filter_spec("lgbm_prob")
         assert isinstance(f, LgbmProbFilter)
         assert f.threshold == 0.55  # default
+
+
+class TestTimeStopFilter:
+    """TimeStopExitFilter boundary + entry_index handling."""
+
+    def _df(self, n: int) -> pd.DataFrame:
+        dates = pd.date_range("2024-01-01", periods=n, freq="h", tz="UTC")
+        return pd.DataFrame(
+            {
+                "open": [100.0] * n, "high": [101.0] * n,
+                "low": [99.0] * n, "close": [100.0] * n, "volume": [1.0] * n,
+            },
+            index=dates,
+        )
+
+    def test_fires_when_holding_reaches_max_bars(self):
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+
+        f = TimeStopExitFilter(max_bars=3)
+        df = self._df(10)
+        # entry at index 6 → bars held = (10-1) - 6 = 3 → fires at the boundary
+        assert f.check_exit(df, entry_index=6) is True
+
+    def test_holds_below_max_bars(self):
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+
+        f = TimeStopExitFilter(max_bars=3)
+        df = self._df(10)
+        # entry at index 7 → bars held = 9 - 7 = 2 < 3 → still holding
+        assert f.check_exit(df, entry_index=7) is False
+
+    def test_none_entry_index_never_fires(self):
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+
+        f = TimeStopExitFilter(max_bars=1)
+        df = self._df(10)
+        # Unknown entry (plain-strategy path / restart) must not anchor on the
+        # oldest bar and force an exit.
+        assert f.check_exit(df, entry_index=None) is False
+
+    def test_out_of_range_entry_index_never_fires(self):
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+
+        f = TimeStopExitFilter(max_bars=1)
+        df = self._df(10)
+        assert f.check_exit(df, entry_index=99) is False
+
+    def test_combined_strategy_threads_entry_index(self):
+        """End-to-end: CombinedStrategy must thread the resolved entry index into
+        the filter so the time stop fires N bars after the real entry — the
+        entry-relative plumbing that a plain vectorized mask cannot express."""
+        from tradingbot.core.enums import PositionSide, SignalType
+        from tradingbot.core.models import Position
+        from tradingbot.strategy.filters.exit import TimeStopExitFilter
+
+        df = self._df(10)
+
+        # Entry anchored at index 6 → bars held at the last bar = 3 → time stop fires.
+        strategy = CombinedStrategy(
+            entry_filters=[RsiOversoldFilter(threshold=30)],
+            exit_filters=[TimeStopExitFilter(max_bars=3)],
+        )
+        strategy._entry_times = {"BTC/KRW": df.index[6]}
+        position = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0,
+            entry_price=100.0, entry_time=df.index[6].to_pydatetime(),
+        )
+        signal = strategy.should_exit(df, "BTC/KRW", position)
+        assert signal is not None
+        assert signal.signal_type == SignalType.LONG_EXIT
+
+        # Entry only 2 bars back must NOT trigger the 3-bar time stop.
+        strategy2 = CombinedStrategy(
+            entry_filters=[RsiOversoldFilter(threshold=30)],
+            exit_filters=[TimeStopExitFilter(max_bars=3)],
+        )
+        strategy2._entry_times = {"BTC/KRW": df.index[7]}
+        position2 = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0,
+            entry_price=100.0, entry_time=df.index[7].to_pydatetime(),
+        )
+        assert strategy2.should_exit(df, "BTC/KRW", position2) is None
 
 
 class TestCombinedStrategy:

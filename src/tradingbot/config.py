@@ -33,6 +33,7 @@ class RiskConfig(BaseModel):
     max_open_positions: Annotated[int, Field(ge=1)] = 3
     max_drawdown_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.20
     default_stop_loss_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.02
+    default_take_profit_pct: Annotated[float, Field(gt=0, le=1.0)] | None = None
     risk_per_trade_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.01
 
 

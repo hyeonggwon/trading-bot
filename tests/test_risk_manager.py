@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+import pytest
+
 from tradingbot.config import RiskConfig
 from tradingbot.core.enums import PositionSide, SignalType
 from tradingbot.core.models import PortfolioState, Position, Signal
@@ -39,6 +41,14 @@ class TestRiskManager:
         signal = self._make_signal(SignalType.LONG_EXIT)
         portfolio = self._make_portfolio(100_000)
         assert self.rm.validate_signal(signal, portfolio, {"BTC/KRW": 50_000_000}) is True
+
+    def test_calculate_take_profit_disabled_by_default(self):
+        # setup_method leaves default_take_profit_pct unset (None) → opt-in OFF.
+        assert self.rm.calculate_take_profit(100.0) is None
+
+    def test_calculate_take_profit_when_configured(self):
+        rm = RiskManager(RiskConfig(default_take_profit_pct=0.05))
+        assert rm.calculate_take_profit(100.0) == pytest.approx(105.0)
 
     def test_circuit_breaker(self):
         # 25% drawdown from peak of 1M

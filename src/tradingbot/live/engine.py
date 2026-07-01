@@ -282,7 +282,10 @@ class LiveEngine:
             price = float(ticker["last"]) if ticker and ticker.get("last") else None
             if price is None:
                 continue
-            await self._maybe_stop_out(sym, position, price)
+            # Stop first, then take profit — only check TP if the stop didn't
+            # already close the position (avoids a double-sell on the same tick).
+            if not await self._maybe_stop_out(sym, position, price):
+                await self._maybe_take_profit(sym, position, price)
         self._persist_state()
 
     def _restore_state(self) -> None:
@@ -461,6 +464,7 @@ class LiveEngine:
                 logger.error("reconcile_price_failed", symbol=symbol, error=str(e))
                 continue
             stop_loss = self.risk_manager.calculate_stop_loss(price)
+            take_profit = self.risk_manager.calculate_take_profit(price)
             self.state.positions[symbol] = Position(
                 symbol=symbol,
                 side=PositionSide.LONG,
@@ -468,6 +472,7 @@ class LiveEngine:
                 entry_price=price,
                 entry_time=datetime.now(UTC),
                 stop_loss=stop_loss,
+                take_profit=take_profit,
             )
             # Unknown real entry fee — record 0 so exit PnL doesn't subtract a
             # fee we never observed.
@@ -563,6 +568,8 @@ class LiveEngine:
         if position is not None:
             stopped = await self._maybe_stop_out(symbol, position, current_price)
             if not stopped:
+                stopped = await self._maybe_take_profit(symbol, position, current_price)
+            if not stopped:
                 exit_signal = self.strategy.should_exit(confirmed_df, symbol, position)
                 if exit_signal:
                     await self._handle_exit(exit_signal, symbol, position)
@@ -609,6 +616,43 @@ class LiveEngine:
                 )
             return True
         logger.error("stop_loss_exit_failed", symbol=symbol)
+        return False
+
+    async def _maybe_take_profit(
+        self, symbol: str, position: Position, current_price: float
+    ) -> bool:
+        """Close the position if ``current_price`` reached its take profit.
+
+        Returns True if the target fired and the position was closed. Sibling of
+        ``_maybe_stop_out``; runs in the same pre-entry exit block on both the
+        candle path (``_tick_symbol``) and the between-candle monitor so the
+        target is honored in real time, not only at candle close.
+        """
+        if not position.take_profit or current_price < position.take_profit:
+            return False
+
+        logger.info(
+            "take_profit_triggered",
+            symbol=symbol,
+            current_price=f"{current_price:,.0f}",
+            take_profit=f"{position.take_profit:,.0f}",
+        )
+        tp_signal = Signal(
+            timestamp=datetime.now(UTC),
+            symbol=symbol,
+            signal_type=SignalType.LONG_EXIT,
+            price=current_price,
+            strength=1.0,
+        )
+        await self._handle_exit(tp_signal, symbol, position)
+        if symbol not in self.state.positions:
+            if self.notifier and hasattr(self.notifier, 'send_signal'):
+                await self.notifier.send_signal(
+                    f"TAKE PROFIT {symbol}: price={current_price:,.0f}, "
+                    f"target={position.take_profit:,.0f}"
+                )
+            return True
+        logger.error("take_profit_exit_failed", symbol=symbol)
         return False
 
     async def _handle_entry(
@@ -711,6 +755,7 @@ class LiveEngine:
 
             actual_price = order.filled_price or current_price
             actual_stop_loss = self.risk_manager.calculate_stop_loss(actual_price)
+            actual_take_profit = self.risk_manager.calculate_take_profit(actual_price)
 
             self.state.positions[symbol] = Position(
                 symbol=symbol,
@@ -719,6 +764,7 @@ class LiveEngine:
                 entry_price=actual_price,
                 entry_time=datetime.now(UTC),
                 stop_loss=actual_stop_loss,
+                take_profit=actual_take_profit,
             )
             # Track entry fee for accurate PnL on exit
             self.state.entry_fees[symbol] = order.fee or 0
