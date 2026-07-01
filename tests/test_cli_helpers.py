@@ -88,7 +88,7 @@ class TestResolveStrategy:
         assert name == "Trend+RSI"
 
     def test_unknown_raises_exit(self):
-        from click.exceptions import Exit
+        from typer import Exit
 
         with pytest.raises((SystemExit, Exit)):
             _resolve_strategy("NonExistentStrategy", "BTC/KRW", "1h")
@@ -104,7 +104,7 @@ class TestResolveStrategy:
         assert strategy.timeframe == "4h"
 
     def test_ml_template_rejects_multi_symbol(self):
-        from click.exceptions import Exit
+        from typer import Exit
 
         with pytest.raises((SystemExit, Exit)):
             _resolve_strategy(
