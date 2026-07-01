@@ -1,0 +1,28 @@
+# 24/7 운영용 compose. `docker compose up -d --build` 로 기동.
+# 상태/데이터/로그/모델은 볼륨으로 영속화하고, 컨테이너가 죽거나 healthcheck 실패로
+# unhealthy 가 되면 restart 정책으로 자동 복구한다.
+services:
+  bot:
+    build: .
+    image: trading-bot
+    restart: unless-stopped
+    # live 실거래 시 Upbit/Telegram 키를 주입. paper 만 쓰면 .env 없어도 기동됨.
+    # (env_file long-form `required: false` 는 Docker Compose v2.24+ 필요)
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      STATE_FILE: /app/state/state.json
+      LOG_DIR: /app/logs
+      HEALTHCHECK_MAX_STALE_SECONDS: "10800"  # 3h (1h 타임프레임 기준; 4h 운용 시 상향)
+    volumes:
+      - ./state:/app/state
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./models:/app/models
+    healthcheck:
+      test: ["CMD", "python", "/app/scripts/healthcheck.py"]
+      interval: 5m
+      timeout: 10s
+      start_period: 2m
+      retries: 3
