@@ -26,6 +26,25 @@ log = logging.getLogger(__name__)
 
 VALID_OBJECTIVES = ("holdout_sharpe", "holdout_cum_return", "holdout_auc")
 
+# Fraction of the series reserved as an outer holdout the tuner never sees.
+TUNING_OUTER_HOLDOUT_FRACTION = 0.2
+
+
+def reserve_tuning_window(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop the trailing outer-holdout before tuning.
+
+    The search objective runs walk-forward over whatever rows it is given. If
+    that includes the final slice ``MLWalkForwardTrainer`` later reserves and
+    reports as its holdout, the objective is in-sample — the search optimizes
+    on the very window the final model is judged on. Slicing the trailing
+    fraction off here keeps the final model's holdout genuinely unseen by the
+    search. Callers retrain the final model on the full series separately.
+    """
+    if len(df) < 10:
+        return df
+    cutoff = int(len(df) * (1.0 - TUNING_OUTER_HOLDOUT_FRACTION))
+    return df.iloc[:cutoff]
+
 
 @dataclass
 class LGBMTunerResult:

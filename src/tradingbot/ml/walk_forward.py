@@ -293,8 +293,15 @@ class MLWalkForwardTrainer:
         # true evaluation set (never touches the model), second half fits the
         # calibrator. Prevents calibrator-via-holdout leakage in reported metrics.
         calibrator = None
+        # Last candle the calibrator never saw. When the holdout is split, only
+        # the eval half [:mid] is leak-free (the cal half [mid:] fits the
+        # calibrator); ml-backtest defaults its eval end to this so it doesn't
+        # score on candles the calibrator was fit on. No split → whole holdout
+        # is honest.
+        holdout_eval_end = str(df_holdout.index[-1]) if len(df_holdout) > 0 else None
         if len(df_holdout) >= 60:
             mid = len(df_holdout) // 2
+            holdout_eval_end = str(df_holdout.index[mid - 1])
             X_eval = df_holdout[feature_cols].iloc[:mid]
             y_eval = target_holdout.iloc[:mid]
             X_cal = df_holdout[feature_cols].iloc[mid:]
@@ -360,6 +367,7 @@ class MLWalkForwardTrainer:
             "train_end": str(df_train_pool.index[-1]),
             "holdout_start": (str(df_holdout.index[0]) if len(df_holdout) > 0 else None),
             "holdout_end": (str(df_holdout.index[-1]) if len(df_holdout) > 0 else None),
+            "holdout_eval_end": holdout_eval_end,
             "data_end": str(df_valid.index[-1]),
         }
         report.model_path = self.trainer.save(

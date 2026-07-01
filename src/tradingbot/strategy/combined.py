@@ -42,6 +42,7 @@ class CombinedStrategy(Strategy):
         self.entry_filters = entry_filters or []
         self.exit_filters = exit_filters or []
         self._entry_indices: dict[str, int] = {}
+        self._entry_times: dict[str, pd.Timestamp] = {}
         self._unique_filters = self._deduplicate_filters()
 
     def _deduplicate_filters(self) -> list[BaseFilter]:
@@ -81,8 +82,10 @@ class CombinedStrategy(Strategy):
         if checked == 0:
             return None  # No non-exit filters to evaluate
 
-        # Cache entry index for trailing-style exit filters
+        # Cache entry index (fast path) AND the signal-candle timestamp so
+        # trailing-style exits can re-anchor when the live fetch window slides.
         self._entry_indices[symbol] = len(df) - 1
+        self._entry_times[symbol] = df.index[-1]
 
         return Signal(
             timestamp=df.index[-1].to_pydatetime(),
@@ -98,13 +101,14 @@ class CombinedStrategy(Strategy):
         if len(df) < 2 or not self.exit_filters:
             return None
 
-        # Use cached entry_index (stored at entry time, O(1) lookup)
-        entry_index = self._entry_indices.get(symbol)
+        # Re-anchor the entry candle by timestamp against the *current* window.
+        entry_index = self._resolve_entry_index(df, symbol, position)
 
         # OR logic: any exit filter triggers exit
         for f in self.exit_filters:
             if f.check_exit(df, entry_index=entry_index):
                 self._entry_indices.pop(symbol, None)
+                self._entry_times.pop(symbol, None)
                 return Signal(
                     timestamp=df.index[-1].to_pydatetime(),
                     symbol=symbol,
@@ -113,6 +117,48 @@ class CombinedStrategy(Strategy):
                 )
 
         return None
+
+    def _resolve_entry_index(
+        self, df: pd.DataFrame, symbol: str, position: Position
+    ) -> int | None:
+        """Positional index of the entry candle in the *current* df window.
+
+        Anchored on the entry *timestamp* (the signal candle, cached in
+        ``_entry_times``; the persisted ``position.entry_time`` is the
+        restart fallback) rather than a positional index frozen at signal
+        time. A frozen positional index is stable in backtest — slices are
+        anchored at index 0, so a row keeps its position — but in live trading
+        the rolling ``fetch_ohlcv`` window slides forward each tick, so the
+        cached index drifts off the entry candle, and a restart loses the cache
+        entirely. Re-locating the timestamp keeps "highest high since entry"
+        (e.g. ``AtrTrailingExitFilter``) anchored across both. Returns None when
+        no anchor is known so exit filters fall back to their own heuristic.
+        """
+        anchor = self._entry_times.get(symbol)
+        if anchor is None:
+            anchor = getattr(position, "entry_time", None)
+        if anchor is None:
+            return None
+
+        ts = pd.Timestamp(anchor)
+        index = df.index
+        index_tz = getattr(index, "tz", None)
+        if index_tz is not None and ts.tz is None:
+            ts = ts.tz_localize(index_tz)
+        elif index_tz is None and ts.tz is not None:
+            ts = ts.tz_localize(None)
+
+        pos = int(index.searchsorted(ts, side="left"))
+        if pos >= len(index):
+            pos = len(index) - 1
+        # When the entry candle has scrolled out of the current window (held
+        # longer than the rolling fetch window), its timestamp predates every
+        # bar and searchsorted returns 0 for a bar that is NOT the entry candle.
+        # Returning 0 would silently anchor "highest high since entry" on the
+        # oldest available bar; fall back to the filter's own heuristic instead.
+        if pos == 0 and len(index) > 0 and index[0] > ts:
+            return None
+        return max(pos, 0)
 
     def describe(self) -> str:
         """Human-readable description of the strategy."""

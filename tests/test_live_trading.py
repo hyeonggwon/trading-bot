@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+from datetime import UTC, datetime, timezone
 
 import pytest
 
@@ -113,6 +113,79 @@ class DelayedFillExchange(BaseExchange):
         pass
 
 
+class PartialFillLimitExchange(BaseExchange):
+    """LIMIT order partially fills then times out; the remaining quantity is
+    re-submitted as MARKET. Used to verify cumulative fill tracking."""
+
+    LIMIT_PRICE = 50_000_000.0
+    MARKET_PRICE = 50_200_000.0
+    TOTAL_QTY = 1.0
+    FILLED_QTY = 0.4  # filled at the limit price before the timeout
+    LIMIT_FEE = 10_000.0
+    MARKET_FEE = 18_000.0
+
+    def __init__(self):
+        self._cancelled = False
+
+    async def fetch_ohlcv(self, symbol, timeframe="1h", since=None, limit=100):
+        import pandas as pd
+        return pd.DataFrame()
+
+    async def fetch_ticker(self, symbol):
+        return {"last": self.MARKET_PRICE, "bid": self.MARKET_PRICE,
+                "ask": self.MARKET_PRICE, "volume": 100,
+                "timestamp": datetime.now(UTC)}
+
+    async def create_order(self, symbol, side, order_type, quantity, price=None):
+        if order_type == OrderType.MARKET:
+            # The re-order for the unfilled remainder.
+            return Order(
+                id="market-002", symbol=symbol, side=side,
+                order_type=OrderType.MARKET, quantity=quantity,
+                status=OrderStatus.FILLED,
+                filled_price=self.MARKET_PRICE, fee=self.MARKET_FEE,
+                created_at=datetime.now(UTC),
+                filled_at=datetime.now(UTC),
+            )
+        # The initial LIMIT — stays pending so it times out.
+        return Order(
+            id="limit-001", symbol=symbol, side=side,
+            order_type=OrderType.LIMIT, quantity=quantity, price=price,
+            status=OrderStatus.PENDING,
+            created_at=datetime.now(UTC),
+        )
+
+    async def fetch_order(self, order_id, symbol):
+        if self._cancelled:
+            # Post-cancel: reports the partially-filled portion (CCXT maps the
+            # filled base amount onto Order.quantity).
+            return Order(
+                id=order_id, symbol=symbol, side=OrderSide.BUY,
+                order_type=OrderType.LIMIT, quantity=self.FILLED_QTY,
+                status=OrderStatus.CANCELLED,
+                filled_price=self.LIMIT_PRICE, fee=self.LIMIT_FEE,
+            )
+        # During polling: still pending → forces the timeout path.
+        return Order(
+            id=order_id, symbol=symbol, side=OrderSide.BUY,
+            order_type=OrderType.LIMIT, quantity=self.TOTAL_QTY,
+            status=OrderStatus.PENDING,
+        )
+
+    async def cancel_order(self, order_id, symbol):
+        self._cancelled = True
+        return True
+
+    async def get_balance(self):
+        return {"KRW": 1_000_000}
+
+    async def get_open_orders(self, symbol=None):
+        return []
+
+    async def close(self):
+        pass
+
+
 # --- OrderManager tests ---
 
 class TestOrderManager:
@@ -143,6 +216,38 @@ class TestOrderManager:
         mgr = OrderManager(InstantFillExchange())
         cancelled = await mgr.cancel_all("BTC/KRW")
         assert cancelled == 0  # No open orders in mock
+
+    @pytest.mark.asyncio
+    async def test_limit_timeout_partial_fill_tracks_cumulative(self, monkeypatch):
+        """A partially-filled LIMIT that times out must return the CUMULATIVE
+        fill, not just the market re-order of the remainder.
+
+        Old behavior returned only the re-ordered remaining quantity, silently
+        discarding the portion already filled at the limit price — so the caller
+        opened a position smaller (and mispriced) than what was actually held.
+        """
+        from tradingbot.live import order_manager as om
+
+        monkeypatch.setattr(om, "POLL_INTERVAL_SECONDS", 0.01)
+        ex = PartialFillLimitExchange()
+        mgr = OrderManager(ex, timeout_seconds=1)
+
+        order = await mgr.submit_and_wait(
+            "BTC/KRW", OrderSide.BUY, OrderType.LIMIT,
+            ex.TOTAL_QTY, price=ex.LIMIT_PRICE,
+        )
+
+        remaining = ex.TOTAL_QTY - ex.FILLED_QTY
+        expected_price = (
+            ex.LIMIT_PRICE * ex.FILLED_QTY + ex.MARKET_PRICE * remaining
+        ) / ex.TOTAL_QTY
+
+        # Cumulative quantity, not just the re-ordered remainder (0.6).
+        assert order.quantity == pytest.approx(ex.TOTAL_QTY)
+        # Quantity-weighted average fill price across both fills.
+        assert order.filled_price == pytest.approx(expected_price)
+        # Fees from both the partial limit fill and the market re-order.
+        assert order.fee == pytest.approx(ex.LIMIT_FEE + ex.MARKET_FEE)
 
 
 # --- TradeValidator tests ---
@@ -192,3 +297,24 @@ class TestTradeValidator:
         # Simulate day change by resetting the date
         v._daily_reset_date = None
         assert v.validate_daily_loss() is True  # Reset on "new day"
+
+    def test_daily_state_survives_restart(self):
+        """Restarting must not zero a daily loss the bot already booked.
+
+        Without restore_daily_state(), a process restart resets _daily_pnl to 0
+        and lets the bot keep trading past a daily-loss limit it had breached.
+        """
+        v = TradeValidator(daily_loss_limit_krw=200_000)
+        v.record_trade_pnl(-250_000)
+        assert v.validate_daily_loss() is False  # breached
+
+        daily_pnl, reset_date = v.daily_state()
+        assert daily_pnl == -250_000
+        assert reset_date is not None
+
+        # Fresh validator (simulating a restart) restores the persisted state.
+        restored = TradeValidator(daily_loss_limit_krw=200_000)
+        restored.restore_daily_state(daily_pnl, reset_date)
+        assert restored.daily_state() == (-250_000, reset_date)
+        # The breach is still in force after the "restart".
+        assert restored.validate_daily_loss() is False

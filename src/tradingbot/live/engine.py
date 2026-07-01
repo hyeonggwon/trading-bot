@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import signal as signal_module
-from datetime import UTC, datetime
+from datetime import UTC, date, datetime
 
 import pandas as pd
 import structlog
@@ -28,6 +28,13 @@ from tradingbot.risk.manager import RiskManager
 from tradingbot.strategy.base import Strategy
 
 logger = structlog.get_logger()
+
+# WebSocket prices older than this (seconds) are treated as stale — the engine
+# falls back to a fresh REST ticker rather than acting on a cached price.
+WS_PRICE_MAX_AGE_SECONDS = 60.0
+# Between candle polls, monitor prices / stop losses at this cadence (seconds)
+# so stops are enforced in real time instead of only at candle close.
+MONITOR_INTERVAL_SECONDS = 10.0
 
 # Timeframe to seconds for polling interval
 TIMEFRAME_SECONDS: dict[str, int] = {
@@ -73,6 +80,10 @@ class LiveEngine:
         self._running = False
         # Per-symbol last confirmed candle timestamp
         self._last_candle_ts: dict[str, datetime] = {}
+        # Symbols held at startup whose exit must be re-evaluated on the first
+        # tick — warmup marks the last closed candle as seen, which would
+        # otherwise strand a strategy exit until the next candle closes.
+        self._pending_restart_exit: set[str] = set()
 
     async def run(self) -> None:
         """Start the trading loop. Supports multiple symbols."""
@@ -96,8 +107,13 @@ class LiveEngine:
             websocket=ws_mode,
         )
 
-        # Load persisted state
-        self.state.load()
+        # Load persisted state + restore real-money safety rails
+        self._restore_state()
+        # Reconcile against the exchange's real holdings so a fill whose
+        # response was lost before the Position was recorded is adopted (with a
+        # protective stop) instead of running unmanaged, and a position the
+        # exchange no longer backs is dropped before we try to sell it.
+        await self._reconcile_with_exchange()
         if self.state.positions:
             logger.info("restored_positions", count=len(self.state.positions))
 
@@ -114,6 +130,11 @@ class LiveEngine:
                 continue
             if len(result) >= 2:
                 self._last_candle_ts[sym] = result.index[-2].to_pydatetime()
+                # Hold a position across restart? The strategy may want OUT on
+                # this last closed candle — flag it for a one-shot exit re-eval
+                # on the first tick (entries on a pre-restart candle stay gated).
+                if sym in self.state.positions:
+                    self._pending_restart_exit.add(sym)
                 logger.info("warmup_complete", symbol=sym, candles=len(result))
 
         # Start WebSocket in background if available (real-time price updates)
@@ -124,6 +145,7 @@ class LiveEngine:
             logger.info("ws_started", symbols=len(symbols))
 
         # Main loop (candle polling — WebSocket provides prices, REST provides candles)
+        monitor_interval = min(MONITOR_INTERVAL_SECONDS, poll_seconds)
         while self._running:
             try:
                 await self._tick_all(symbols, timeframe)
@@ -132,12 +154,20 @@ class LiveEngine:
                 if self.notifier and hasattr(self.notifier, 'send_error'):
                     await self.notifier.send_error(f"Tick error: {e}")
 
-            # Wait for next poll — check every 10s if we should stop
+            # Between candle polls, monitor prices + stop losses at a faster
+            # cadence (also keeps shutdown responsive — checks _running each tick).
             remaining = poll_seconds
             while remaining > 0 and self._running:
-                wait = min(remaining, 10)
+                wait = min(remaining, monitor_interval)
                 await asyncio.sleep(wait)
                 remaining -= wait
+                if self._running and remaining > 0:
+                    try:
+                        await self._monitor_prices(symbols)
+                    except Exception as e:
+                        logger.error(
+                            "monitor_error", error=str(e), type=type(e).__name__
+                        )
 
         # Shutdown
         logger.info("live_engine_stopping")
@@ -149,7 +179,7 @@ class LiveEngine:
                 await ws_task
             except (asyncio.CancelledError, Exception):
                 pass  # Don't let WS errors block shutdown
-        self.state.save()
+        self._persist_state()
         await self.exchange.close()
         logger.info("live_engine_stopped")
 
@@ -159,38 +189,335 @@ class LiveEngine:
         ohlcv_tasks = [self.exchange.fetch_ohlcv(sym, timeframe, limit=200) for sym in symbols]
         ohlcv_results = await asyncio.gather(*ohlcv_tasks, return_exceptions=True)
 
-        # Use WebSocket prices if available, otherwise fetch tickers via REST
-        ws_prices = self.ws_client.last_prices if self.ws_client else {}
-        if ws_prices:
-            tickers = {
-                sym: {"last": price}
-                for sym, price in ws_prices.items()
-            }
-            # Sync WS prices to PaperExchange cache for accurate fills
-            if hasattr(self.exchange, 'update_prices'):
-                self.exchange.update_prices(ws_prices)
-        else:
-            ticker_tasks = [self.exchange.fetch_ticker(sym) for sym in symbols]
-            ticker_results = await asyncio.gather(*ticker_tasks, return_exceptions=True)
-            tickers = {
-                sym: res for sym, res in zip(symbols, ticker_results)
-                if not isinstance(res, Exception)
-            }
+        # Resolve current prices (fresh WS prices, else REST tickers)
+        tickers = await self._resolve_tickers(symbols)
 
         # Update equity using pre-fetched tickers (avoids redundant API calls)
         equity = await self._calculate_equity(tickers)
         self.risk_manager.update_peak_equity(equity)
         self.state.record_equity(equity)
 
+        # Enforce safety rails continuously (drawdown breaker + daily-loss
+        # limit incl. unrealized PnL). On breach, positions are flattened and
+        # new entries stay blocked, so skip this tick's symbol processing.
+        if await self._enforce_safety_rails(equity, tickers):
+            self._persist_state()
+            return
+
         # Process each symbol
         for sym, result in zip(symbols, ohlcv_results):
             if isinstance(result, Exception):
                 logger.warning("fetch_error", symbol=sym, error=str(result))
                 continue
-            await self._tick_symbol(sym, result, tickers.get(sym))
+            # Isolate each symbol: one symbol raising must not abort the rest
+            # of the batch nor skip the _persist_state below (which would drop
+            # equity history and any state already mutated this tick).
+            try:
+                await self._tick_symbol(sym, result, tickers.get(sym))
+            except Exception as e:
+                logger.error(
+                    "symbol_tick_error", symbol=sym,
+                    error=str(e), type=type(e).__name__,
+                )
 
         # Persist state after processing all symbols
+        self._persist_state()
+
+    async def _resolve_tickers(self, symbols: list[str]) -> dict[str, dict]:
+        """Resolve current prices for all symbols.
+
+        Prefers WebSocket prices received within ``WS_PRICE_MAX_AGE_SECONDS``;
+        stale or absent WS prices fall back to a fresh REST ticker pull so the
+        engine never acts on an indefinitely-cached price. Fresh WS prices are
+        also synced into the paper-exchange cache for accurate fills.
+        """
+        ws_prices = (
+            self.ws_client.fresh_prices(WS_PRICE_MAX_AGE_SECONDS)
+            if self.ws_client is not None
+            else {}
+        )
+        if ws_prices and hasattr(self.exchange, "update_prices"):
+            self.exchange.update_prices(ws_prices)
+
+        # Use fresh WS prices where available; REST-fetch only the symbols still
+        # missing. A per-symbol fallback (not all-or-nothing) ensures a quiet
+        # symbol that simply hasn't ticked within the staleness window still
+        # gets a price, so its stop loss is never silently dropped from
+        # monitoring just because another symbol ticked.
+        tickers: dict[str, dict] = {
+            sym: {"last": ws_prices[sym]} for sym in symbols if sym in ws_prices
+        }
+        missing = [sym for sym in symbols if sym not in tickers]
+        if missing:
+            ticker_results = await asyncio.gather(
+                *(self.exchange.fetch_ticker(sym) for sym in missing),
+                return_exceptions=True,
+            )
+            for sym, res in zip(missing, ticker_results):
+                if isinstance(res, dict):  # skip fetch_ticker failures
+                    tickers[sym] = res
+        return tickers
+
+    async def _monitor_prices(self, symbols: list[str]) -> None:
+        """Between-candle monitor: refresh prices, update equity, enforce stops.
+
+        Runs at ``MONITOR_INTERVAL_SECONDS`` so stop losses are checked against
+        live prices instead of only when a new candle closes (which on a 4h
+        timeframe would leave positions unguarded for hours).
+        """
+        tickers = await self._resolve_tickers(symbols)
+        equity = await self._calculate_equity(tickers)
+        self.risk_manager.update_peak_equity(equity)
+        self.state.record_equity(equity)
+        # Enforce safety rails between candles too — a 4h timeframe would
+        # otherwise leave a drawdown/daily-loss breach unaddressed for hours.
+        if await self._enforce_safety_rails(equity, tickers):
+            self._persist_state()
+            return
+        for sym in symbols:
+            position = self.state.positions.get(sym)
+            if position is None:
+                continue
+            ticker = tickers.get(sym)
+            price = float(ticker["last"]) if ticker and ticker.get("last") else None
+            if price is None:
+                continue
+            await self._maybe_stop_out(sym, position, price)
+        self._persist_state()
+
+    def _restore_state(self) -> None:
+        """Load persisted state and restore real-money safety rails.
+
+        peak_equity is the drawdown circuit-breaker baseline; the validator's
+        daily PnL is the daily-loss limit's running total. Without restoring
+        them a restart silently resets both.
+        """
+        self.state.load()
+        if self.state.peak_equity:
+            self.risk_manager.peak_equity = self.state.peak_equity
+        if self.trade_validator is not None and hasattr(
+            self.trade_validator, "restore_daily_state"
+        ):
+            try:
+                reset_date = (
+                    date.fromisoformat(self.state.daily_reset_date)
+                    if self.state.daily_reset_date
+                    else None
+                )
+            except ValueError:
+                # A corrupt daily_reset_date must not crash startup and defeat
+                # the crash-recovery this restore exists for; drop it so the
+                # daily-loss counter re-baselines to today.
+                logger.error(
+                    "bad_daily_reset_date", value=self.state.daily_reset_date
+                )
+                reset_date = None
+            self.trade_validator.restore_daily_state(self.state.daily_pnl, reset_date)
+
+    def _persist_state(self) -> None:
+        """Snapshot in-memory risk state into the state manager and persist.
+
+        peak_equity (drawdown circuit breaker) and the validator's daily PnL
+        must survive restarts — both are real-money safety rails.
+        """
+        self.state.peak_equity = self.risk_manager.peak_equity
+        if self.trade_validator is not None and hasattr(
+            self.trade_validator, "daily_state"
+        ):
+            daily_pnl, reset_date = self.trade_validator.daily_state()
+            self.state.daily_pnl = daily_pnl
+            self.state.daily_reset_date = (
+                reset_date.isoformat() if reset_date else None
+            )
         self.state.save()
+
+    async def _notify_alert(self, message: str) -> None:
+        """Send an operator alert through the notifier if one is wired."""
+        if self.notifier and hasattr(self.notifier, "send_error"):
+            await self.notifier.send_error(message)
+
+    async def _enforce_safety_rails(
+        self, equity: float, tickers: dict[str, dict]
+    ) -> bool:
+        """Continuously enforce the drawdown breaker and daily-loss limit.
+
+        Both rails are evaluated every tick on live equity — not only when an
+        entry signal fires — and the daily-loss check folds in open-position
+        unrealized PnL. Otherwise a position bleeding out between entries would
+        breach neither rail until it was finally closed. On breach all open
+        positions are flattened; new entries then stay blocked by the existing
+        entry-time gates (the breaker keeps firing while drawdown persists, and
+        the now-realized loss keeps the daily-loss check tripped).
+
+        Returns True if a rail was breached (this tick's normal processing
+        should be skipped).
+        """
+        # Unrealized PnL of open positions at current prices.
+        unrealized = 0.0
+        priceless_position = False
+        for sym, position in self.state.positions.items():
+            ticker = tickers.get(sym)
+            price = float(ticker["last"]) if ticker and ticker.get("last") else None
+            if price is not None:
+                unrealized += position.unrealized_pnl(price)
+            else:
+                priceless_position = True
+
+        # A held position with no resolvable price this tick makes `equity`
+        # understate the book: _calculate_equity contributes 0 for a priceless
+        # holding. Enforcing the now-continuous breaker on that collapsed equity
+        # would spuriously flatten every position on a single missing tick. Skip
+        # rail enforcement this tick; the next tick with prices re-evaluates.
+        # Per-symbol stop-loss enforcement (which needs a real price anyway) is
+        # unaffected — it runs after this guard returns.
+        if priceless_position:
+            logger.warning(
+                "safety_rails_skipped_stale_price",
+                positions=len(self.state.positions),
+            )
+            return False
+
+        breaker = self.risk_manager.check_circuit_breaker(equity)
+        daily_loss = (
+            self.trade_validator.daily_loss_breached(unrealized)
+            if self.trade_validator is not None
+            and hasattr(self.trade_validator, "daily_loss_breached")
+            else False
+        )
+        if not breaker and not daily_loss:
+            return False
+
+        if not self.state.positions:
+            return True  # rail breached but nothing to flatten
+
+        reason = "circuit_breaker" if breaker else "daily_loss_limit"
+        logger.warning(
+            "safety_rail_breached",
+            reason=reason,
+            equity=f"{equity:,.0f}",
+            unrealized=f"{unrealized:,.0f}",
+            positions=len(self.state.positions),
+        )
+        await self._notify_alert(
+            f"SAFETY HALT ({reason}): flattening {len(self.state.positions)} "
+            f"position(s), equity={equity:,.0f}, unrealized={unrealized:,.0f}"
+        )
+        for sym, position in list(self.state.positions.items()):
+            ticker = tickers.get(sym)
+            price = (
+                float(ticker["last"])
+                if ticker and ticker.get("last")
+                else position.entry_price
+            )
+            flat_signal = Signal(
+                timestamp=datetime.now(UTC),
+                symbol=sym,
+                signal_type=SignalType.LONG_EXIT,
+                price=price,
+                strength=1.0,
+            )
+            await self._handle_exit(flat_signal, sym, position)
+        return True
+
+    async def _reconcile_with_exchange(self) -> None:
+        """Reconcile local position state against the exchange's real holdings.
+
+        On startup (after a crash/restart) or after an order call returns an
+        unknown outcome, the exchange is the source of truth for what we hold.
+        Two divergences are dangerous on real money:
+
+        * Orphan holding — the exchange holds a tradable base currency that
+          local state has no position for (e.g. a fill whose response was lost
+          before the Position was recorded). Unmanaged it carries no stop loss
+          and, believing it is flat, the engine could buy more and double
+          exposure. We adopt it with a synthesized stop at the current price.
+        * Phantom position — local state holds a position the exchange no
+          longer fully backs (e.g. recorded then sold out-of-band). Selling the
+          full tracked size would over-sell; we drop it (nothing held) or
+          shrink it to the real amount.
+
+        Each adjustment emits a warning notification so the operator is alerted.
+        """
+        try:
+            balance = await self.exchange.get_balance()
+        except Exception as e:
+            logger.error("reconcile_balance_failed", error=str(e))
+            return
+
+        tradable = set(self.strategy.symbols)
+
+        # 1) Adopt orphan holdings the exchange reports but we don't track.
+        for symbol in tradable:
+            if symbol in self.state.positions:
+                continue
+            currency = symbol.split("/")[0]
+            qty = float(balance.get(currency, 0.0))
+            if qty <= 0:
+                continue
+            try:
+                ticker = await self.exchange.fetch_ticker(symbol)
+                price = float(ticker["last"])
+            except Exception as e:
+                logger.error("reconcile_price_failed", symbol=symbol, error=str(e))
+                continue
+            stop_loss = self.risk_manager.calculate_stop_loss(price)
+            self.state.positions[symbol] = Position(
+                symbol=symbol,
+                side=PositionSide.LONG,
+                size=qty,
+                entry_price=price,
+                entry_time=datetime.now(UTC),
+                stop_loss=stop_loss,
+            )
+            # Unknown real entry fee — record 0 so exit PnL doesn't subtract a
+            # fee we never observed.
+            self.state.entry_fees.setdefault(symbol, 0.0)
+            logger.warning(
+                "reconcile_adopted_orphan",
+                symbol=symbol,
+                size=f"{qty:.8f}",
+                price=f"{price:,.0f}",
+                stop_loss=f"{stop_loss:,.0f}",
+            )
+            await self._notify_alert(
+                f"RECONCILE: adopted orphan {symbol} qty={qty:.8f} "
+                f"@ ~{price:,.0f}, stop={stop_loss:,.0f}"
+            )
+
+        # 2) Reconcile tracked positions against the real held amount.
+        for symbol in list(self.state.positions.keys()):
+            currency = symbol.split("/")[0]
+            held = float(balance.get(currency, 0.0))
+            position = self.state.positions[symbol]
+            if held >= position.size * 0.99:
+                continue  # exchange backs the tracked size (dust tolerance)
+            if held <= position.size * 0.01:
+                # Exchange holds essentially nothing — phantom position.
+                del self.state.positions[symbol]
+                self.state.entry_fees.pop(symbol, None)
+                logger.warning(
+                    "reconcile_dropped_phantom",
+                    symbol=symbol,
+                    local_size=f"{position.size:.8f}",
+                    held=f"{held:.8f}",
+                )
+                await self._notify_alert(
+                    f"RECONCILE: dropped phantom {symbol} "
+                    f"(local={position.size:.8f}, exchange={held:.8f})"
+                )
+            else:
+                # Exchange holds less than tracked — shrink to avoid over-sell.
+                old_size = position.size
+                position.size = held
+                logger.warning(
+                    "reconcile_shrank_position",
+                    symbol=symbol,
+                    local_size=f"{old_size:.8f}",
+                    held=f"{held:.8f}",
+                )
+                await self._notify_alert(
+                    f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}"
+                )
 
     async def _tick_symbol(
         self, symbol: str, df: pd.DataFrame, ticker: dict | None = None
@@ -202,12 +529,19 @@ class LiveEngine:
         confirmed_df = df.iloc[:-1].copy()
         confirmed_ts = confirmed_df.index[-1].to_pydatetime()
 
-        # Check if we've already processed this candle for this symbol
+        # Check if we've already processed this candle for this symbol.
         last_ts = self._last_candle_ts.get(symbol)
-        if last_ts is not None and confirmed_ts <= last_ts:
+        is_new_candle = last_ts is None or confirmed_ts > last_ts
+
+        # A restart exit re-eval lets the exit path run once on an already-seen
+        # candle (a position held across restart whose strategy wants out).
+        restart_exit = symbol in self._pending_restart_exit
+        self._pending_restart_exit.discard(symbol)  # one-shot
+        if not is_new_candle and not restart_exit:
             return
 
-        self._last_candle_ts[symbol] = confirmed_ts
+        if is_new_candle:
+            self._last_candle_ts[symbol] = confirmed_ts
 
         logger.debug(
             "new_candle",
@@ -227,39 +561,55 @@ class LiveEngine:
         # Check stop loss first, then strategy exit signals
         position = self.state.positions.get(symbol)
         if position is not None:
-            if position.stop_loss and current_price <= position.stop_loss:
-                logger.info(
-                    "stop_loss_triggered",
-                    symbol=symbol,
-                    current_price=f"{current_price:,.0f}",
-                    stop_loss=f"{position.stop_loss:,.0f}",
-                )
-                stop_signal = Signal(
-                    timestamp=datetime.now(UTC),
-                    symbol=symbol,
-                    signal_type=SignalType.LONG_EXIT,
-                    price=current_price,
-                    strength=1.0,
-                )
-                await self._handle_exit(stop_signal, symbol, position)
-                if symbol not in self.state.positions:
-                    if self.notifier and hasattr(self.notifier, 'send_signal'):
-                        await self.notifier.send_signal(
-                            f"STOP LOSS {symbol}: price={current_price:,.0f}, "
-                            f"stop={position.stop_loss:,.0f}"
-                        )
-                else:
-                    logger.error("stop_loss_exit_failed", symbol=symbol)
-            else:
+            stopped = await self._maybe_stop_out(symbol, position, current_price)
+            if not stopped:
                 exit_signal = self.strategy.should_exit(confirmed_df, symbol, position)
                 if exit_signal:
                     await self._handle_exit(exit_signal, symbol, position)
 
-        # Check entry signals (only if no position in this symbol)
-        if symbol not in self.state.positions:
+        # Check entry signals (only if no position in this symbol). Entries are
+        # gated to genuinely new candles so a restart exit re-eval never opens a
+        # position on a candle that closed before the bot came back up.
+        if is_new_candle and symbol not in self.state.positions:
             entry_signal = self.strategy.should_entry(confirmed_df, symbol)
             if entry_signal:
                 await self._handle_entry(entry_signal, symbol, current_price)
+
+    async def _maybe_stop_out(
+        self, symbol: str, position: Position, current_price: float
+    ) -> bool:
+        """Close the position if ``current_price`` breached its stop loss.
+
+        Returns True if the stop fired and the position was closed. Shared by
+        the candle path (``_tick_symbol``) and the between-candle monitor so
+        stops are enforced in real time, not only at candle close.
+        """
+        if not position.stop_loss or current_price > position.stop_loss:
+            return False
+
+        logger.info(
+            "stop_loss_triggered",
+            symbol=symbol,
+            current_price=f"{current_price:,.0f}",
+            stop_loss=f"{position.stop_loss:,.0f}",
+        )
+        stop_signal = Signal(
+            timestamp=datetime.now(UTC),
+            symbol=symbol,
+            signal_type=SignalType.LONG_EXIT,
+            price=current_price,
+            strength=1.0,
+        )
+        await self._handle_exit(stop_signal, symbol, position)
+        if symbol not in self.state.positions:
+            if self.notifier and hasattr(self.notifier, 'send_signal'):
+                await self.notifier.send_signal(
+                    f"STOP LOSS {symbol}: price={current_price:,.0f}, "
+                    f"stop={position.stop_loss:,.0f}"
+                )
+            return True
+        logger.error("stop_loss_exit_failed", symbol=symbol)
+        return False
 
     async def _handle_entry(
         self, signal_obj: Signal, symbol: str, current_price: float
@@ -290,6 +640,7 @@ class LiveEngine:
         quantity = self.risk_manager.calculate_position_size(
             expected_price, stop_loss, equity
         )
+        quantity = quantity * signal_obj.strength  # ML probability-based sizing (matches backtest)
         if quantity <= 0:
             return
 
@@ -299,21 +650,31 @@ class LiveEngine:
                 logger.info("signal_rejected_by_validator", symbol=symbol)
                 return
 
-        # Execute order (via OrderManager if available, else direct)
-        if self.order_manager is not None:
-            order = await self.order_manager.submit_and_wait(
-                symbol=symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.MARKET,
-                quantity=quantity,
-            )
-        else:
-            order = await self.exchange.create_order(
-                symbol=symbol,
-                side=OrderSide.BUY,
-                order_type=OrderType.MARKET,
-                quantity=quantity,
-            )
+        # Execute order (via OrderManager if available, else direct).
+        # A raised exception means the outcome is unknown: the order may have
+        # executed before the response was lost. Reconcile so any resulting
+        # holding is adopted with a stop instead of becoming an unmanaged
+        # orphan, then bail out of this entry.
+        try:
+            if self.order_manager is not None:
+                order = await self.order_manager.submit_and_wait(
+                    symbol=symbol,
+                    side=OrderSide.BUY,
+                    order_type=OrderType.MARKET,
+                    quantity=quantity,
+                )
+            else:
+                order = await self.exchange.create_order(
+                    symbol=symbol,
+                    side=OrderSide.BUY,
+                    order_type=OrderType.MARKET,
+                    quantity=quantity,
+                )
+        except Exception as e:
+            logger.error("entry_order_failed", symbol=symbol, error=str(e))
+            await self._reconcile_with_exchange()
+            await self._notify_alert(f"Entry order failed {symbol}: {e}")
+            return
 
         if order.status == OrderStatus.FILLED:
             if self.trade_validator is not None:
@@ -348,20 +709,29 @@ class LiveEngine:
         self, signal_obj: Signal, symbol: str, position: Position
     ) -> None:
         """Process an exit signal."""
-        if self.order_manager is not None:
-            order = await self.order_manager.submit_and_wait(
-                symbol=symbol,
-                side=OrderSide.SELL,
-                order_type=OrderType.MARKET,
-                quantity=position.size,
-            )
-        else:
-            order = await self.exchange.create_order(
-                symbol=symbol,
-                side=OrderSide.SELL,
-                order_type=OrderType.MARKET,
-                quantity=position.size,
-            )
+        # A raised exception means the outcome is unknown: the sell may have
+        # executed before the response was lost. Reconcile so local state
+        # matches the exchange (position dropped if sold, kept if not).
+        try:
+            if self.order_manager is not None:
+                order = await self.order_manager.submit_and_wait(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    order_type=OrderType.MARKET,
+                    quantity=position.size,
+                )
+            else:
+                order = await self.exchange.create_order(
+                    symbol=symbol,
+                    side=OrderSide.SELL,
+                    order_type=OrderType.MARKET,
+                    quantity=position.size,
+                )
+        except Exception as e:
+            logger.error("exit_order_failed", symbol=symbol, error=str(e))
+            await self._reconcile_with_exchange()
+            await self._notify_alert(f"Exit order failed {symbol}: {e}")
+            return
 
         if order.status == OrderStatus.FILLED:
             if self.trade_validator is not None:
@@ -369,16 +739,43 @@ class LiveEngine:
 
             fill_price = order.filled_price or 0
             exit_fee = order.fee or 0
-            entry_fee = self.state.entry_fees.pop(symbol, 0)
-            pnl = (fill_price - position.entry_price) * position.size - entry_fee - exit_fee
+            # A market sell can fill less than requested on thin liquidity.
+            # Settle PnL on the quantity actually sold and keep any unsold
+            # remainder as a managed position (it retains its stop) instead of
+            # deleting the whole position and orphaning the residual.
+            sold_qty = (
+                min(order.quantity, position.size)
+                if order.quantity > 0
+                else position.size
+            )
+            fully_closed = sold_qty >= position.size - 1e-12
+
+            entry_fee_total = self.state.entry_fees.get(symbol, 0)
+            entry_fee = (
+                entry_fee_total
+                if fully_closed
+                else entry_fee_total * (sold_qty / position.size)
+            )
+            pnl = (fill_price - position.entry_price) * sold_qty - entry_fee - exit_fee
 
             # Track PnL for daily loss limit
             if self.trade_validator is not None:
                 self.trade_validator.record_trade_pnl(pnl)
 
-            del self.state.positions[symbol]
+            if fully_closed:
+                self.state.entry_fees.pop(symbol, None)
+                del self.state.positions[symbol]
+            else:
+                self.state.entry_fees[symbol] = entry_fee_total - entry_fee
+                position.size -= sold_qty
+                logger.warning(
+                    "exit_partial_fill",
+                    symbol=symbol,
+                    sold=f"{sold_qty:.8f}",
+                    remaining=f"{position.size:.8f}",
+                )
             logger.info(
-                "position_closed",
+                "position_closed" if fully_closed else "position_reduced",
                 symbol=symbol,
                 entry=f"{position.entry_price:,.0f}",
                 exit=f"{fill_price:,.0f}",

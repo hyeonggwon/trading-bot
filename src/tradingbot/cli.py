@@ -1997,7 +1997,6 @@ def ml_walk_forward(
 
     import json
 
-    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
 
@@ -2018,10 +2017,16 @@ def ml_walk_forward(
     console.print(f"  Entry threshold: {entry_threshold}, Exit threshold: {exit_threshold}")
     console.print(f"  External data dir: {ext_dir if has_external else '(none)'}")
 
-    config = AppConfig(
-        trading=TradingConfig(symbols=[symbol], timeframe=timeframe, initial_balance=balance),
-        risk=RiskConfig(),
-        backtest=BacktestConfig(),
+    # Route through load_config so risk/backtest (fee rate, slippage, stop
+    # loss, etc.) honor config/*.yaml instead of hardcoded defaults.
+    config = load_config(
+        overrides={
+            "trading": {
+                "symbols": [symbol],
+                "timeframe": timeframe,
+                "initial_balance": balance,
+            }
+        }
     )
 
     runner = MLStrategyWalkForward(
@@ -2191,6 +2196,11 @@ def ml_backtest(
         if meta is not None and meta.get("holdout_start"):
             effective_start = meta["holdout_start"]
             period_note = "holdout window (post training cut)"
+            # Cap the eval end at the calibrator-leak-free boundary so we don't
+            # score on candles the calibrator was fit on (the holdout cal half).
+            if effective_end is None and meta.get("holdout_eval_end"):
+                effective_end = meta["holdout_eval_end"]
+                period_note = "holdout eval window (calibrator-leak-free)"
         elif meta is not None and meta.get("train_end"):
             effective_start = meta["train_end"]
             period_note = (
@@ -2531,7 +2541,6 @@ def ml_diagnostics(
 
     import json
 
-    from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
     from tradingbot.data.external_fetcher import build_external_df
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.diagnostics import (
@@ -2615,10 +2624,16 @@ def ml_diagnostics(
     # ---- Step 3: strategy walk-forward (per-window backtest) ----
     strategy_report = None
     if not skip_backtest:
-        config = AppConfig(
-            trading=TradingConfig(symbols=[symbol], timeframe=timeframe, initial_balance=balance),
-            risk=RiskConfig(),
-            backtest=BacktestConfig(),
+        # Route through load_config so risk/backtest (fee rate, slippage, stop
+        # loss, etc.) honor config/*.yaml instead of hardcoded defaults.
+        config = load_config(
+            overrides={
+                "trading": {
+                    "symbols": [symbol],
+                    "timeframe": timeframe,
+                    "initial_balance": balance,
+                }
+            }
         )
         runner = MLStrategyWalkForward(
             symbol=symbol,
@@ -2901,7 +2916,7 @@ def ml_tune(
 
     from tradingbot.data.external_fetcher import build_external_df
     from tradingbot.data.storage import load_candles
-    from tradingbot.ml.tuner import LGBMTuner
+    from tradingbot.ml.tuner import LGBMTuner, reserve_tuning_window
     from tradingbot.ml.walk_forward import MLWalkForwardTrainer
 
     # Load the user's AppConfig so the tuner respects fee rate, slippage,
@@ -2949,7 +2964,11 @@ def ml_tune(
         objective=objective,
         seed=seed,
     )
-    result = tuner.search(df, n_trials=trials, time_budget_sec=time_budget)
+    # Tune on the inner window only; the trailing outer-holdout is reserved so
+    # the final model's holdout stays unseen by the search.
+    result = tuner.search(
+        reserve_tuning_window(df), n_trials=trials, time_budget_sec=time_budget
+    )
 
     if not result.best_params:
         console.print("[red]No successful trial — no model saved.[/red]")

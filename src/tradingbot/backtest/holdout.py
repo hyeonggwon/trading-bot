@@ -50,7 +50,16 @@ def resolve_holdout_window(
         common_end = min(d.index[-1] for d in non_empty)
         if common_start >= common_end:
             return None, None, "full data range (no overlap)"
-        cutoff_ts = common_start + (common_end - common_start) * (1 - holdout_pct)
+        # Row-based cutoff over the *unified* timeline (the same union of all
+        # symbols' timestamps the BacktestEngine iterates), restricted to the
+        # common window. This matches the single-symbol / ML int(len * 0.8)
+        # split; a time-fraction cutoff would diverge whenever candles are
+        # missing, breaking the comparability the holdout window promises.
+        unified = non_empty[0].index
+        for d in non_empty[1:]:
+            unified = unified.union(d.index)
+        unified = unified[(unified >= common_start) & (unified <= common_end)]
+        cutoff_ts = unified[int(len(unified) * (1 - holdout_pct))]
     else:
         df = df_or_dfs
         if len(df) == 0:

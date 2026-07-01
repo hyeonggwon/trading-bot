@@ -693,12 +693,39 @@ class TestResolveHoldoutWindow:
         s, _e, note = _resolve_holdout_window(
             {"BTC/KRW": df_real, "ETH/KRW": df_empty}, None, None, False,
         )
-        # Empty df is filtered out; cutoff is computed from the remaining df's
-        # span (multi-symbol path uses timestamp span, not index position).
-        cutoff = pd.Timestamp(s)
-        expected = df_real.index[0] + (df_real.index[-1] - df_real.index[0]) * 0.8
-        assert abs((cutoff - expected).total_seconds()) < 60
+        # Empty df is filtered out; the remaining df's cutoff is row-based
+        # (int(len * 0.8)), matching the single-symbol path exactly.
+        single_s, _, _ = _resolve_holdout_window(df_real, None, None, False)
+        assert s == single_s == str(df_real.index[80])
         assert "holdout window (last 20%)" in note
+
+    def test_multi_symbol_cutoff_row_based_matches_single_under_gaps(self):
+        """Multi-symbol holdout must use a row-based cutoff (like single-symbol
+        and ML's int(len * 0.8)), not a time-fraction of the elapsed span.
+
+        With a large time gap the two diverge sharply: the old time-based
+        cutoff landed deep in empty time (~hour 800 here), slicing away nearly
+        every candle and breaking comparability with the single-symbol /
+        ml-backtest holdout.
+        """
+        from tradingbot.cli import _resolve_holdout_window
+
+        base = pd.Timestamp("2024-01-01", tz="UTC")
+        # 9 dense hourly candles, then one candle ~1000h in the future.
+        times = pd.DatetimeIndex(
+            [base + pd.Timedelta(hours=h) for h in range(9)]
+            + [base + pd.Timedelta(hours=1000)]
+        )
+        df = pd.DataFrame({"close": range(10)}, index=times)
+
+        single_s, _, _ = _resolve_holdout_window(df, None, None, False)
+        multi_s, _, _ = _resolve_holdout_window(
+            {"AAA/KRW": df, "BBB/KRW": df.copy()}, None, None, False,
+        )
+        # Row-based: index[int(10 * 0.8)] == index[8] == hour 8.
+        assert single_s == str(times[8])
+        # Multi must agree with single (consistency), not land near hour ~800.
+        assert multi_s == single_s
 
     def test_multi_symbol_all_empty_returns_none(self):
         from tradingbot.cli import _resolve_holdout_window
@@ -748,3 +775,112 @@ class TestWalkForwardCombined:
             strategy, "TestStrategy", "BTC/KRW", df, config,
             train_months=3, test_months=1,
         )
+
+
+class TestMlCommandsRespectYamlConfig:
+    """ml-walk-forward / ml-diagnostics must honor config/*.yaml for risk +
+    backtest, not silently fall back to hardcoded AppConfig defaults.
+
+    Regression for the config-layering bypass: both commands built
+    AppConfig(risk=RiskConfig(), backtest=BacktestConfig()) directly, so a
+    user's fee_rate / risk YAML was ignored during the walk-forward backtest.
+
+    The commands are invoked as plain functions (this file's convention) — the
+    config the engine sees is captured at MLStrategyWalkForward construction.
+    """
+
+    @staticmethod
+    def _write_config(cfg_dir):
+        cfg_dir.mkdir()
+        # Non-default fee_rate (vs 0.0005) and max_open_positions (vs 3).
+        (cfg_dir / "default.yaml").write_text(
+            "backtest:\n  fee_rate: 0.0099\nrisk:\n  max_open_positions: 7\n"
+        )
+
+    @staticmethod
+    def _stub_df():
+        idx = pd.date_range("2024-01-01", periods=10, freq="h", tz="UTC")
+        return pd.DataFrame(
+            {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0},
+            index=idx,
+        )
+
+    @staticmethod
+    def _config_recorder(captured):
+        import typer
+
+        class _Recorder:
+            def __init__(self, **kwargs):
+                captured["config"] = kwargs["config"]
+
+            def run(self, _df):
+                # Config already captured; short-circuit the real backtest.
+                raise typer.Exit(0)
+
+        return _Recorder
+
+    def test_ml_walk_forward_honors_yaml_config(self, tmp_path, monkeypatch):
+        import typer
+
+        import tradingbot.data.storage as storage_mod
+        import tradingbot.ml.strategy_walk_forward as swf_mod
+        from tradingbot.cli import ml_walk_forward
+
+        self._write_config(tmp_path / "config")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(storage_mod, "load_candles", lambda *a, **k: self._stub_df())
+
+        captured: dict = {}
+        monkeypatch.setattr(swf_mod, "MLStrategyWalkForward", self._config_recorder(captured))
+
+        with pytest.raises(typer.Exit):
+            ml_walk_forward(
+                symbol="BTC/KRW", timeframe="1h", train_months=6, test_months=2,
+                forward_candles=4, threshold=0.006, target_kind="binary", atr_mult=1.0,
+                include_extra=False, entry_threshold=0.45, exit_threshold=0.30,
+                balance=1_000_000, data_dir="data", output_dir=str(tmp_path / "out"),
+            )
+
+        # Old code built BacktestConfig()/RiskConfig() defaults → 0.0005 / 3.
+        cfg = captured["config"]
+        assert cfg.backtest.fee_rate == 0.0099
+        assert cfg.risk.max_open_positions == 7
+
+    def test_ml_diagnostics_honors_yaml_config(self, tmp_path, monkeypatch):
+        import typer
+
+        import tradingbot.data.storage as storage_mod
+        import tradingbot.ml.strategy_walk_forward as swf_mod
+        import tradingbot.ml.walk_forward as wf_mod
+        from tradingbot.cli import ml_diagnostics
+
+        self._write_config(tmp_path / "config")
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setattr(storage_mod, "load_candles", lambda *a, **k: self._stub_df())
+
+        # Stub the diagnostics trainer so the command reaches the strategy
+        # walk-forward config build without fitting a real model.
+        class _DiagTrainer:
+            def __init__(self, **kwargs):
+                pass
+
+            def run(self, _df, external_df=None):
+                return wf_mod.MLWalkForwardReport(windows=[{"split": "stub"}])
+
+        monkeypatch.setattr(wf_mod, "MLWalkForwardTrainer", _DiagTrainer)
+
+        captured: dict = {}
+        monkeypatch.setattr(swf_mod, "MLStrategyWalkForward", self._config_recorder(captured))
+
+        with pytest.raises(typer.Exit):
+            ml_diagnostics(
+                symbol="BTC/KRW", timeframe="1h", train_months=6, test_months=2,
+                forward_candles=4, threshold=0.006, target_kind="binary", atr_mult=1.0,
+                include_extra=False, entry_threshold=0.45, exit_threshold=0.30,
+                balance=1_000_000, data_dir="data", model_dir="models",
+                output_dir=str(tmp_path / "out"), label="00_baseline", skip_backtest=False,
+            )
+
+        cfg = captured["config"]
+        assert cfg.backtest.fee_rate == 0.0099
+        assert cfg.risk.max_open_positions == 7

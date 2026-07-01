@@ -78,8 +78,12 @@ class OrderSimulator:
         Returns a FillResult if triggered, None otherwise.
         """
         if candle.low <= stop_loss_price:
-            # Stop loss triggered — fill at stop price with slippage
-            fill_price = stop_loss_price * (1 - self.config.slippage_pct)
+            # Stop loss triggered. Gap-down protection: if the candle opened
+            # below the stop, the earliest realistic fill is the open, not the
+            # (higher, unreachable) stop price — otherwise backtests overstate
+            # fills on gap-downs.
+            effective_stop = min(candle.open, stop_loss_price)
+            fill_price = effective_stop * (1 - self.config.slippage_pct)
             fee = fill_price * quantity * self.config.fee_rate
             return FillResult(filled=True, fill_price=fill_price, fee=fee)
         return None

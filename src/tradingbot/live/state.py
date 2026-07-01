@@ -31,6 +31,12 @@ class StateManager:
         self.entry_fees: dict[str, float] = {}
         self.equity_history: list[dict] = []
         self.last_save: datetime | None = None
+        # Real-money safety state that must survive restarts:
+        # peak_equity drives the drawdown circuit breaker; daily_pnl /
+        # daily_reset_date (ISO date string) drive the daily-loss limit.
+        self.peak_equity: float = 0.0
+        self.daily_pnl: float = 0.0
+        self.daily_reset_date: str | None = None
 
     def save(self) -> None:
         """Save current state to JSON file."""
@@ -41,6 +47,9 @@ class StateManager:
             },
             "entry_fees": self.entry_fees,
             "equity_history": self.equity_history[-1000:],  # Keep last 1000
+            "peak_equity": self.peak_equity,
+            "daily_pnl": self.daily_pnl,
+            "daily_reset_date": self.daily_reset_date,
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -74,6 +83,9 @@ class StateManager:
 
             self.entry_fees = data.get("entry_fees", {})
             self.equity_history = data.get("equity_history", [])
+            self.peak_equity = data.get("peak_equity", 0.0)
+            self.daily_pnl = data.get("daily_pnl", 0.0)
+            self.daily_reset_date = data.get("daily_reset_date")
 
             logger.info(
                 "state_loaded",
@@ -87,19 +99,32 @@ class StateManager:
             self.positions = {}
             self.entry_fees = {}
             self.equity_history = []
+            self.peak_equity = 0.0
+            self.daily_pnl = 0.0
+            self.daily_reset_date = None
 
     def record_equity(self, equity: float) -> None:
-        """Record an equity snapshot."""
+        """Record an equity snapshot.
+
+        Capped in memory to the last 1000 samples (matching the persisted
+        slice in ``save()``); the between-candle monitor records every few
+        seconds, so an unbounded list would grow without limit on a long run.
+        """
         self.equity_history.append({
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "equity": equity,
         })
+        if len(self.equity_history) > 1000:
+            self.equity_history = self.equity_history[-1000:]
 
     def clear(self) -> None:
         """Reset all state."""
         self.positions = {}
         self.entry_fees = {}
         self.equity_history = []
+        self.peak_equity = 0.0
+        self.daily_pnl = 0.0
+        self.daily_reset_date = None
         if self.state_path.exists():
             self.state_path.unlink()
 

@@ -1,26 +1,68 @@
 #!/usr/bin/env bash
-# pre-push: push 직전 module-claude-md 스킬로 영향 모듈 CLAUDE.md를 동기화하고,
-# 필요한 경우 루트 CLAUDE.md(프로젝트 개요)도 갱신한 뒤 같은 push에 commit을 묻혀 보낸다.
+# pre-push: push 직전 두 단계로 문서를 동기화한다.
+#   1) architecture-mapper (정적, LLM 없음): src/tradingbot import graph 가 drift 나면
+#      mermaid 다이어그램을 재생성한다.
+#   2) module-claude-md (LLM): 영향 모듈 CLAUDE.md 를 claude -p 로 동기화하고,
+#      필요하면 루트 CLAUDE.md(프로젝트 개요)도 갱신한다.
+# 두 단계 모두 변경분을 --no-verify 로 자동 commit 하고 push 는 계속 진행(비차단).
 #
 # 우회:
-#   SKIP_CLAUDE_MD_SYNC=1 git push ...
-#   (claude CLI 미설치 시 자동 skip)
+#   SKIP_ARCH_SYNC=1 git push ...          (architecture 단계만 skip)
+#   SKIP_CLAUDE_MD_SYNC=1 git push ...     (module-claude-md 단계만 skip)
+#   (python3/스킬 미설치 시 1단계 자동 skip, claude CLI 미설치 시 2단계 자동 skip)
 
 set -uo pipefail
 
-[[ "${SKIP_CLAUDE_MD_SYNC:-0}" == "1" ]] && { echo "[claude-md-sync] skipped"; exit 0; }
-command -v claude >/dev/null 2>&1 || { echo "[claude-md-sync] claude CLI not found — skip"; exit 0; }
-
 REPO_ROOT="$(git rev-parse --show-toplevel)"
 ZERO="0000000000000000000000000000000000000000"
+ARCH_HOME="${ARCH_MAPPER_HOME:-$HOME/.claude/skills/architecture-mapper}"
 
 cd "$REPO_ROOT"
 
-# 워킹트리 더러우면 자동 commit이 user 변경과 충돌. 안전하게 skip.
+# 워킹트리 더러우면 자동 commit 이 user 변경과 충돌. 두 단계 모두 안전하게 skip.
 if ! git diff --quiet || ! git diff --cached --quiet; then
-  echo "[claude-md-sync] working tree dirty — skip (commit/stash first)"
+  echo "[doc-sync] working tree dirty — skip (commit/stash first)"
   exit 0
 fi
+
+# ── 1단계: architecture-mapper (정적) ───────────────────────────────────────
+# src/tradingbot 코드가 architecture.md 보다 새로 바뀌었으면(drift) import graph
+# mermaid 를 재생성한다. 관리 대상 문서가 없으면(부트스트랩 전) 조용히 skip — 훅은
+# 최초 생성이 아니라 유지·갱신용. LLM 을 부르지 않는다(architecture-mapper 지침).
+ARCH_DOC="$REPO_ROOT/src/tradingbot/doc/architecture.md"
+ARCH_MMD="$REPO_ROOT/src/tradingbot/doc/mermaid/tradingbot-internal.mmd"
+if [[ "${SKIP_ARCH_SYNC:-0}" == "1" ]]; then
+  echo "[arch-sync] skipped"
+elif ! command -v python3 >/dev/null 2>&1; then
+  echo "[arch-sync] python3 not found — skip"
+elif [[ ! -f "$ARCH_HOME/scripts/drift.py" || ! -f "$ARCH_HOME/scripts/extract.py" ]]; then
+  echo "[arch-sync] architecture-mapper not installed at $ARCH_HOME — skip"
+elif [[ ! -f "$ARCH_DOC" ]]; then
+  echo "[arch-sync] no architecture doc to maintain — skip"
+elif python3 "$ARCH_HOME/scripts/drift.py" "$ARCH_DOC" "$REPO_ROOT/src/tradingbot" --quiet; then
+  echo "[arch-sync] no drift — skip"
+else
+  echo "[arch-sync] drift detected — regenerating mermaid ..."
+  python3 "$ARCH_HOME/scripts/extract.py" "$REPO_ROOT/src" --module tradingbot --output "$ARCH_MMD"
+  touch "$ARCH_DOC"  # mtime 을 코드 파일 뒤로 밀어 drift 해소
+  if git diff --quiet -- "$ARCH_DOC" "$ARCH_MMD"; then
+    echo "[arch-sync] import graph unchanged (mtime only) — no commit"
+  else
+    git add -- "$ARCH_DOC" "$ARCH_MMD"
+    git commit --no-verify \
+      -m "docs(NO-TICKET): regenerate architecture mermaid on drift" \
+      -m "pre-push arch-sync: src/tradingbot import graph 를 architecture-mapper extract.py 로 재생성." \
+      -m "Refs: NO-TICKET"
+    echo "[arch-sync] committed regenerated diagram"
+  fi
+fi
+
+# ── 2단계: module-claude-md (LLM, claude -p) ────────────────────────────────
+if [[ "${SKIP_CLAUDE_MD_SYNC:-0}" == "1" ]]; then
+  echo "[claude-md-sync] skipped"
+  exit 0
+fi
+command -v claude >/dev/null 2>&1 || { echo "[claude-md-sync] claude CLI not found — skip"; exit 0; }
 
 while read -r local_ref local_sha remote_ref remote_sha; do
   [[ -z "${local_sha:-}" || "$local_sha" == "$ZERO" ]] && continue

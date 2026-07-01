@@ -122,6 +122,15 @@ def _run_batch(
         ))
     else:
         # Split jobs: vectorizable combined vs fallback (registered strategies + ML)
+        #
+        # The "lgbm_prob" substring is the only entry filter that can't be
+        # vectorized (LgbmProbFilter.supports_vectorized is False), so it is
+        # routed to the full engine here. The vectorized engine also has a
+        # supports_vectorized short-circuit (returns a zero result), so a
+        # mis-routed non-vectorizable template fails *safe* (ranks at the
+        # bottom) rather than crashing — but it would do so SILENTLY. If a new
+        # non-vectorizable entry filter is added, extend this check (or switch
+        # to a parsed supports_vectorized test) so it doesn't get a silent zero.
         vectorizable_jobs = []
         fallback_jobs = []
         for name, entry, exit_ in jobs:

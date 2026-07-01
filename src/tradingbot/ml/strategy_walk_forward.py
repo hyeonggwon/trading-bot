@@ -294,12 +294,25 @@ class MLStrategyWalkForward:
             model = self.trainer.train(X_tr, y_tr, X_val, y_val)
             X_cal, y_cal = X_val, y_val
         else:
-            X_train_all = train_data[feature_cols]
-            y_train_all = target_train
-            model = self.trainer.train(X_train_all, y_train_all, fixed_rounds=300)
+            # Fixed-rounds fallback. Keep the calibrator's slice disjoint from
+            # the booster's training data: fit the tree up to an embargo gap
+            # before the calibration tail, then calibrate on that tail. If the
+            # embargoed train slice would be too small, train on all data and
+            # skip calibration rather than leak in-sample probabilities.
             cal_start = int(len(train_data) * 0.85)
-            X_cal = train_data[feature_cols].iloc[cal_start:]
-            y_cal = target_train.iloc[cal_start:]
+            fit_end = cal_start - EMBARGO_CANDLES
+            if fit_end >= 100:
+                X_train_fit = train_data[feature_cols].iloc[:fit_end]
+                y_train_fit = target_train.iloc[:fit_end]
+                model = self.trainer.train(X_train_fit, y_train_fit, fixed_rounds=300)
+                X_cal = train_data[feature_cols].iloc[cal_start:]
+                y_cal = target_train.iloc[cal_start:]
+            else:
+                X_train_all = train_data[feature_cols]
+                y_train_all = target_train
+                model = self.trainer.train(X_train_all, y_train_all, fixed_rounds=300)
+                X_cal = train_data[feature_cols].iloc[0:0]  # empty → no calibrator
+                y_cal = target_train.iloc[0:0]
 
         calibrator = None
         if len(X_cal) >= 30:

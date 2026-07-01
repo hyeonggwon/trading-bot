@@ -8,6 +8,7 @@ import pandas as pd
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
 from tradingbot.strategy.combined import CombinedStrategy
+from tradingbot.strategy.filters.base import BaseFilter
 from tradingbot.strategy.filters.exit import AtrTrailingExitFilter, ZscoreExtremeFilter
 from tradingbot.strategy.filters.momentum import (
     RsiOverboughtFilter,
@@ -366,3 +367,143 @@ class TestLgbmProbFilter:
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
         assert report.total_trades == 0
+
+
+class _AlwaysEnter(BaseFilter):
+    """Trivial entry filter that always fires (drives should_entry caching)."""
+
+    name = "always_enter"
+    role = "entry"
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return df
+
+    def check_entry(self, df: pd.DataFrame) -> bool:
+        return True
+
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        return False
+
+
+def _wick_ohlcv(levels: list[float], peaks: dict[int, float]) -> pd.DataFrame:
+    """Flat OHLCV at each level, with `peaks` raising only the `high` (a wick).
+
+    A post-entry high wick lets a trailing-stop exit anchor to the true peak.
+    """
+    n = len(levels)
+    dates = pd.date_range("2024-01-01", periods=n, freq="h", tz="UTC")
+    high = list(levels)
+    for i, h in peaks.items():
+        high[i] = h
+    return pd.DataFrame(
+        {"open": levels, "high": high, "low": levels, "close": levels,
+         "volume": [100.0] * n},
+        index=dates,
+    )
+
+
+class TestTrailingExitTimestampAnchor:
+    """ATR trailing exit must anchor 'highest high since entry' on the entry
+    *timestamp*, not a positional index frozen at signal time.
+
+    In backtest, slices are anchored at index 0 so the frozen positional index
+    is stable. In live trading the rolling fetch window slides forward each
+    tick, so the cached index drifts off the entry candle, and a restart loses
+    the cache entirely. Both regressions are reproduced below — they FAIL on the
+    pre-fix positional-cache code.
+    """
+
+    def test_live_window_slide_keeps_trailing_anchor(self):
+        from tradingbot.core.enums import PositionSide
+        from tradingbot.core.models import Position
+
+        # Entry on the last flat-100 candle (index 10); a high wick to 160 fires
+        # one candle later, then price settles flat at 130.
+        levels = [100.0] * 11 + [130.0] * 14  # 25 candles
+        series = _wick_ohlcv(levels, peaks={11: 160.0})
+
+        strategy = CombinedStrategy(
+            entry_filters=[_AlwaysEnter()],
+            exit_filters=[AtrTrailingExitFilter(period=3, multiplier=1.0)],
+        )
+
+        # Window AT ENTRY: candles 0..10. should_entry caches positional idx 10.
+        df_entry = strategy.indicators(series.iloc[:11].copy())
+        assert strategy.should_entry(df_entry, "BTC/KRW") is not None
+
+        position = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=100.0,
+            entry_time=df_entry.index[-1].to_pydatetime(),
+            stop_loss=None,
+        )
+
+        # Window LATER (slid forward to 5..24): the entry candle is now at
+        # position 5, so the cached index 10 points past the 160 peak into the
+        # flat-130 tail. Old code: highest=130, no exit. Timestamp anchor:
+        # re-locates the entry candle -> highest=160 -> close 130 exits.
+        df_exit = strategy.indicators(series.iloc[5:25].copy())
+        exit_sig = strategy.should_exit(df_exit, "BTC/KRW", position)
+        assert exit_sig is not None
+
+    def test_restart_reanchors_via_persisted_entry_time(self):
+        from tradingbot.core.enums import PositionSide
+        from tradingbot.core.models import Position
+
+        # Peak wick at index 11; long flat-130 tail (>20 candles) afterwards.
+        levels = [100.0] * 11 + [130.0] * 29  # 40 candles
+        series = _wick_ohlcv(levels, peaks={11: 160.0})
+
+        strategy = CombinedStrategy(
+            entry_filters=[_AlwaysEnter()],
+            exit_filters=[AtrTrailingExitFilter(period=3, multiplier=1.0)],
+        )
+        df_exit = strategy.indicators(series.copy())
+
+        # Simulate a restart: in-memory caches are empty, but the position
+        # (with entry_time) was restored from state.json.
+        position = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=100.0,
+            entry_time=series.index[10].to_pydatetime(),
+            stop_loss=None,
+        )
+
+        # Old code: no cached index -> falls back to last 20 candles, which are
+        # all flat 130 (peak at index 11 is older), so highest=130, no exit.
+        # New code: anchors on persisted entry_time -> highest=160 -> exits.
+        exit_sig = strategy.should_exit(df_exit, "BTC/KRW", position)
+        assert exit_sig is not None
+
+    def test_scrolled_out_entry_falls_back_to_none(self):
+        """When the entry candle has aged out of the rolling window, the entry
+        timestamp predates every bar. The anchor must fall back to None (the
+        filter's own heuristic), not silently snap to the oldest bar (index 0).
+        Old code returns 0 for that scrolled-off case; the fix returns None."""
+        from tradingbot.core.enums import PositionSide
+        from tradingbot.core.models import Position
+
+        # Current fetch window starts 2024-01-05; the position entered on
+        # 2024-01-01, long before every bar still in the window.
+        dates = pd.date_range("2024-01-05", periods=20, freq="h", tz="UTC")
+        df = pd.DataFrame(
+            {"open": [100.0] * 20, "high": [100.0] * 20, "low": [100.0] * 20,
+             "close": [100.0] * 20, "volume": [100.0] * 20},
+            index=dates,
+        )
+        strategy = CombinedStrategy(
+            entry_filters=[_AlwaysEnter()],
+            exit_filters=[AtrTrailingExitFilter(period=3, multiplier=1.0)],
+        )
+        position = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0, entry_price=100.0,
+            entry_time=pd.Timestamp("2024-01-01", tz="UTC").to_pydatetime(),
+            stop_loss=None,
+        )
+        # No cached entry time -> uses persisted position.entry_time, which
+        # predates the window: index-0 snap is wrong, None is the contract.
+        assert strategy._resolve_entry_index(df, "BTC/KRW", position) is None

@@ -95,6 +95,7 @@ class UpbitWebSocketClient:
         self._running = False
         self._stop_event: asyncio.Event | None = None
         self._last_prices: dict[str, float] = {}
+        self._last_price_ts: dict[str, datetime] = {}
         self._reconnect_delay = RECONNECT_BASE_DELAY
         self._reconnect_attempts = 0
 
@@ -102,6 +103,22 @@ class UpbitWebSocketClient:
     def last_prices(self) -> dict[str, float]:
         """Last known prices per symbol (e.g., {'BTC/KRW': 50000000})."""
         return dict(self._last_prices)
+
+    def fresh_prices(self, max_age_seconds: float) -> dict[str, float]:
+        """Prices received within ``max_age_seconds``; stale/absent dropped.
+
+        ``_last_prices`` caches the last price per symbol indefinitely, so a
+        dropped or silent connection would otherwise serve an arbitrarily old
+        price. Callers (the live engine) use this to fall back to a fresh REST
+        pull when WebSocket data goes stale.
+        """
+        now = datetime.now(timezone.utc)
+        fresh: dict[str, float] = {}
+        for symbol, price in self._last_prices.items():
+            ts = self._last_price_ts.get(symbol)
+            if ts is not None and (now - ts).total_seconds() <= max_age_seconds:
+                fresh[symbol] = price
+        return fresh
 
     def on_ticker(self, callback: TickerCallback) -> None:
         """Register a callback for ticker updates."""
@@ -212,6 +229,9 @@ class UpbitWebSocketClient:
             return
 
         self._last_prices[symbol] = price
+        # Local receive time — used by fresh_prices() to detect a dead/silent
+        # connection (the exchange event timestamp can't reveal a stalled feed).
+        self._last_price_ts[symbol] = datetime.now(timezone.utc)
 
         ticker = TickerData(
             symbol=symbol,
