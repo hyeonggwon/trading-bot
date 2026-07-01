@@ -298,11 +298,20 @@ class LiveEngine:
         if self.trade_validator is not None and hasattr(
             self.trade_validator, "restore_daily_state"
         ):
-            reset_date = (
-                date.fromisoformat(self.state.daily_reset_date)
-                if self.state.daily_reset_date
-                else None
-            )
+            try:
+                reset_date = (
+                    date.fromisoformat(self.state.daily_reset_date)
+                    if self.state.daily_reset_date
+                    else None
+                )
+            except ValueError:
+                # A corrupt daily_reset_date must not crash startup and defeat
+                # the crash-recovery this restore exists for; drop it so the
+                # daily-loss counter re-baselines to today.
+                logger.error(
+                    "bad_daily_reset_date", value=self.state.daily_reset_date
+                )
+                reset_date = None
             self.trade_validator.restore_daily_state(self.state.daily_pnl, reset_date)
 
     def _persist_state(self) -> None:
@@ -345,11 +354,28 @@ class LiveEngine:
         """
         # Unrealized PnL of open positions at current prices.
         unrealized = 0.0
+        priceless_position = False
         for sym, position in self.state.positions.items():
             ticker = tickers.get(sym)
             price = float(ticker["last"]) if ticker and ticker.get("last") else None
             if price is not None:
                 unrealized += position.unrealized_pnl(price)
+            else:
+                priceless_position = True
+
+        # A held position with no resolvable price this tick makes `equity`
+        # understate the book: _calculate_equity contributes 0 for a priceless
+        # holding. Enforcing the now-continuous breaker on that collapsed equity
+        # would spuriously flatten every position on a single missing tick. Skip
+        # rail enforcement this tick; the next tick with prices re-evaluates.
+        # Per-symbol stop-loss enforcement (which needs a real price anyway) is
+        # unaffected — it runs after this guard returns.
+        if priceless_position:
+            logger.warning(
+                "safety_rails_skipped_stale_price",
+                positions=len(self.state.positions),
+            )
+            return False
 
         breaker = self.risk_manager.check_circuit_breaker(equity)
         daily_loss = (

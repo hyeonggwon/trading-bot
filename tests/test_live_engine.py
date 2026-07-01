@@ -521,6 +521,35 @@ class TestStatePersistenceAcrossRestart:
         assert engine2.risk_manager.peak_equity == 12_345_678.0
         assert v2.daily_state()[0] == -150_000
 
+    @pytest.mark.asyncio
+    async def test_corrupt_daily_reset_date_does_not_crash_restart(self, tmp_path):
+        """A corrupt daily_reset_date in state.json must not raise out of
+        _restore_state and abort startup — that would defeat the crash-recovery
+        the restore exists for. The bad date is dropped; daily PnL still loads."""
+        from tradingbot.risk.validators import TradeValidator
+
+        state_path = tmp_path / "state.json"
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(data_feed=feed, initial_balance=10_000_000)
+        config = AppConfig(risk=RiskConfig())
+
+        # Persist a state whose daily_reset_date is not a valid ISO date.
+        sm = StateManager(state_path)
+        sm.daily_pnl = -75_000
+        sm.daily_reset_date = "not-a-date"
+        sm.save()
+
+        v = TradeValidator(daily_loss_limit_krw=200_000)
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=StateManager(state_path), trade_validator=v,
+        )
+        # Old code: date.fromisoformat("not-a-date") raises ValueError.
+        engine._restore_state()
+
+        # Daily PnL still restored (loss counter not silently zeroed).
+        assert v.daily_state()[0] == -75_000
+
 
 # --- CRITICAL: exchange <-> local state reconciliation ---
 
@@ -753,6 +782,52 @@ class TestSafetyRailEnforcement:
         await engine._monitor_prices(["BTC/KRW"])
 
         assert "BTC/KRW" not in state.positions
+
+    @pytest.mark.asyncio
+    async def test_missing_price_skips_rail_no_spurious_flatten(self, tmp_path):
+        """A held position with no resolvable price this tick must NOT be
+        flattened. _calculate_equity contributes 0 for a priceless holding, so
+        equity collapses to ~cash; the now-continuous breaker would otherwise
+        liquidate the whole book on a single missing tick. The rail must skip
+        (unreliable equity) instead of firing."""
+
+        class NoPriceFeed(MockDataFeed):
+            async def fetch_ticker(self, symbol):
+                raise RuntimeError("ticker unavailable")
+
+            async def get_balance(self):
+                return {"KRW": 1_000_000, "BTC": 0.001}
+
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                # Records the erroneous sell if the buggy rail flattens.
+                return Order(
+                    id="spurious-flatten", symbol=symbol, side=side,
+                    order_type=order_type, quantity=quantity,
+                    status=OrderStatus.FILLED, filled_price=50_000_000,
+                    fee=0.0, filled_at=datetime.now(UTC),
+                )
+
+        feed = NoPriceFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig(max_drawdown_pct=0.10))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=state,
+        )
+        # Peak far above the cash-only equity: without a BTC price, equity
+        # collapses to ~cash and the drawdown breaker would breach.
+        engine.risk_manager.peak_equity = 100_000_000.0
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.001,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+        state.entry_fees["BTC/KRW"] = 0.0
+
+        await engine._monitor_prices(["BTC/KRW"])
+
+        # Rail skipped on unreliable equity -> position retained, not liquidated.
+        assert "BTC/KRW" in state.positions
 
 
 # --- Bug: a partial exit fill must not orphan the unsold remainder ---
