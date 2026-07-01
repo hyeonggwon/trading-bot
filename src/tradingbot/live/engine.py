@@ -867,7 +867,13 @@ class LiveEngine:
         balance: dict | None = None,
         out_prices: dict[str, float] | None = None,
     ) -> float:
-        """Calculate total equity from exchange balances.
+        """Calculate total equity from managed holdings.
+
+        Equity is scoped to the bot's tradeable universe — the configured
+        strategy symbols plus any open positions. Untraded balances (coins the
+        user holds outside this bot) are ignored so they neither inflate the
+        risk/sizing budget nor cost a per-tick ``fetch_ticker`` call. This
+        mirrors the backtest engine, which only values managed positions + cash.
 
         Uses cached_tickers/balance if provided to avoid redundant API calls.
         If out_prices is given, it is populated with {symbol: last_price} for
@@ -876,11 +882,14 @@ class LiveEngine:
         """
         if balance is None:
             balance = await self.exchange.get_balance()
+        tradeable = set(self.strategy.symbols) | set(self.state.positions)
         equity = balance.get("KRW", 0)
         for currency, qty in balance.items():
             if currency == "KRW":
                 continue
             symbol = f"{currency}/KRW"
+            if symbol not in tradeable:
+                continue  # untraded holding — outside the bot's managed universe
             # Use cached ticker if available, otherwise fetch
             ticker = (cached_tickers or {}).get(symbol)
             if ticker:

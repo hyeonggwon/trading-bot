@@ -1268,3 +1268,69 @@ class TestLiveCashClamp:
         assert "quantity" in captured
         # Requested quantity clamped to free cash, not the ~8.5M-equity size.
         assert captured["quantity"] == pytest.approx(affordable, rel=1e-6)
+
+
+# --- Sizing coherence: equity scoped to the managed universe ---
+
+
+class TestEquityScope:
+    @pytest.mark.asyncio
+    async def test_untraded_holding_excluded_and_not_fetched(self, tmp_path):
+        """An untraded balance (outside strategy.symbols and open positions) must
+        not be priced into equity nor cost a per-tick fetch_ticker. Otherwise a
+        user's unrelated coin bag both inflates the risk/sizing budget and
+        hammers the ticker endpoint every tick (rate-limit). This mirrors the
+        backtest engine, which only values managed positions + cash.
+        """
+        fetched: list[str] = []
+
+        class ExtraBagFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 1_000_000, "DOGE": 5_000.0}
+
+            async def fetch_ticker(self, symbol):
+                fetched.append(symbol)
+                return await super().fetch_ticker(symbol)
+
+        feed = ExtraBagFeed(price=50_000_000)
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed,  # trades BTC/KRW only
+            config=AppConfig(risk=RiskConfig()),
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+
+        equity = await engine._calculate_equity()
+
+        # DOGE is neither traded nor an open position → excluded, never fetched.
+        assert equity == pytest.approx(1_000_000)
+        assert "DOGE/KRW" not in fetched
+
+    @pytest.mark.asyncio
+    async def test_open_position_priced_even_if_not_in_symbols(self, tmp_path):
+        """A held position outside the configured symbol list is still ours to
+        manage, so it must be valued — the scope is the union of strategy.symbols
+        and open positions, not strategy.symbols alone.
+        """
+
+        class EthBagFeed(MultiPriceFeed):
+            async def get_balance(self):
+                return {"KRW": 1_000_000, "ETH": 2.0}
+
+        feed = EthBagFeed({"ETH/KRW": 3_000_000})
+        state = StateManager(tmp_path / "state.json")
+        state.positions["ETH/KRW"] = Position(
+            symbol="ETH/KRW", side=PositionSide.LONG, size=2.0,
+            entry_price=3_000_000, entry_time=datetime.now(UTC),
+            stop_loss=2_940_000,
+        )
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed,  # trades BTC/KRW only
+            config=AppConfig(risk=RiskConfig()),
+            state_manager=state,
+        )
+
+        equity = await engine._calculate_equity()
+
+        # 1M cash + 2.0 ETH * 3M = 7M — the open ETH position is priced despite
+        # not appearing in strategy.symbols.
+        assert equity == pytest.approx(1_000_000 + 2.0 * 3_000_000)

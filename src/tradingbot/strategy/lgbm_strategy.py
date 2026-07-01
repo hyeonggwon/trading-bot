@@ -1,7 +1,8 @@
 """LightGBM-based trading strategy.
 
 Uses a pre-trained LightGBM model for entry/exit decisions.
-Model outputs probability of profitable trade → mapped to Signal.strength via Half-Kelly.
+Model outputs probability of profitable trade → mapped to Signal.strength via
+kelly_strength (Half-Kelly normalized to a [0, 1] confidence).
 """
 
 from __future__ import annotations
@@ -16,7 +17,7 @@ from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.ml.features import FEATURE_COLS, WARMUP_CANDLES, build_feature_matrix
 from tradingbot.ml.trainer import LGBMTrainer
-from tradingbot.ml.utils import half_kelly
+from tradingbot.ml.utils import kelly_strength
 from tradingbot.strategy.base import Strategy, StrategyParams
 
 log = logging.getLogger(__name__)
@@ -234,7 +235,7 @@ class LGBMStrategy(Strategy):
             return None
 
         ratio = self._win_loss_ratios.get(symbol, 1.5)
-        strength = min(half_kelly(prob, avg_win_loss_ratio=ratio), 1.0)
+        strength = kelly_strength(prob, avg_win_loss_ratio=ratio)
 
         return Signal(
             timestamp=df.index[-1].to_pydatetime(),
