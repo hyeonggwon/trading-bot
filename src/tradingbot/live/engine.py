@@ -23,6 +23,7 @@ from tradingbot.config import AppConfig
 from tradingbot.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.exchange.base import BaseExchange
+from tradingbot.live.control import control_path_for, read_pause
 from tradingbot.live.state import StateManager
 from tradingbot.risk.manager import RiskManager
 from tradingbot.strategy.base import Strategy
@@ -78,6 +79,9 @@ class LiveEngine:
         self.ws_client = ws_client  # UpbitWebSocketClient for real-time prices
 
         self._running = False
+        # Operator kill-switch state, refreshed from the control file each
+        # tick (see live/control.py). Blocks NEW entries only.
+        self._entries_paused = False
         # Per-symbol last confirmed candle timestamp
         self._last_candle_ts: dict[str, datetime] = {}
         # Symbols held at startup whose exit must be re-evaluated on the first
@@ -204,6 +208,17 @@ class LiveEngine:
         if await self._enforce_safety_rails(equity, tickers):
             self._persist_state()
             return
+
+        # Operator kill-switch (dashboard writes the control file, we only
+        # read): pause blocks NEW entries; stops/take-profits/exits/rails on
+        # existing positions keep running. Log/notify transitions only.
+        paused = read_pause(control_path_for(self.state.state_path))
+        if paused != self._entries_paused:
+            self._entries_paused = paused
+            logger.warning("entries_paused" if paused else "entries_resumed")
+            await self._notify_alert(
+                "Entries PAUSED via control file" if paused else "Entries resumed"
+            )
 
         # Process each symbol
         for sym, result in zip(symbols, ohlcv_results):
@@ -603,8 +618,9 @@ class LiveEngine:
 
         # Check entry signals (only if no position in this symbol). Entries are
         # gated to genuinely new candles so a restart exit re-eval never opens a
-        # position on a candle that closed before the bot came back up.
-        if is_new_candle and symbol not in self.state.positions:
+        # position on a candle that closed before the bot came back up, and to
+        # the operator kill-switch (control file, refreshed in _tick_all).
+        if is_new_candle and not self._entries_paused and symbol not in self.state.positions:
             entry_signal = self.strategy.should_entry(confirmed_df, symbol)
             if entry_signal:
                 await self._handle_entry(entry_signal, symbol, current_price)

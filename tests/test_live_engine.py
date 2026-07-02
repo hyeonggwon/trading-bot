@@ -1548,3 +1548,67 @@ class TestEquityScope:
         # 1M cash + 2.0 ETH * 3M = 7M — the open ETH position is priced despite
         # not appearing in strategy.symbols.
         assert equity == pytest.approx(1_000_000 + 2.0 * 3_000_000)
+
+
+# --- Feature: operator kill-switch (dashboard control file) ---
+
+class EnterAlwaysStrategy(StubStrategy):
+    """Strategy that always wants in — exercises the entry pause gate."""
+
+    def should_entry(self, df, symbol):
+        return Signal(
+            timestamp=datetime.now(UTC), symbol=symbol,
+            signal_type=SignalType.LONG_ENTRY,
+            price=float(df["close"].iloc[-1]), strength=1.0,
+        )
+
+
+class TestEntryPauseControl:
+    """control.json pauses NEW entries only; the engine keeps managing
+    existing positions (stops/TP/exits/rails) while paused."""
+
+    def test_pause_flag_roundtrip(self, tmp_path):
+        from tradingbot.live.control import control_path_for, read_pause, set_pause
+
+        control = control_path_for(tmp_path / "state.json")
+        assert read_pause(control) is False  # missing file == not paused
+        set_pause(control, True)
+        assert read_pause(control) is True
+        set_pause(control, False)
+        assert read_pause(control) is False
+        control.write_text("{not json")
+        assert read_pause(control) is False  # corrupt == fail-open (logged)
+
+    @pytest.mark.asyncio
+    async def test_paused_engine_skips_entry_resumed_enters(self, tmp_path):
+        from tradingbot.live.control import control_path_for, set_pause
+
+        def make_engine():
+            feed = MockDataFeed(price=50_000_000)
+            paper = PaperExchange(
+                data_feed=feed, initial_balance=10_000_000,
+                fee_rate=0.0005, slippage_pct=0.001,
+            )
+            paper.update_prices({"BTC/KRW": 50_000_000})
+            config = AppConfig(risk=RiskConfig(
+                max_drawdown_pct=0.99, default_stop_loss_pct=0.02,
+            ))
+            state = StateManager(tmp_path / "state.json")
+            return LiveEngine(
+                strategy=EnterAlwaysStrategy(), exchange=paper, config=config,
+                state_manager=state,
+            )
+
+        control = control_path_for(tmp_path / "state.json")
+
+        set_pause(control, True)
+        engine = make_engine()
+        await engine._tick_all(["BTC/KRW"], "1h")
+        assert engine._entries_paused is True
+        assert "BTC/KRW" not in engine.state.positions  # entry gated
+
+        set_pause(control, False)
+        engine2 = make_engine()  # fresh candle tracking → entry re-evaluates
+        await engine2._tick_all(["BTC/KRW"], "1h")
+        assert engine2._entries_paused is False
+        assert "BTC/KRW" in engine2.state.positions  # same setup enters when live

@@ -988,3 +988,33 @@ class TestLGBMStrategy:
         assert aligned_a is not None and aligned_b is not None
         assert aligned_a.index.equals(df_a.index)
         assert aligned_b.index.equals(df_b.index)
+
+
+class TestModelCatalog:
+    def test_load_catalog_defensive(self, tmp_path):
+        """카탈로그는 메타 키 편차·깨진 파일·빈 디렉토리에 안전해야 한다."""
+        import json as _json
+
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        assert LGBMTrainer.load_catalog(tmp_path) == []  # no models yet
+
+        (tmp_path / "lgbm_BTC_KRW_1h_meta.json").write_text(_json.dumps({
+            "symbol": "BTC/KRW", "timeframe": "1h", "trained_at": "2026-01-01",
+            "n_features": 10, "has_calibrator": True,
+            "holdout_start": "2025-06-01", "holdout_auc": 0.61,
+            "entry_threshold": 0.44, "exit_threshold": 0.28,
+            "avg_win_loss_ratio": 1.7,
+        }))
+        (tmp_path / "lgbm_ETH_KRW_4h_meta.json").write_text(_json.dumps({
+            "symbol": "ETH/KRW", "timeframe": "4h",  # tuner keys absent
+        }))
+        (tmp_path / "lgbm_XRP_KRW_1h_meta.json").write_text("{broken")
+
+        catalog = LGBMTrainer.load_catalog(tmp_path)
+        assert len(catalog) == 2  # broken meta skipped, not fatal
+        btc = next(e for e in catalog if e["symbol"] == "BTC/KRW")
+        assert btc["holdout_auc"] == 0.61
+        assert btc["entry_threshold"] == 0.44
+        eth = next(e for e in catalog if e["symbol"] == "ETH/KRW")
+        assert eth["holdout_auc"] is None  # absent keys → None, not KeyError

@@ -35,12 +35,14 @@ def main() -> None:
     st.title("📊 Trading Bot Dashboard")
 
     # Sidebar: mode selection
-    mode = st.sidebar.radio("Mode", ["Live Monitor", "Backtest Viewer"])
+    mode = st.sidebar.radio("Mode", ["Live Monitor", "Backtest Viewer", "Models"])
 
     if mode == "Live Monitor":
         _render_live_monitor()
-    else:
+    elif mode == "Backtest Viewer":
         _render_backtest_viewer()
+    else:
+        _render_models()
 
 
 # ── Live Monitor ──────────────────────────────────────────────────────
@@ -82,7 +84,36 @@ def _render_live_monitor() -> None:
     state_path = st.sidebar.text_input("State file", value=default_path)
 
     state_file = Path(state_path)
+    _render_entry_controls(state_file)
     _live_data_fragment(state_file)
+
+
+def _render_entry_controls(state_file: Path) -> None:
+    """Operator kill-switch: pause/resume NEW entries via the control file.
+
+    The engine polls the control file every tick and keeps managing existing
+    positions (stops, take profits, exits, safety rails) while paused.
+    """
+    from tradingbot.live.control import control_path_for, read_pause, set_pause
+
+    control_path = control_path_for(state_file)
+    paused = read_pause(control_path)
+
+    st.sidebar.divider()
+    if paused:
+        st.sidebar.error("⏸ Entries PAUSED")
+        if st.sidebar.button("▶ Resume entries", use_container_width=True):
+            set_pause(control_path, False)
+            st.rerun()
+    else:
+        st.sidebar.success("▶ Entries active")
+        if st.sidebar.button("⏸ Pause entries", use_container_width=True):
+            set_pause(control_path, True)
+            st.rerun()
+    st.sidebar.caption(
+        "Pause blocks new entries only — open positions keep their stops, "
+        "take profits and safety rails."
+    )
 
 
 def _render_header_metrics(data: dict) -> None:
@@ -347,6 +378,29 @@ def _render_trade_list(report) -> None:
 
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
+
+
+# ── Model Catalog ────────────────────────────────────────────────────
+
+
+def _render_models() -> None:
+    """Saved LightGBM model catalog from models/*_meta.json."""
+    from tradingbot.ml.trainer import LGBMTrainer
+
+    st.subheader("Model Catalog")
+    model_dir = st.sidebar.text_input("Model directory", value="models")
+
+    entries = LGBMTrainer.load_catalog(Path(model_dir))
+    if not entries:
+        st.info(
+            "No saved models found. Train them first: `tradingbot ml-train-all`"
+        )
+        return
+
+    import pandas as pd
+
+    st.caption(f"{len(entries)} model(s) in `{model_dir}/`")
+    st.dataframe(pd.DataFrame(entries), use_container_width=True, hide_index=True)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────

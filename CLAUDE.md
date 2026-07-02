@@ -189,11 +189,12 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/exchange/ws_client.py` — Upbit WebSocket client (real-time ticker, auto-reconnect, interruptible cooldown)
 - `src/tradingbot/live/engine.py` — Async live/paper trading loop (polling, candle detection, signal execution). Syncs WebSocket prices to `PaperExchange` each tick, recalculates stop loss from filled price, enforces stop in `_tick_symbol` with notification, uses slippage-adjusted expected price for sizing/validation, records equity each tick.
 - `src/tradingbot/live/state.py` — JSON-based state persistence with atomic write (positions, equity history, crash recovery)
+- `src/tradingbot/live/control.py` — Dashboard→engine control file (entry pause/resume kill-switch; engine polls it each tick, new entries only — exits/stops/rails unaffected)
 - `src/tradingbot/live/order_manager.py` — Order lifecycle (submit, poll, timeout cancel, market re-order)
 - `src/tradingbot/risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
 - `src/tradingbot/risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown)
 - `src/tradingbot/notifications/telegram.py` — Telegram Bot API notifications
-- `src/tradingbot/dashboard/app.py` — Streamlit web dashboard (Live Monitor + Backtest Viewer)
+- `src/tradingbot/dashboard/app.py` — Streamlit web dashboard (Live Monitor + entry pause/resume control + Backtest Viewer + Model Catalog)
 - `src/tradingbot/config.py` — Pydantic settings from YAML + .env override
 - `src/tradingbot/utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
 

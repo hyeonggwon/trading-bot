@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -275,3 +276,33 @@ class LGBMTrainer:
             return None
 
         return json.loads(meta_path.read_text())
+
+    @staticmethod
+    def load_catalog(model_dir: Path = Path("models")) -> list[dict[str, Any]]:
+        """Summarize every saved model's meta for the dashboard catalog.
+
+        Meta contents vary by pipeline phase (walk-forward, Optuna tuner and
+        threshold tuner each add keys), so fields are extracted defensively —
+        absent keys become None. Unreadable metas are skipped with a warning.
+        Returns [] when the directory holds no models.
+        """
+        entries: list[dict[str, Any]] = []
+        for meta_path in sorted(model_dir.glob("lgbm_*_meta.json")):
+            try:
+                meta = json.loads(meta_path.read_text())
+            except (json.JSONDecodeError, OSError) as e:
+                log.warning(f"Unreadable model meta skipped: {meta_path} ({e})")
+                continue
+            entries.append({
+                "symbol": meta.get("symbol"),
+                "timeframe": meta.get("timeframe"),
+                "trained_at": meta.get("trained_at"),
+                "n_features": meta.get("n_features"),
+                "has_calibrator": meta.get("has_calibrator"),
+                "holdout_start": meta.get("holdout_start"),
+                "holdout_auc": meta.get("holdout_auc"),
+                "entry_threshold": meta.get("entry_threshold"),
+                "exit_threshold": meta.get("exit_threshold"),
+                "avg_win_loss_ratio": meta.get("avg_win_loss_ratio"),
+            })
+        return entries
