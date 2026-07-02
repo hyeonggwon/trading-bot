@@ -86,3 +86,22 @@ pythonpath = ["src"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[[tool.mypy.overrides]]
+# 스텁 없는 서드파티: import 를 Any 로 취급(사실상 현행 동작 그대로)해
+# import-untyped 노이즈만 제거. pandas-stubs 등 실제 스텁 도입은 오류
+# 표면을 크게 바꾸므로 별도 유닛에서 검토한다.
+module = [
+    "pandas",
+    "pandas.*",
+    "ccxt",
+    "ccxt.*",
+    "ta",
+    "ta.*",
+    "yaml",
+    "sklearn.*",
+    "scipy.*",
+    "plotly",
+    "plotly.*",
+]
+ignore_missing_imports = true
