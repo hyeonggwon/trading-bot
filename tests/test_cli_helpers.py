@@ -3,15 +3,20 @@ parallel batch worker, and walk-forward combined."""
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
 import pandas as pd
 import pytest
+import typer
 
 from tradingbot.cli import (
     COMBINE_TEMPLATES,
+    _app_root,
     _build_combined_strategy,
     _find_combine_template,
     _resolve_strategy,
+    app,
 )
 from tradingbot.strategy.filters.registry import parse_filter_string
 
@@ -884,3 +889,46 @@ class TestMlCommandsRespectYamlConfig:
         cfg = captured["config"]
         assert cfg.backtest.fee_rate == 0.0099
         assert cfg.risk.max_open_positions == 7
+
+
+class TestAppRootCallback:
+    """TRADINGBOT_HOME anchors cwd-relative defaults for out-of-root runs."""
+
+    def test_chdirs_to_home(self, tmp_path, monkeypatch):
+        home = tmp_path / "proj"
+        (home / "config").mkdir(parents=True)
+        monkeypatch.chdir(tmp_path)  # restores the original cwd on teardown
+        monkeypatch.setenv("TRADINGBOT_HOME", str(home))
+
+        _app_root()
+
+        assert Path.cwd().resolve() == home.resolve()
+
+    def test_invalid_home_exits(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)
+        monkeypatch.setenv("TRADINGBOT_HOME", str(tmp_path / "does-not-exist"))
+
+        with pytest.raises(typer.Exit):
+            _app_root()
+
+    def test_no_home_no_config_warns_but_stays(self, tmp_path, monkeypatch):
+        monkeypatch.chdir(tmp_path)  # empty dir: no config/
+        monkeypatch.delenv("TRADINGBOT_HOME", raising=False)
+
+        _app_root()  # warns, must not raise nor move
+
+        assert Path.cwd().resolve() == tmp_path.resolve()
+
+
+class TestCliAssembly:
+    def test_click_command_tree_builds(self):
+        """typer→click 변환이 전 커맨드에서 성공해야 한다 (버전 드리프트 가드).
+
+        스위트는 커맨드 함수를 직접 호출하므로 CLI 조립 실패(예: typer<0.16
+        + click>=8.2 의 'Secondary flag is not valid for non-boolean flag')는
+        다른 어떤 테스트에도 안 걸리면서 콘솔 스크립트만 조용히 벽돌이 된다.
+        """
+        import typer.main
+
+        cmd = typer.main.get_command(app)
+        assert cmd.name == "tradingbot"

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -26,6 +27,33 @@ from tradingbot.utils.time import parse_date
 
 app = typer.Typer(name="tradingbot", help="Algorithmic trading bot for Upbit")
 console = Console()
+
+
+@app.callback()
+def _app_root() -> None:
+    """Anchor cwd-relative defaults before any command runs.
+
+    Every default path in this CLI — ``config/``, ``data/``, ``models/``,
+    ``state.json``, ``.env``, ``logs/`` — resolves against the current
+    directory. When the console script is invoked outside the project root
+    (e.g. from ``$HOME`` on a second machine), set ``TRADINGBOT_HOME`` to the
+    project directory: we chdir there so every default keeps working.
+    Without it a missing ``config/`` silently falls back to built-in
+    defaults, so warn loudly instead of misbehaving in quiet.
+    """
+    home = os.environ.get("TRADINGBOT_HOME")
+    if home:
+        try:
+            os.chdir(home)
+        except OSError as e:
+            console.print(f"[red]TRADINGBOT_HOME is not usable: {e}[/red]")
+            raise typer.Exit(1)
+    elif not Path("config").is_dir():
+        console.print(
+            "[yellow]Warning: no config/ in the current directory — built-in "
+            "defaults will be used. Run from the project root or set "
+            "TRADINGBOT_HOME.[/yellow]"
+        )
 
 
 @contextmanager

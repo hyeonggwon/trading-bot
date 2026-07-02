@@ -105,7 +105,10 @@ cli.py ─┬─→ data/{fetcher, external_fetcher, storage, indicators}
 ## 설치
 
 ```bash
-# Python 3.11+ 필요
+# 원샷 부트스트랩 (venv + 고정 의존성 + .env + git hooks)
+bash scripts/setup.sh
+
+# 또는 수동으로 — Python 3.11+ 필요
 python -m venv .venv
 source .venv/bin/activate
 pip install -e ".[dev]" -c constraints.txt
@@ -113,6 +116,8 @@ pip install -e ".[dev]" -c constraints.txt
 # pre-push 훅(문서 동기화 가드) 활성화 — clone 마다 1회
 git config core.hooksPath scripts/git-hooks
 ```
+
+리포 루트 밖에서 `tradingbot` 을 실행하려면 `TRADINGBOT_HOME=/path/to/trading-bot` 환경변수를 설정한다 — CLI 가 시작 시 해당 디렉토리로 이동해 `config/`·`data/`·`models/`·`state.json`·`.env` 기본 경로가 그대로 동작한다.
 
 ## 빠른 시작
 
