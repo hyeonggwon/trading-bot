@@ -108,13 +108,30 @@ class CcxtExchange(BaseExchange):
         ccxt_side = "buy" if side == OrderSide.BUY else "sell"
         ccxt_type = "market" if order_type == OrderType.MARKET else "limit"
 
+        # Upbit market BUY is quote-denominated (ord_type='price'): the exchange
+        # spends a KRW cost, not a base quantity. ccxt needs that cost up front —
+        # given only a base `quantity` and no price it raises InvalidOrder before
+        # the order is ever sent. Convert our base quantity to a quote cost with
+        # the caller's (slippage-adjusted) reference price and pass it explicitly
+        # so this holds regardless of ccxt's createMarketBuyOrderRequiresPrice
+        # default. Market SELL (base volume) and limit orders (explicit price)
+        # are unaffected.
+        params: dict = {}
+        if ccxt_type == "market" and ccxt_side == "buy":
+            if price is None or price <= 0:
+                raise ValueError(
+                    "Upbit market buy requires a positive reference price to "
+                    "compute the quote cost (ord_type='price')"
+                )
+            params["cost"] = quantity * price
+
         # Order submission is intentionally NOT wrapped in self._retry: it is
         # non-idempotent. A NetworkError raised *after* the exchange accepted
         # the order (lost response) would, on retry, place a second order.
         # We let the network error surface — the entry is skipped and the next
         # candle re-evaluates — rather than risk a duplicate fill.
         result = await self._exchange.create_order(
-            symbol, ccxt_type, ccxt_side, quantity, price,
+            symbol, ccxt_type, ccxt_side, quantity, price, params,
         )
 
         return Order(

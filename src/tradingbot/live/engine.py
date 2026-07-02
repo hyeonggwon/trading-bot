@@ -735,6 +735,7 @@ class LiveEngine:
                     side=OrderSide.BUY,
                     order_type=OrderType.MARKET,
                     quantity=quantity,
+                    price=expected_price,
                 )
             else:
                 order = await self.exchange.create_order(
@@ -742,6 +743,7 @@ class LiveEngine:
                     side=OrderSide.BUY,
                     order_type=OrderType.MARKET,
                     quantity=quantity,
+                    price=expected_price,
                 )
         except Exception as e:
             logger.error("entry_order_failed", symbol=symbol, error=str(e))
@@ -779,6 +781,21 @@ class LiveEngine:
                     f"BUY {symbol}: qty={order.quantity:.8f}, "
                     f"price={order.filled_price:,.0f}"
                 )
+        else:
+            # Order came back without a confirmed fill — e.g. a market order
+            # that timed out as PENDING because every status poll errored, or
+            # an unexpected cancel. The real outcome is unknown, so reconcile
+            # (same as the exception path): a fill we failed to observe is
+            # adopted with a stop instead of becoming an unmanaged orphan the
+            # engine believes it doesn't hold.
+            logger.warning(
+                "entry_order_unconfirmed", symbol=symbol, status=order.status.value
+            )
+            await self._reconcile_with_exchange()
+            await self._notify_alert(
+                f"Entry order unconfirmed {symbol} "
+                f"(status={order.status.value}) — reconciled"
+            )
 
     async def _handle_exit(
         self, signal_obj: Signal, symbol: str, position: Position
@@ -860,6 +877,20 @@ class LiveEngine:
                 await self.notifier.send_signal(
                     f"SELL {symbol}: price={fill_price:,.0f}, PnL={pnl:,.0f} KRW"
                 )
+        else:
+            # Sell came back without a confirmed fill (timed out as PENDING on
+            # errored polls, or an unexpected cancel). We don't know if it
+            # executed, so reconcile: if it did sell, the now-phantom position
+            # is dropped/shrunk to the real held amount; if it didn't, the
+            # position is kept and retried next tick.
+            logger.warning(
+                "exit_order_unconfirmed", symbol=symbol, status=order.status.value
+            )
+            await self._reconcile_with_exchange()
+            await self._notify_alert(
+                f"Exit order unconfirmed {symbol} "
+                f"(status={order.status.value}) — reconciled"
+            )
 
     async def _calculate_equity(
         self,

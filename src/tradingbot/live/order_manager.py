@@ -109,12 +109,16 @@ class OrderManager:
                 # Fully filled during cancel race — return the filled order
                 return final_state if filled_qty > 0 else filled_order
 
-            # Re-submit the remaining quantity as a market order.
+            # Re-submit the remaining quantity as a market order. Carry the
+            # limit price through as the reference: a market BUY re-order needs
+            # it to compute Upbit's quote cost (ord_type='price'); a SELL
+            # re-order ignores it (base volume).
             market_order = await self.submit_and_wait(
                 symbol=symbol,
                 side=side,
                 order_type=OrderType.MARKET,
                 quantity=remaining,
+                price=price,
             )
 
             # Nothing filled on the original limit — the market order alone

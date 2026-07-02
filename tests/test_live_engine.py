@@ -817,6 +817,89 @@ class TestExchangeReconciliation:
         assert pos.size == pytest.approx(0.1)
         assert pos.stop_loss is not None and pos.stop_loss < pos.entry_price
 
+    @pytest.mark.asyncio
+    async def test_entry_unconfirmed_fill_reconciles_orphan(self, tmp_path):
+        """A buy that returns without a confirmed fill (e.g. a market order that
+        timed out as PENDING because every status poll errored) must reconcile.
+        The fill may have executed; left unreconciled it becomes an unmanaged
+        orphan the engine believes it doesn't hold and could double up on."""
+
+        class UnconfirmedFeed(MockDataFeed):
+            def __init__(self, price):
+                super().__init__(price)
+                self._submitted = False
+
+            async def get_balance(self):
+                # After the (unconfirmed) fill the exchange reports the holding.
+                if self._submitted:
+                    return {"KRW": 0, "BTC": 0.1}
+                return {"KRW": 5_000_000}
+
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                # Accepted by the exchange but never confirmed FILLED to us.
+                self._submitted = True
+                return Order(
+                    id="u1", symbol=symbol, side=side, order_type=order_type,
+                    quantity=quantity, price=price, status=OrderStatus.PENDING,
+                    created_at=datetime.now(UTC),
+                )
+
+        feed = UnconfirmedFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig(
+            default_stop_loss_pct=0.02, risk_per_trade_pct=0.01,
+            max_position_size_pct=0.5,
+        ))
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+        signal = Signal(
+            timestamp=datetime.now(UTC), symbol="BTC/KRW",
+            signal_type=SignalType.LONG_ENTRY, price=50_000_000, strength=1.0,
+        )
+        await engine._handle_entry(signal, "BTC/KRW", 50_000_000)
+
+        pos = engine.state.positions.get("BTC/KRW")
+        assert pos is not None  # unconfirmed fill adopted via reconcile
+        assert pos.size == pytest.approx(0.1)
+        assert pos.stop_loss is not None and pos.stop_loss < pos.entry_price
+
+    @pytest.mark.asyncio
+    async def test_exit_unconfirmed_reconciles_phantom(self, tmp_path):
+        """A sell that returns without a confirmed fill must reconcile: if it
+        actually executed, the now-phantom position is dropped so the engine
+        doesn't keep trying to sell shares it no longer holds."""
+
+        class UnconfirmedSellFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000}  # BTC already gone (sold, unconfirmed)
+
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                return Order(
+                    id="s1", symbol=symbol, side=side, order_type=order_type,
+                    quantity=quantity, price=price, status=OrderStatus.PENDING,
+                    created_at=datetime.now(UTC),
+                )
+
+        feed = UnconfirmedSellFeed(price=50_000_000)
+        config = AppConfig(risk=RiskConfig())
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=feed, config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+        engine.state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.1,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+        sig = Signal(
+            timestamp=datetime.now(UTC), symbol="BTC/KRW",
+            signal_type=SignalType.LONG_EXIT, price=50_000_000, strength=1.0,
+        )
+        await engine._handle_exit(sig, "BTC/KRW", engine.state.positions["BTC/KRW"])
+
+        assert "BTC/KRW" not in engine.state.positions  # phantom dropped
+
 
 # --- HIGH: per-tick safety-rail enforcement (drawdown breaker + daily loss) ---
 
