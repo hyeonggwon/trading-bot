@@ -33,8 +33,11 @@ def _make_config() -> AppConfig:
     return AppConfig(
         trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
         risk=RiskConfig(
-            max_position_size_pct=0.5, max_open_positions=1,
-            max_drawdown_pct=0.30, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02,
+            max_position_size_pct=0.5,
+            max_open_positions=1,
+            max_drawdown_pct=0.30,
+            default_stop_loss_pct=0.05,
+            risk_per_trade_pct=0.02,
         ),
         backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
     )

@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -47,10 +47,7 @@ class StateManager:
     def save(self) -> None:
         """Save current state to JSON file."""
         data = {
-            "positions": {
-                symbol: _position_to_dict(pos)
-                for symbol, pos in self.positions.items()
-            },
+            "positions": {symbol: _position_to_dict(pos) for symbol, pos in self.positions.items()},
             "entry_fees": self.entry_fees,
             "equity_history": self.equity_history[-1000:],  # Keep last 1000
             "peak_equity": self.peak_equity,
@@ -58,14 +55,12 @@ class StateManager:
             "daily_reset_date": self.daily_reset_date,
             "ledger_baseline": self.ledger_baseline,
             "cum_realized_pnl": self.cum_realized_pnl,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "saved_at": datetime.now(UTC).isoformat(),
         }
 
         # Atomic write: write to temp file then rename (prevents partial reads)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=self.state_path.parent, suffix=".tmp"
-        )
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=self.state_path.parent, suffix=".tmp")
         try:
             with os.fdopen(tmp_fd, "w") as f:
                 json.dump(data, f, indent=2, default=str)
@@ -78,7 +73,7 @@ class StateManager:
         except Exception:
             os.unlink(tmp_path)
             raise
-        self.last_save = datetime.now(timezone.utc)
+        self.last_save = datetime.now(UTC)
         logger.debug("state_saved", positions=len(self.positions))
 
     def load(self) -> None:
@@ -127,10 +122,12 @@ class StateManager:
         slice in ``save()``); the between-candle monitor records every few
         seconds, so an unbounded list would grow without limit on a long run.
         """
-        self.equity_history.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "equity": equity,
-        })
+        self.equity_history.append(
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "equity": equity,
+            }
+        )
         if len(self.equity_history) > 1000:
             self.equity_history = self.equity_history[-1000:]
 

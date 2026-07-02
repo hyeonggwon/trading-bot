@@ -64,6 +64,20 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    # (str, Enum) → StrEnum 마이그레이션은 str()/f-string 출력 의미가 바뀐다
+    # (멤버명 → 값). 로그·알림·직렬화에 스며든 현행 의미 보존을 택한다.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# sklearn 관례(X, y, X_train, X_cal …)를 따르는 ML 코드와 그 테스트
+"src/tradingbot/ml/*" = ["N803", "N806"]
+"src/tradingbot/strategy/lgbm_strategy.py" = ["N806"]
+"src/tradingbot/strategy/filters/ml.py" = ["N806"]
+"tests/test_ml.py" = ["N803", "N806"]
+"tests/test_threshold_tuner.py" = ["N806"]
+"tests/test_combine.py" = ["N806"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

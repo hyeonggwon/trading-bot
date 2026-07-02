@@ -57,10 +57,14 @@ class AtrBreakoutFilter(BaseFilter):
         return True
 
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return df["close"] > df[f"ema_{self.ema_period}"] + df[f"atr_{self.period}"] * self.multiplier
+        return (
+            df["close"] > df[f"ema_{self.ema_period}"] + df[f"atr_{self.period}"] * self.multiplier
+        )
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return df["close"] < df[f"ema_{self.ema_period}"] - df[f"atr_{self.period}"] * self.multiplier
+        return (
+            df["close"] < df[f"ema_{self.ema_period}"] - df[f"atr_{self.period}"] * self.multiplier
+        )
 
 
 class KeltnerBreakFilter(BaseFilter):

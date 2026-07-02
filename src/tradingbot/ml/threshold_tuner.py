@@ -102,9 +102,7 @@ def _select_best(grid: list[dict], min_trades: int = 1) -> dict | None:
         # that care about the floor can inspect ``min_trades_applied`` /
         # ``best_trades`` on the result.
         if floor > 1:
-            valid = [
-                g for g in grid if g.get("trades", 0) > 0 and pd.notna(g.get("sharpe"))
-            ]
+            valid = [g for g in grid if g.get("trades", 0) > 0 and pd.notna(g.get("sharpe"))]
         if not valid:
             return None
     return max(valid, key=lambda g: (g["sharpe"], g["trades"]))
@@ -260,9 +258,7 @@ class ThresholdTuner:
             result.best_exit = float(best["exit"])
             # Re-score the chosen combo out-of-sample on the validation window;
             # the reported best_* metrics come from there, not the selection grid.
-            val_metrics = self._evaluate(
-                valid_df, valid_ind, result.best_entry, result.best_exit
-            )
+            val_metrics = self._evaluate(valid_df, valid_ind, result.best_entry, result.best_exit)
             if val_metrics is not None:
                 result.best_sharpe = float(val_metrics["sharpe"])
                 result.best_return_pct = float(val_metrics["return_pct"])

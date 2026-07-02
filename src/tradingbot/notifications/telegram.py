@@ -40,8 +40,8 @@ class TelegramNotifier:
         if not self._enabled:
             return False
 
-        import urllib.request
         import urllib.error
+        import urllib.request
 
         url = TELEGRAM_API_URL.format(token=self._token)
         params = f"chat_id={self._chat_id}&text={quote(text)}&parse_mode=HTML"

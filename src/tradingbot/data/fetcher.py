@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import ccxt
 import pandas as pd
@@ -59,9 +59,9 @@ class DataFetcher:
         """
         # Ensure timezone-aware UTC to avoid local-time misinterpretation (Bug #10)
         if since and since.tzinfo is None:
-            since = since.replace(tzinfo=timezone.utc)
+            since = since.replace(tzinfo=UTC)
         if until and until.tzinfo is None:
-            until = until.replace(tzinfo=timezone.utc)
+            until = until.replace(tzinfo=UTC)
         since_ms = int(since.timestamp() * 1000) if since else None
         until_ms = int(until.timestamp() * 1000) if until else None
         tf_ms = TIMEFRAME_MS.get(timeframe, 3_600_000)
@@ -102,7 +102,7 @@ class DataFetcher:
                 "fetching_page",
                 symbol=symbol,
                 fetched=len(all_rows),
-                last_ts=datetime.fromtimestamp(last_ts / 1000, tz=timezone.utc).isoformat(),
+                last_ts=datetime.fromtimestamp(last_ts / 1000, tz=UTC).isoformat(),
             )
 
         if not all_rows:
@@ -116,10 +116,12 @@ class DataFetcher:
 
         # Filter to requested range
         if until:
-            until_aware = until.replace(tzinfo=timezone.utc) if until.tzinfo is None else until
+            until_aware = until.replace(tzinfo=UTC) if until.tzinfo is None else until
             df = df[df.index <= until_aware]
 
-        return df.astype({"open": float, "high": float, "low": float, "close": float, "volume": float})
+        return df.astype(
+            {"open": float, "high": float, "low": float, "close": float, "volume": float}
+        )
 
     def get_available_symbols(self) -> list[str]:
         """Get list of available trading symbols on the exchange."""

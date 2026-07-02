@@ -9,7 +9,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tradingbot.config import BacktestConfig
-from tradingbot.core.enums import OrderSide, OrderStatus, OrderType
+from tradingbot.core.enums import OrderSide, OrderType
 from tradingbot.core.models import Candle, Order
 
 

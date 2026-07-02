@@ -11,9 +11,7 @@ from tradingbot.strategy.base import StrategyParams
 from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
 
 
-def _make_symbol_data(
-    symbol: str, n: int = 200, phase_offset: float = 0.0
-) -> pd.DataFrame:
+def _make_symbol_data(symbol: str, n: int = 200, phase_offset: float = 0.0) -> pd.DataFrame:
     """Generate synthetic data for a symbol with a phase offset for variety."""
     np.random.seed(hash(symbol) % 2**31)
     dates = pd.date_range("2024-01-01", periods=n, freq="h", tz="UTC")
@@ -34,7 +32,9 @@ def _make_symbol_data(
 def _make_config(symbols: list[str], balance: float = 10_000_000) -> AppConfig:
     return AppConfig(
         trading=TradingConfig(
-            symbols=symbols, timeframe="1h", initial_balance=balance,
+            symbols=symbols,
+            timeframe="1h",
+            initial_balance=balance,
         ),
         risk=RiskConfig(
             max_position_size_pct=0.2,
@@ -70,8 +70,7 @@ class TestMultiSymbolBacktest:
         """Three symbols with max 3 positions."""
         symbols = ["BTC/KRW", "ETH/KRW", "XRP/KRW"]
         data = {
-            sym: _make_symbol_data(sym, 200, phase_offset=i * 1.0)
-            for i, sym in enumerate(symbols)
+            sym: _make_symbol_data(sym, 200, phase_offset=i * 1.0) for i, sym in enumerate(symbols)
         }
         config = _make_config(symbols)
         strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
@@ -104,8 +103,7 @@ class TestMultiSymbolBacktest:
         """Should never hold more positions than max_open_positions."""
         symbols = ["BTC/KRW", "ETH/KRW", "XRP/KRW", "SOL/KRW"]
         data = {
-            sym: _make_symbol_data(sym, 300, phase_offset=i * 0.8)
-            for i, sym in enumerate(symbols)
+            sym: _make_symbol_data(sym, 300, phase_offset=i * 0.8) for i, sym in enumerate(symbols)
         }
         config = _make_config(symbols, balance=20_000_000)
         config.risk.max_open_positions = 2  # Only 2 simultaneous

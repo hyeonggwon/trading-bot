@@ -3,7 +3,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from datetime import datetime
 
-import numpy as np
 import pandas as pd
 
 from tradingbot.core.enums import (
@@ -178,7 +177,5 @@ class PortfolioState:
 
     def equity(self, prices: dict[str, float]) -> float:
         """Total equity = cash + sum of position values at current prices."""
-        position_value = sum(
-            prices.get(p.symbol, p.entry_price) * p.size for p in self.positions
-        )
+        position_value = sum(prices.get(p.symbol, p.entry_price) * p.size for p in self.positions)
         return self.cash + position_value

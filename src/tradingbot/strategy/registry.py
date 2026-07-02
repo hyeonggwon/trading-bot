@@ -16,7 +16,6 @@ def get_strategy_map() -> dict[str, type[Strategy]]:
     from tradingbot.strategy.examples.rsi_mean_reversion import RsiMeanReversionStrategy
     from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
     from tradingbot.strategy.examples.volume_breakout import VolumeBreakoutStrategy
-
     from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
     return {

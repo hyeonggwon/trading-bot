@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from tradingbot.core.enums import (
     OrderSide,
@@ -24,13 +24,17 @@ from tradingbot.core.models import (
 class TestCandle:
     def test_frozen(self):
         c = Candle(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            open=100, high=110, low=95, close=105, volume=1000,
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            open=100,
+            high=110,
+            low=95,
+            close=105,
+            volume=1000,
         )
         assert c.close == 105
 
     def test_to_dict(self):
-        ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
+        ts = datetime(2024, 1, 1, tzinfo=UTC)
         c = Candle(timestamp=ts, open=100, high=110, low=95, close=105, volume=1000)
         d = c.to_dict()
         assert d["open"] == 100
@@ -56,7 +60,7 @@ class TestCandleConversion:
 class TestSignal:
     def test_creation(self):
         s = Signal(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
             symbol="BTC/KRW",
             signal_type=SignalType.LONG_ENTRY,
             price=50_000_000,
@@ -69,18 +73,26 @@ class TestSignal:
 class TestTrade:
     def test_pnl_calculation(self):
         entry = Order(
-            id="1", symbol="BTC/KRW", side=OrderSide.BUY,
-            order_type=OrderType.MARKET, quantity=0.01,
-            filled_price=50_000_000, fee=2500,
+            id="1",
+            symbol="BTC/KRW",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=0.01,
+            filled_price=50_000_000,
+            fee=2500,
             status=OrderStatus.FILLED,
-            filled_at=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            filled_at=datetime(2024, 1, 1, tzinfo=UTC),
         )
         exit_ = Order(
-            id="2", symbol="BTC/KRW", side=OrderSide.SELL,
-            order_type=OrderType.MARKET, quantity=0.01,
-            filled_price=51_000_000, fee=2550,
+            id="2",
+            symbol="BTC/KRW",
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=0.01,
+            filled_price=51_000_000,
+            fee=2550,
             status=OrderStatus.FILLED,
-            filled_at=datetime(2024, 1, 2, tzinfo=timezone.utc),
+            filled_at=datetime(2024, 1, 2, tzinfo=UTC),
         )
         trade = Trade(symbol="BTC/KRW", entry_order=entry, exit_order=exit_)
 
@@ -93,15 +105,23 @@ class TestTrade:
 
     def test_losing_trade(self):
         entry = Order(
-            id="1", symbol="BTC/KRW", side=OrderSide.BUY,
-            order_type=OrderType.MARKET, quantity=0.01,
-            filled_price=50_000_000, fee=2500,
+            id="1",
+            symbol="BTC/KRW",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=0.01,
+            filled_price=50_000_000,
+            fee=2500,
             status=OrderStatus.FILLED,
         )
         exit_ = Order(
-            id="2", symbol="BTC/KRW", side=OrderSide.SELL,
-            order_type=OrderType.MARKET, quantity=0.01,
-            filled_price=49_000_000, fee=2450,
+            id="2",
+            symbol="BTC/KRW",
+            side=OrderSide.SELL,
+            order_type=OrderType.MARKET,
+            quantity=0.01,
+            filled_price=49_000_000,
+            fee=2450,
             status=OrderStatus.FILLED,
         )
         trade = Trade(symbol="BTC/KRW", entry_order=entry, exit_order=exit_)
@@ -118,7 +138,7 @@ class TestPosition:
             side=PositionSide.LONG,
             size=0.01,
             entry_price=50_000_000,
-            entry_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            entry_time=datetime(2024, 1, 1, tzinfo=UTC),
         )
         # Price went up to 52M
         assert pos.unrealized_pnl(52_000_000) == 20000.0
@@ -132,10 +152,10 @@ class TestPortfolioState:
             side=PositionSide.LONG,
             size=0.01,
             entry_price=50_000_000,
-            entry_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            entry_time=datetime(2024, 1, 1, tzinfo=UTC),
         )
         state = PortfolioState(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
             cash=500_000,
             positions=[pos],
         )

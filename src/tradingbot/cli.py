@@ -368,7 +368,8 @@ def optimize(
     )
     if strategy_cls is None:
         console.print(
-            "[red]Combined templates cannot be optimized (no param_space). Use backtest instead.[/red]"
+            "[red]Combined templates cannot be optimized (no param_space). "
+            "Use backtest instead.[/red]"
         )
         raise typer.Exit(1)
 
@@ -485,7 +486,7 @@ def _walk_forward_combined(
 
     # Warmup buffer: enough for the most demanding indicators
     # (e.g., trend_up:4 with SMA_50 at 4x = 200 bars, plus margin)
-    WARMUP_BARS = 300
+    warmup_bars = 300
 
     wf_config = config.model_copy(deep=True)
     wf_config.backtest.start_date = None
@@ -509,7 +510,7 @@ def _walk_forward_combined(
 
             # Train window — include warmup buffer for indicator computation
             train_start_idx = df.index.searchsorted(train_start)
-            train_warmup_idx = max(0, train_start_idx - WARMUP_BARS)
+            train_warmup_idx = max(0, train_start_idx - warmup_bars)
             train_with_warmup = df.iloc[train_warmup_idx:].copy()
             train_with_warmup = train_with_warmup[train_with_warmup.index < train_end]
 
@@ -546,7 +547,7 @@ def _walk_forward_combined(
 
             # Test window — include warmup buffer for indicator computation
             test_start_idx = df.index.searchsorted(test_start)
-            warmup_idx = max(0, test_start_idx - WARMUP_BARS)
+            warmup_idx = max(0, test_start_idx - warmup_bars)
             test_with_warmup = df.iloc[warmup_idx:].copy()
             test_with_warmup = test_with_warmup[test_with_warmup.index < test_end]
 
@@ -792,7 +793,8 @@ def live(
     env = EnvSettings()
     if not env.upbit_access_key or not env.upbit_secret_key:
         console.print(
-            "[red]Upbit API keys not configured. Set UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY in .env[/red]"
+            "[red]Upbit API keys not configured. "
+            "Set UPBIT_ACCESS_KEY and UPBIT_SECRET_KEY in .env[/red]"
         )
         raise typer.Exit(1)
 
@@ -975,8 +977,7 @@ def scan(
         None,
         "--output",
         help=(
-            "Write the Top-N table as markdown to this path "
-            "(e.g. personal/scan_holdout_result.md)."
+            "Write the Top-N table as markdown to this path (e.g. personal/scan_holdout_result.md)."
         ),
     ),
 ) -> None:
@@ -1946,7 +1947,7 @@ def ml_train(
         raise typer.Exit(1)
 
     # Display results
-    console.print(f"\n[bold green]Training complete![/bold green]")
+    console.print("\n[bold green]Training complete![/bold green]")
     console.print(f"  Inner-val AUC: {report.avg_auc:.4f}")
     console.print(f"  Inner-val Precision: {report.avg_precision:.4f}")
     console.print(f"  Holdout AUC: {report.holdout_auc:.4f}")
@@ -2271,7 +2272,7 @@ def ml_backtest(
     engine = BacktestEngine(strategy=strategy, config=config)
     report = engine.run({symbol: df})
 
-    console.print(f"\n[bold]Results:[/bold]")
+    console.print("\n[bold]Results:[/bold]")
     console.print(f"  Final Balance: {report.final_balance:,.0f} KRW")
     console.print(f"  Total Return: {report.total_return:.2%}")
     console.print(f"  Sharpe Ratio: {report.sharpe_ratio:.2f}")
@@ -2994,9 +2995,7 @@ def ml_tune(
     )
     # Tune on the inner window only; the trailing outer-holdout is reserved so
     # the final model's holdout stays unseen by the search.
-    result = tuner.search(
-        reserve_tuning_window(df), n_trials=trials, time_budget_sec=time_budget
-    )
+    result = tuner.search(reserve_tuning_window(df), n_trials=trials, time_budget_sec=time_budget)
 
     if not result.best_params:
         console.print("[red]No successful trial — no model saved.[/red]")
@@ -3256,9 +3255,7 @@ def ml_tune_all(
         n_workers = min(workers, len(targets))
     threads_per_worker = max(1, cpu_count // n_workers)
 
-    console.print(
-        f"[bold]Optuna tuning — {len(targets)} (symbol, timeframe) models[/bold]"
-    )
+    console.print(f"[bold]Optuna tuning — {len(targets)} (symbol, timeframe) models[/bold]")
     console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
     console.print(
         f"  Target: {target_kind}"
@@ -3308,9 +3305,7 @@ def ml_tune_all(
         # try/except so a single crash doesn't kill the run.
         from tradingbot.ml.parallel import tune_pair
 
-        config_dump = load_config(
-            overrides={"trading": {"initial_balance": balance}}
-        ).model_dump()
+        config_dump = load_config(overrides={"trading": {"initial_balance": balance}}).model_dump()
 
         with _progress_context() as progress:
             task = progress.add_task("Tuning models", total=len(targets))
@@ -3364,15 +3359,11 @@ def ml_tune_all(
         from tradingbot.ml.parallel import tune_pair
 
         ctx = mp.get_context("spawn")
-        config_dump = load_config(
-            overrides={"trading": {"initial_balance": balance}}
-        ).model_dump()
+        config_dump = load_config(overrides={"trading": {"initial_balance": balance}}).model_dump()
 
         with _progress_context() as progress:
             task = progress.add_task("Tuning models", total=len(targets))
-            with ProcessPoolExecutor(
-                max_workers=n_workers, mp_context=ctx
-            ) as executor:
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as executor:
                 futures = {
                     executor.submit(
                         tune_pair,
@@ -3409,9 +3400,7 @@ def ml_tune_all(
                             r = future.result()
                         except Exception as exc:
                             failed.append((sym, tf, f"unexpected: {exc}"))
-                            progress.log(
-                                f"[red]{sym} {tf}: unexpected error: {exc}[/red]"
-                            )
+                            progress.log(f"[red]{sym} {tf}: unexpected error: {exc}[/red]")
                             progress.advance(task)
                             continue
 
@@ -3442,11 +3431,7 @@ def ml_tune_all(
     table.add_column("Elapsed s", justify="right")
     table.add_column("Holdout AUC", justify="right")
     for row in rows:
-        auc_str = (
-            f"{row['final_holdout_auc']:.4f}"
-            if row["final_holdout_auc"] is not None
-            else "—"
-        )
+        auc_str = f"{row['final_holdout_auc']:.4f}" if row["final_holdout_auc"] is not None else "—"
         table.add_row(
             row["symbol"],
             row["timeframe"],
@@ -3476,9 +3461,7 @@ def ml_tune_all(
                 "atr_mult": atr_mult,
                 "include_extra": include_extra,
                 "rows": rows,
-                "failed": [
-                    {"symbol": s, "timeframe": t, "reason": r} for s, t, r in failed
-                ],
+                "failed": [{"symbol": s, "timeframe": t, "reason": r} for s, t, r in failed],
             },
             indent=2,
             default=str,
@@ -3504,11 +3487,7 @@ def ml_tune_all(
         "|--------|----|------------:|-------:|----------:|------------:|",
     ]
     for row in rows:
-        auc_str = (
-            f"{row['final_holdout_auc']:.4f}"
-            if row["final_holdout_auc"] is not None
-            else "—"
-        )
+        auc_str = f"{row['final_holdout_auc']:.4f}" if row["final_holdout_auc"] is not None else "—"
         md_lines.append(
             f"| {row['symbol']} | {row['timeframe']} | "
             f"{row['best_value']:.4f} | {row['n_trials_completed']} | "
@@ -3863,15 +3842,12 @@ def ml_tune_thresholds_all(
     else:
         n_workers = min(workers, len(targets))
 
-    console.print(
-        f"[bold]Threshold tuning — {len(targets)} (symbol, timeframe) models[/bold]"
-    )
+    console.print(f"[bold]Threshold tuning — {len(targets)} (symbol, timeframe) models[/bold]")
     console.print(f"  Entry grid: {list(entry_values)}")
     console.print(f"  Exit grid:  {list(exit_values)}")
     console.print(f"  Baseline:   entry={baseline_entry} exit={baseline_exit}")
     console.print(
-        "  Min trades: "
-        + ("auto (= baseline)" if min_trades < 0 else str(max(min_trades, 1)))
+        "  Min trades: " + ("auto (= baseline)" if min_trades < 0 else str(max(min_trades, 1)))
     )
     console.print(f"  Workers:    {n_workers}")
 
@@ -3963,9 +3939,7 @@ def ml_tune_thresholds_all(
                         baseline_exit=baseline_exit,
                         min_trades=min_trades_arg,
                     )
-                    result = tuner.search(
-                        df, entry_grid=entry_values, exit_grid=exit_values
-                    )
+                    result = tuner.search(df, entry_grid=entry_values, exit_grid=exit_values)
 
                     if result.error and not result.grid:
                         failed.append((sym, tf, result.error))
@@ -3974,9 +3948,7 @@ def ml_tune_thresholds_all(
 
                     meta_path: Path | None = None
                     if write_meta:
-                        meta_path = patch_meta_thresholds(
-                            sym, tf, model_path, result
-                        )
+                        meta_path = patch_meta_thresholds(sym, tf, model_path, result)
 
                     base = f"{label}_{sym.replace('/', '_')}_{tf}"
                     (out_dir / f"{base}.json").write_text(
@@ -4053,9 +4025,7 @@ def ml_tune_thresholds_all(
 
         with _progress_context() as progress:
             task = progress.add_task("Tuning thresholds", total=len(targets))
-            with ProcessPoolExecutor(
-                max_workers=n_workers, mp_context=ctx
-            ) as executor:
+            with ProcessPoolExecutor(max_workers=n_workers, mp_context=ctx) as executor:
                 futures = {
                     executor.submit(
                         tune_thresholds_pair,
@@ -4084,18 +4054,14 @@ def ml_tune_thresholds_all(
                             r = future.result()
                         except Exception as exc:
                             failed.append((sym, tf, f"unexpected: {exc}"))
-                            progress.log(
-                                f"[red]{sym} {tf}: unexpected error: {exc}[/red]"
-                            )
+                            progress.log(f"[red]{sym} {tf}: unexpected error: {exc}[/red]")
                             progress.advance(task)
                             continue
 
                         _record_result(sym, tf, r)
                         if r.error and r.best_sharpe == float("-inf"):
                             color = "yellow" if r.error == "no_data" else "red"
-                            progress.log(
-                                f"[{color}]{sym} {tf}: {r.error}[/{color}]"
-                            )
+                            progress.log(f"[{color}]{sym} {tf}: {r.error}[/{color}]")
                         else:
                             progress.log(
                                 f"[green]{sym} {tf}: best entry={r.best_entry:.2f} "
@@ -4120,9 +4086,7 @@ def ml_tune_thresholds_all(
     table.add_column("Trades", justify="right")
     table.add_column("ΔSharpe", justify="right")
     for row in rows:
-        delta_str = (
-            f"{row['delta_sharpe']:+.3f}" if row["delta_sharpe"] is not None else "—"
-        )
+        delta_str = f"{row['delta_sharpe']:+.3f}" if row["delta_sharpe"] is not None else "—"
         table.add_row(
             row["symbol"],
             row["timeframe"],
@@ -4152,9 +4116,7 @@ def ml_tune_thresholds_all(
                 "baseline_entry": baseline_entry,
                 "baseline_exit": baseline_exit,
                 "rows": rows,
-                "failed": [
-                    {"symbol": s, "timeframe": t, "reason": r} for s, t, r in failed
-                ],
+                "failed": [{"symbol": s, "timeframe": t, "reason": r} for s, t, r in failed],
             },
             indent=2,
             default=str,
@@ -4177,13 +4139,9 @@ def ml_tune_thresholds_all(
         "----------------:|--------:|",
     ]
     for row in rows:
-        delta_str = (
-            f"{row['delta_sharpe']:+.3f}" if row["delta_sharpe"] is not None else "—"
-        )
+        delta_str = f"{row['delta_sharpe']:+.3f}" if row["delta_sharpe"] is not None else "—"
         baseline_str = (
-            f"{row['baseline_sharpe']:.3f}"
-            if row["baseline_sharpe"] != float("-inf")
-            else "—"
+            f"{row['baseline_sharpe']:.3f}" if row["baseline_sharpe"] != float("-inf") else "—"
         )
         md_lines.append(
             f"| {row['symbol']} | {row['timeframe']} | "

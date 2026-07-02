@@ -48,7 +48,10 @@ class TestBuildCombinedStrategy:
         from tradingbot.strategy.combined import CombinedStrategy
 
         strategy = _build_combined_strategy(
-            "rsi_oversold:30", "rsi_overbought:70", "BTC/KRW", "1h",
+            "rsi_oversold:30",
+            "rsi_overbought:70",
+            "BTC/KRW",
+            "1h",
         )
         assert isinstance(strategy, CombinedStrategy)
         assert len(strategy.entry_filters) == 1
@@ -56,14 +59,20 @@ class TestBuildCombinedStrategy:
 
     def test_sets_strategy_attrs(self):
         strategy = _build_combined_strategy(
-            "rsi_oversold:30", "rsi_overbought:70", "ETH/KRW", "4h",
+            "rsi_oversold:30",
+            "rsi_overbought:70",
+            "ETH/KRW",
+            "4h",
         )
         assert strategy.symbols == ["ETH/KRW"]
         assert strategy.timeframe == "4h"
 
     def test_sets_ml_filter_symbol_timeframe(self):
         strategy = _build_combined_strategy(
-            "rsi_oversold:30 + lgbm_prob:0.35", "rsi_overbought:70", "SOL/KRW", "1h",
+            "rsi_oversold:30 + lgbm_prob:0.35",
+            "rsi_overbought:70",
+            "SOL/KRW",
+            "1h",
         )
         ml_filter = [f for f in strategy.entry_filters if f.name == "lgbm_prob"][0]
         assert ml_filter.symbol == "SOL/KRW"
@@ -72,7 +81,10 @@ class TestBuildCombinedStrategy:
     def test_invalid_filter_raises(self):
         with pytest.raises(ValueError):
             _build_combined_strategy(
-                "nonexistent_filter:30", "rsi_overbought:70", "BTC/KRW", "1h",
+                "nonexistent_filter:30",
+                "rsi_overbought:70",
+                "BTC/KRW",
+                "1h",
             )
 
 
@@ -100,7 +112,10 @@ class TestResolveStrategy:
 
     def test_sets_symbols(self):
         strategy, _, _ = _resolve_strategy(
-            "Trend+RSI", "BTC/KRW", "1h", symbols=["BTC/KRW", "ETH/KRW"],
+            "Trend+RSI",
+            "BTC/KRW",
+            "1h",
+            symbols=["BTC/KRW", "ETH/KRW"],
         )
         assert strategy.symbols == ["BTC/KRW", "ETH/KRW"]
 
@@ -113,13 +128,17 @@ class TestResolveStrategy:
 
         with pytest.raises((SystemExit, Exit)):
             _resolve_strategy(
-                "ML+TrendEMA", "BTC/KRW", "1h",
+                "ML+TrendEMA",
+                "BTC/KRW",
+                "1h",
                 symbols=["BTC/KRW", "ETH/KRW"],
             )
 
     def test_non_ml_template_allows_multi_symbol(self):
         strategy, _, _ = _resolve_strategy(
-            "Trend+RSI", "BTC/KRW", "1h",
+            "Trend+RSI",
+            "BTC/KRW",
+            "1h",
             symbols=["BTC/KRW", "ETH/KRW"],
         )
         assert strategy.symbols == ["BTC/KRW", "ETH/KRW"]
@@ -137,7 +156,9 @@ class TestCombineTemplates:
 
     def test_unique_labels(self):
         labels = [t["label"].lower() for t in COMBINE_TEMPLATES]
-        assert len(labels) == len(set(labels)), f"Duplicate labels: {[l for l in labels if labels.count(l) > 1]}"
+        assert len(labels) == len(set(labels)), (
+            f"Duplicate labels: {[x for x in labels if labels.count(x) > 1]}"
+        )
 
     def test_required_keys(self):
         for tmpl in COMBINE_TEMPLATES:
@@ -182,8 +203,11 @@ def _make_config():
     return AppConfig(
         trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
         risk=RiskConfig(
-            max_position_size_pct=0.5, max_open_positions=1,
-            max_drawdown_pct=0.30, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02,
+            max_position_size_pct=0.5,
+            max_open_positions=1,
+            max_drawdown_pct=0.30,
+            default_stop_loss_pct=0.05,
+            risk_per_trade_pct=0.02,
         ),
         backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
     )
@@ -218,8 +242,12 @@ class TestRunBatch:
             ("bollinger_breakout", "", ""),
         ]
         results = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
         )
 
         assert len(results) == 2
@@ -253,8 +281,12 @@ class TestRunBatch:
             ("BB+Vol", "bb_upper_break:20 + volume_spike:2.0", "ema_above:20"),
         ]
         results = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
         )
 
         assert len(results) == 2
@@ -268,8 +300,11 @@ class TestRunBatch:
 
         jobs = [("sma_cross", "", "")]
         results = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(tmp_path / "nodata"), 10_000_000,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(tmp_path / "nodata"),
+            10_000_000,
         )
 
         assert len(results) == 1
@@ -299,8 +334,12 @@ class TestRunBatch:
             ("nonexistent_strategy", "", ""),
         ]
         results = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
         )
 
         assert len(results) == 2
@@ -329,8 +368,12 @@ class TestRunBatch:
         # Run same strategy twice — results should be identical
         jobs = [("sma_cross", "", ""), ("sma_cross", "", "")]
         results = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
         )
 
         assert results[0].total_trades == results[1].total_trades
@@ -362,14 +405,27 @@ class TestRunBatch:
 
         # Full range via include_train=True (default is now auto holdout).
         full = _run_batch(
-            "BTC/KRW", "1h", [("sma_cross", "", "")],
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, None, None, True,
+            "BTC/KRW",
+            "1h",
+            [("sma_cross", "", "")],
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            None,
+            None,
+            True,
         )
         sliced = _run_batch(
-            "BTC/KRW", "1h", [("sma_cross", "", "")],
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, "2024-01-05", "2024-01-10",
+            "BTC/KRW",
+            "1h",
+            [("sma_cross", "", "")],
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            "2024-01-05",
+            "2024-01-10",
         )
         assert full[0].error is None and sliced[0].error is None
         # ~5-day slice over 500h cyclic data must produce strictly fewer trades
@@ -383,14 +439,27 @@ class TestRunBatch:
         jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
 
         full = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, None, None, True,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            None,
+            None,
+            True,
         )
         sliced = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, "2024-01-05", "2024-01-10",
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            "2024-01-05",
+            "2024-01-10",
         )
         assert full[0].error is None and sliced[0].error is None
         assert sliced[0].total_trades < full[0].total_trades
@@ -403,14 +472,27 @@ class TestRunBatch:
         jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
 
         full = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            True, None, None, True,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            True,
+            None,
+            None,
+            True,
         )
         sliced = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            True, "2024-01-05", "2024-01-10",
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            True,
+            "2024-01-05",
+            "2024-01-10",
         )
         assert full[0].error is None and sliced[0].error is None
         assert sliced[0].total_trades < full[0].total_trades
@@ -423,19 +505,38 @@ class TestRunBatch:
         jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
 
         full = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, None, None, True,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            None,
+            None,
+            True,
         )
         only_start = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, "2024-01-15", None,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            "2024-01-15",
+            None,
         )
         only_end = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, None, "2024-01-05",
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            None,
+            "2024-01-05",
         )
         assert full[0].error is None
         assert only_start[0].error is None and only_end[0].error is None
@@ -462,17 +563,29 @@ class TestRunBatch:
         jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
 
         sliced_vec = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, "2024-01-10", "2024-01-20",
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            "2024-01-10",
+            "2024-01-20",
         )
         # force_engine=True drives the same job through engine path which
         # already applies indicators on the sliced data correctly via the
         # engine's own per-iteration logic; trade count should be similar.
         sliced_engine = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            True, "2024-01-10", "2024-01-20",
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            True,
+            "2024-01-10",
+            "2024-01-20",
         )
         assert sliced_vec[0].error is None
         assert sliced_engine[0].error is None
@@ -487,9 +600,15 @@ class TestRunBatch:
         data_dir, config_dir = self._setup_date_range_fixture(tmp_path)
 
         results = _run_batch(
-            "BTC/KRW", "1h", [("sma_cross", "", "")],
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, "2030-01-01", "2030-12-31",
+            "BTC/KRW",
+            "1h",
+            [("sma_cross", "", "")],
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            "2030-01-01",
+            "2030-12-31",
         )
         assert len(results) == 1
         assert results[0].error == "no data in range"
@@ -503,14 +622,25 @@ class TestRunBatch:
 
         # Default (auto holdout)
         default = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
         )
         # --include-train opt-out → full data
         full = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, None, None, True,  # include_train=True
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            None,
+            None,
+            True,  # include_train=True
         )
         assert default[0].error is None
         assert full[0].error is None
@@ -525,15 +655,29 @@ class TestRunBatch:
         jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
 
         full_via_include_train = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, None, None, True,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            None,
+            None,
+            True,
         )
         # Compare with --start at the very beginning + no end → same window
         full_via_explicit = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, "2024-01-01", None, False,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            "2024-01-01",
+            None,
+            False,
         )
         assert full_via_include_train[0].error is None
         assert full_via_explicit[0].error is None
@@ -549,20 +693,37 @@ class TestRunBatch:
 
         # Full data via include_train (reference for "more candles → more trades")
         full = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, None, None, True,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            None,
+            None,
+            True,
         )
         # Auto holdout (default) → last 20% only
         auto = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
         )
         # Explicit --start at very beginning + None end → equivalent to full
         explicit_full = _run_batch(
-            "BTC/KRW", "1h", jobs,
-            str(data_dir.parent), 10_000_000, str(config_dir),
-            False, "2024-01-01", None,
+            "BTC/KRW",
+            "1h",
+            jobs,
+            str(data_dir.parent),
+            10_000_000,
+            str(config_dir),
+            False,
+            "2024-01-01",
+            None,
         )
         assert full[0].error is None and auto[0].error is None
         assert explicit_full[0].error is None
@@ -696,7 +857,10 @@ class TestResolveHoldoutWindow:
             index=pd.DatetimeIndex([], tz="UTC"),
         )
         s, _e, note = _resolve_holdout_window(
-            {"BTC/KRW": df_real, "ETH/KRW": df_empty}, None, None, False,
+            {"BTC/KRW": df_real, "ETH/KRW": df_empty},
+            None,
+            None,
+            False,
         )
         # Empty df is filtered out; the remaining df's cutoff is row-based
         # (int(len * 0.8)), matching the single-symbol path exactly.
@@ -718,14 +882,16 @@ class TestResolveHoldoutWindow:
         base = pd.Timestamp("2024-01-01", tz="UTC")
         # 9 dense hourly candles, then one candle ~1000h in the future.
         times = pd.DatetimeIndex(
-            [base + pd.Timedelta(hours=h) for h in range(9)]
-            + [base + pd.Timedelta(hours=1000)]
+            [base + pd.Timedelta(hours=h) for h in range(9)] + [base + pd.Timedelta(hours=1000)]
         )
         df = pd.DataFrame({"close": range(10)}, index=times)
 
         single_s, _, _ = _resolve_holdout_window(df, None, None, False)
         multi_s, _, _ = _resolve_holdout_window(
-            {"AAA/KRW": df, "BBB/KRW": df.copy()}, None, None, False,
+            {"AAA/KRW": df, "BBB/KRW": df.copy()},
+            None,
+            None,
+            False,
         )
         # Row-based: index[int(10 * 0.8)] == index[8] == hour 8.
         assert single_s == str(times[8])
@@ -740,7 +906,10 @@ class TestResolveHoldoutWindow:
             index=pd.DatetimeIndex([], tz="UTC"),
         )
         s, e, note = _resolve_holdout_window(
-            {"BTC/KRW": df_empty, "ETH/KRW": df_empty}, None, None, False,
+            {"BTC/KRW": df_empty, "ETH/KRW": df_empty},
+            None,
+            None,
+            False,
         )
         assert s is None and e is None
         assert "no data" in note
@@ -754,15 +923,23 @@ class TestWalkForwardCombined:
         from tradingbot.cli import _walk_forward_combined
 
         strategy = _build_combined_strategy(
-            "rsi_oversold:30", "rsi_overbought:70", "BTC/KRW", "1h",
+            "rsi_oversold:30",
+            "rsi_overbought:70",
+            "BTC/KRW",
+            "1h",
         )
         df = _make_cyclic_df(2000)  # Need enough data for multiple windows
         config = _make_config()
 
         # Should not raise
         _walk_forward_combined(
-            strategy, "TestStrategy", "BTC/KRW", df, config,
-            train_months=2, test_months=1,
+            strategy,
+            "TestStrategy",
+            "BTC/KRW",
+            df,
+            config,
+            train_months=2,
+            test_months=1,
         )
 
     def test_insufficient_data_handled(self):
@@ -770,15 +947,23 @@ class TestWalkForwardCombined:
         from tradingbot.cli import _walk_forward_combined
 
         strategy = _build_combined_strategy(
-            "rsi_oversold:30", "rsi_overbought:70", "BTC/KRW", "1h",
+            "rsi_oversold:30",
+            "rsi_overbought:70",
+            "BTC/KRW",
+            "1h",
         )
         df = _make_cyclic_df(50)  # Too short for any windows
         config = _make_config()
 
         # Should not raise, just print warning
         _walk_forward_combined(
-            strategy, "TestStrategy", "BTC/KRW", df, config,
-            train_months=3, test_months=1,
+            strategy,
+            "TestStrategy",
+            "BTC/KRW",
+            df,
+            config,
+            train_months=3,
+            test_months=1,
         )
 
 
@@ -840,10 +1025,20 @@ class TestMlCommandsRespectYamlConfig:
 
         with pytest.raises(typer.Exit):
             ml_walk_forward(
-                symbol="BTC/KRW", timeframe="1h", train_months=6, test_months=2,
-                forward_candles=4, threshold=0.006, target_kind="binary", atr_mult=1.0,
-                include_extra=False, entry_threshold=0.45, exit_threshold=0.30,
-                balance=1_000_000, data_dir="data", output_dir=str(tmp_path / "out"),
+                symbol="BTC/KRW",
+                timeframe="1h",
+                train_months=6,
+                test_months=2,
+                forward_candles=4,
+                threshold=0.006,
+                target_kind="binary",
+                atr_mult=1.0,
+                include_extra=False,
+                entry_threshold=0.45,
+                exit_threshold=0.30,
+                balance=1_000_000,
+                data_dir="data",
+                output_dir=str(tmp_path / "out"),
             )
 
         # Old code built BacktestConfig()/RiskConfig() defaults → 0.0005 / 3.
@@ -879,11 +1074,23 @@ class TestMlCommandsRespectYamlConfig:
 
         with pytest.raises(typer.Exit):
             ml_diagnostics(
-                symbol="BTC/KRW", timeframe="1h", train_months=6, test_months=2,
-                forward_candles=4, threshold=0.006, target_kind="binary", atr_mult=1.0,
-                include_extra=False, entry_threshold=0.45, exit_threshold=0.30,
-                balance=1_000_000, data_dir="data", model_dir="models",
-                output_dir=str(tmp_path / "out"), label="00_baseline", skip_backtest=False,
+                symbol="BTC/KRW",
+                timeframe="1h",
+                train_months=6,
+                test_months=2,
+                forward_candles=4,
+                threshold=0.006,
+                target_kind="binary",
+                atr_mult=1.0,
+                include_extra=False,
+                entry_threshold=0.45,
+                exit_threshold=0.30,
+                balance=1_000_000,
+                data_dir="data",
+                model_dir="models",
+                output_dir=str(tmp_path / "out"),
+                label="00_baseline",
+                skip_backtest=False,
             )
 
         cfg = captured["config"]

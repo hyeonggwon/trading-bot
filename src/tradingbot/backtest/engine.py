@@ -112,15 +112,14 @@ class BacktestEngine:
 
         # Detect gaps per symbol
         from tradingbot.data.storage import detect_gaps
+
         for sym, df in symbol_data.items():
             gaps = detect_gaps(df, self.strategy.timeframe)
             if gaps:
                 logger.warning("data_gaps_in_backtest", symbol=sym, gaps=len(gaps))
 
         # Build unified timeline from all symbols
-        all_timestamps = sorted(
-            set().union(*(df.index for df in symbol_data.values()))
-        )
+        all_timestamps = sorted(set().union(*(df.index for df in symbol_data.values())))
 
         logger.info(
             "backtest_start",
@@ -170,8 +169,7 @@ class BacktestEngine:
 
         # Pre-build timestamp→index dicts and numpy arrays for fast lookup
         symbol_ts_to_idx: dict[str, dict] = {
-            sym: {ts: i for i, ts in enumerate(df.index)}
-            for sym, df in symbol_data.items()
+            sym: {ts: i for i, ts in enumerate(df.index)} for sym, df in symbol_data.items()
         }
         # Extract OHLCV as numpy arrays — avoids pandas iloc overhead in hot loop
         ohlcv_arrays: dict[str, dict] = {
@@ -249,9 +247,7 @@ class BacktestEngine:
 
                 # Check exits
                 if sym in self.positions:
-                    exit_signal = self.strategy.should_exit(
-                        visible_df, sym, self.positions[sym]
-                    )
+                    exit_signal = self.strategy.should_exit(visible_df, sym, self.positions[sym])
                     if exit_signal:
                         self._handle_signal(exit_signal, fill_candle)
 
@@ -331,9 +327,7 @@ class BacktestEngine:
             equity = self._calculate_equity(prices)
             stop_loss = self.risk_manager.calculate_stop_loss(fill.fill_price)
             take_profit = self.risk_manager.calculate_take_profit(fill.fill_price)
-            quantity = self.risk_manager.calculate_position_size(
-                fill.fill_price, stop_loss, equity
-            )
+            quantity = self.risk_manager.calculate_position_size(fill.fill_price, stop_loss, equity)
             # ML sizing; the [0,1] clamp keeps strength from breaching the cap
             quantity = quantity * max(0.0, min(1.0, signal.strength))
             if quantity <= 0:
@@ -361,8 +355,13 @@ class BacktestEngine:
                     self._execute_sell(order, fill.fill_price, fill.fee, fill_candle.timestamp)
 
     def _execute_buy(
-        self, order: Order, fill_price: float, fee: float,
-        timestamp: datetime, stop_loss: float, take_profit: float | None = None,
+        self,
+        order: Order,
+        fill_price: float,
+        fee: float,
+        timestamp: datetime,
+        stop_loss: float,
+        take_profit: float | None = None,
     ) -> None:
         cost = fill_price * order.quantity + fee
         if cost > self.cash:
@@ -471,13 +470,15 @@ class BacktestEngine:
                     stop_loss = self.risk_manager.calculate_stop_loss(fill.fill_price)
                     take_profit = self.risk_manager.calculate_take_profit(fill.fill_price)
                     self._execute_buy(
-                        order, fill.fill_price, fill.fee, candle.timestamp,
-                        stop_loss, take_profit,
+                        order,
+                        fill.fill_price,
+                        fill.fee,
+                        candle.timestamp,
+                        stop_loss,
+                        take_profit,
                     )
                 else:
-                    self._execute_sell(
-                        order, fill.fill_price, fill.fee, candle.timestamp
-                    )
+                    self._execute_sell(order, fill.fill_price, fill.fee, candle.timestamp)
             else:
                 remaining.append(order)
         self.pending_orders = remaining
@@ -500,8 +501,7 @@ class BacktestEngine:
 
     def _calculate_equity(self, prices: dict[str, float]) -> float:
         position_value = sum(
-            prices.get(p.symbol, p.entry_price) * p.size
-            for p in self.positions.values()
+            prices.get(p.symbol, p.entry_price) * p.size for p in self.positions.values()
         )
         return self.cash + position_value
 

@@ -118,9 +118,7 @@ class LGBMStrategy(Strategy):
                 # ThresholdTuner running a grid search) — without this
                 # bypass the tuner would silently use the previous run's
                 # persisted thresholds for every combo and look like a no-op.
-                ignore_meta_thresholds = bool(
-                    self.params.get("ignore_meta_thresholds", False)
-                )
+                ignore_meta_thresholds = bool(self.params.get("ignore_meta_thresholds", False))
                 if meta is not None and not ignore_meta_thresholds:
                     if "entry_threshold" in meta:
                         self._entry_thresholds[symbol] = float(meta["entry_threshold"])

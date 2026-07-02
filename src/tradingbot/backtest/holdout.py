@@ -5,6 +5,7 @@ the parallel scan workers (``scan``/``combine-scan``). Kept in a small
 module so the spawn-safe parallel worker can import it without pulling in
 ``cli.py``'s Typer/Console/strategy registry imports.
 """
+
 from __future__ import annotations
 
 from typing import TYPE_CHECKING

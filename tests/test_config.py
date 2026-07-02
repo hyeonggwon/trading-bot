@@ -76,8 +76,6 @@ def test_unknown_yaml_key_rejected(tmp_path: Path) -> None:
     extra="ignore"(pydantic 기본)였다면 max_drawdown_pcnt 오타가 무시되고
     내장 기본값 0.20 이 소리 없이 적용된다 — 리스크 설정에서는 치명적.
     """
-    (tmp_path / "default.yaml").write_text(
-        "risk:\n  max_drawdown_pcnt: 0.5\n", encoding="utf-8"
-    )
+    (tmp_path / "default.yaml").write_text("risk:\n  max_drawdown_pcnt: 0.5\n", encoding="utf-8")
     with pytest.raises(ValidationError, match="max_drawdown_pcnt"):
         load_config(config_dir=tmp_path)

@@ -4,10 +4,8 @@ from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-import pytest
 
 from tradingbot.ml.features import (
-    EXTERNAL_FEATURE_COLS,
     EXTRA_FEATURE_COLS,
     FEATURE_COLS,
     WARMUP_CANDLES,
@@ -568,11 +566,7 @@ class TestWindowCalibratorLeak:
         df_feat, feature_cols = build_feature_matrix(df.copy())
         target = build_target(df_feat)
         fwd_return = df_feat["close"].pct_change(4).shift(-4)
-        mask = (
-            df_feat[feature_cols].notna().all(axis=1)
-            & target.notna()
-            & fwd_return.notna()
-        )
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna() & fwd_return.notna()
         dfv = df_feat[mask]
         tv = target[mask]
         fv = fwd_return[mask]
@@ -649,7 +643,7 @@ class TestLGBMStrategy:
             StrategyParams(
                 values={
                     "model_dir": str(tmp_path),
-                    "entry_threshold": 0.30,  # Below base rate for synthetic data (model outputs ~0.35)
+                    "entry_threshold": 0.30,  # Below base rate (synthetic model outputs ~0.35)
                     "exit_threshold": 0.25,
                 }
             )
@@ -896,7 +890,6 @@ class TestLGBMStrategy:
         """
         from tradingbot.data.external_fetcher import (
             align_external_to,
-            load_external_components,
             save_external,
         )
         from tradingbot.strategy.base import StrategyParams
@@ -999,16 +992,30 @@ class TestModelCatalog:
 
         assert LGBMTrainer.load_catalog(tmp_path) == []  # no models yet
 
-        (tmp_path / "lgbm_BTC_KRW_1h_meta.json").write_text(_json.dumps({
-            "symbol": "BTC/KRW", "timeframe": "1h", "trained_at": "2026-01-01",
-            "n_features": 10, "has_calibrator": True,
-            "holdout_start": "2025-06-01", "holdout_auc": 0.61,
-            "entry_threshold": 0.44, "exit_threshold": 0.28,
-            "avg_win_loss_ratio": 1.7,
-        }))
-        (tmp_path / "lgbm_ETH_KRW_4h_meta.json").write_text(_json.dumps({
-            "symbol": "ETH/KRW", "timeframe": "4h",  # tuner keys absent
-        }))
+        (tmp_path / "lgbm_BTC_KRW_1h_meta.json").write_text(
+            _json.dumps(
+                {
+                    "symbol": "BTC/KRW",
+                    "timeframe": "1h",
+                    "trained_at": "2026-01-01",
+                    "n_features": 10,
+                    "has_calibrator": True,
+                    "holdout_start": "2025-06-01",
+                    "holdout_auc": 0.61,
+                    "entry_threshold": 0.44,
+                    "exit_threshold": 0.28,
+                    "avg_win_loss_ratio": 1.7,
+                }
+            )
+        )
+        (tmp_path / "lgbm_ETH_KRW_4h_meta.json").write_text(
+            _json.dumps(
+                {
+                    "symbol": "ETH/KRW",
+                    "timeframe": "4h",  # tuner keys absent
+                }
+            )
+        )
         (tmp_path / "lgbm_XRP_KRW_1h_meta.json").write_text("{broken")
 
         catalog = LGBMTrainer.load_catalog(tmp_path)

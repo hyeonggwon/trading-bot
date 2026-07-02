@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import json
 import sys
-from datetime import datetime, timezone, timedelta
+from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
 
 import streamlit as st
@@ -150,14 +150,16 @@ def _render_positions(data: dict) -> None:
 
     rows = []
     for symbol, pos in positions.items():
-        rows.append({
-            "Symbol": symbol,
-            "Side": pos.get("side", ""),
-            "Size": f"{pos.get('size', 0):.8f}",
-            "Entry Price": f"{pos.get('entry_price', 0):,.0f}",
-            "Stop Loss": f"{pos.get('stop_loss', 0):,.0f}" if pos.get("stop_loss") else "N/A",
-            "Entry Time": _format_timestamp(pos.get("entry_time", "")),
-        })
+        rows.append(
+            {
+                "Symbol": symbol,
+                "Side": pos.get("side", ""),
+                "Size": f"{pos.get('size', 0):.8f}",
+                "Entry Price": f"{pos.get('entry_price', 0):,.0f}",
+                "Stop Loss": f"{pos.get('stop_loss', 0):,.0f}" if pos.get("stop_loss") else "N/A",
+                "Entry Time": _format_timestamp(pos.get("entry_time", "")),
+            }
+        )
 
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
@@ -177,14 +179,17 @@ def _render_equity_chart(data: dict) -> None:
     equities = [e["equity"] for e in equity_history]
 
     fig = go.Figure()
-    fig.add_trace(go.Scatter(
-        x=timestamps, y=equities,
-        mode="lines",
-        name="Equity",
-        line=dict(color="#2196F3", width=2),
-        fill="tozeroy",
-        fillcolor="rgba(33, 150, 243, 0.1)",
-    ))
+    fig.add_trace(
+        go.Scatter(
+            x=timestamps,
+            y=equities,
+            mode="lines",
+            name="Equity",
+            line=dict(color="#2196F3", width=2),
+            fill="tozeroy",
+            fillcolor="rgba(33, 150, 243, 0.1)",
+        )
+    )
     fig.update_layout(
         xaxis_title="Time",
         yaxis_title="Equity (KRW)",
@@ -246,7 +251,10 @@ def _run_and_display_backtest(
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))
     except FileNotFoundError:
-        st.error(f"No data for {symbol} {timeframe}. Run: `tradingbot download --symbol {symbol} --timeframe {timeframe} --since 2024-01-01`")
+        st.error(
+            f"No data for {symbol} {timeframe}. Run: `tradingbot download "
+            f"--symbol {symbol} --timeframe {timeframe} --since 2024-01-01`"
+        )
         return
 
     config = AppConfig(
@@ -294,24 +302,38 @@ def _render_backtest_equity(report) -> None:
     drawdown = (peak - equity) / peak
 
     fig = make_subplots(
-        rows=2, cols=1, shared_xaxes=True,
+        rows=2,
+        cols=1,
+        shared_xaxes=True,
         row_heights=[0.7, 0.3],
         vertical_spacing=0.05,
     )
 
     # Equity curve
-    fig.add_trace(go.Scatter(
-        x=equity.index, y=equity.values,
-        mode="lines", name="Equity",
-        line=dict(color="#2196F3", width=2),
-    ), row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=equity.index,
+            y=equity.values,
+            mode="lines",
+            name="Equity",
+            line=dict(color="#2196F3", width=2),
+        ),
+        row=1,
+        col=1,
+    )
 
     # Peak line
-    fig.add_trace(go.Scatter(
-        x=peak.index, y=peak.values,
-        mode="lines", name="Peak",
-        line=dict(color="#90CAF9", width=1, dash="dot"),
-    ), row=1, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=peak.index,
+            y=peak.values,
+            mode="lines",
+            name="Peak",
+            line=dict(color="#90CAF9", width=1, dash="dot"),
+        ),
+        row=1,
+        col=1,
+    )
 
     # Trade markers at equity curve values
     import pandas as pd_check
@@ -323,24 +345,36 @@ def _render_backtest_equity(report) -> None:
             if pd_check.isna(equity_at_entry):
                 continue
             color = "#4CAF50" if trade.is_win else "#F44336"
-            fig.add_trace(go.Scatter(
-                x=[trade.entry_order.filled_at],
-                y=[equity_at_entry],
-                mode="markers",
-                marker=dict(symbol="triangle-up", size=10, color=color),
-                name=f"{'Win' if trade.is_win else 'Loss'} ({trade.symbol})",
-                showlegend=False,
-                hovertemplate=f"{trade.symbol}<br>PnL: {trade.pnl:,.0f} KRW<br>%{{x}}<extra></extra>",
-            ), row=1, col=1)
+            fig.add_trace(
+                go.Scatter(
+                    x=[trade.entry_order.filled_at],
+                    y=[equity_at_entry],
+                    mode="markers",
+                    marker=dict(symbol="triangle-up", size=10, color=color),
+                    name=f"{'Win' if trade.is_win else 'Loss'} ({trade.symbol})",
+                    showlegend=False,
+                    hovertemplate=(
+                        f"{trade.symbol}<br>PnL: {trade.pnl:,.0f} KRW<br>%{{x}}<extra></extra>"
+                    ),
+                ),
+                row=1,
+                col=1,
+            )
 
     # Drawdown
-    fig.add_trace(go.Scatter(
-        x=drawdown.index, y=drawdown.values * -100,
-        mode="lines", name="Drawdown %",
-        line=dict(color="#F44336", width=1),
-        fill="tozeroy",
-        fillcolor="rgba(244, 67, 54, 0.2)",
-    ), row=2, col=1)
+    fig.add_trace(
+        go.Scatter(
+            x=drawdown.index,
+            y=drawdown.values * -100,
+            mode="lines",
+            name="Drawdown %",
+            line=dict(color="#F44336", width=1),
+            fill="tozeroy",
+            fillcolor="rgba(244, 67, 54, 0.2)",
+        ),
+        row=2,
+        col=1,
+    )
 
     fig.update_layout(
         height=500,
@@ -365,16 +399,22 @@ def _render_trade_list(report) -> None:
 
     rows = []
     for i, trade in enumerate(report.trades, 1):
-        rows.append({
-            "#": i,
-            "Symbol": trade.symbol,
-            "Entry Price": f"{trade.entry_order.filled_price:,.0f}" if trade.entry_order.filled_price else "N/A",
-            "Exit Price": f"{trade.exit_order.filled_price:,.0f}" if trade.exit_order.filled_price else "N/A",
-            "PnL": f"{trade.pnl:,.0f}",
-            "PnL %": f"{trade.pnl_pct:.2%}",
-            "Duration": f"{trade.duration:.1f}h" if trade.duration else "N/A",
-            "Result": "✅" if trade.is_win else "❌",
-        })
+        rows.append(
+            {
+                "#": i,
+                "Symbol": trade.symbol,
+                "Entry Price": f"{trade.entry_order.filled_price:,.0f}"
+                if trade.entry_order.filled_price
+                else "N/A",
+                "Exit Price": f"{trade.exit_order.filled_price:,.0f}"
+                if trade.exit_order.filled_price
+                else "N/A",
+                "PnL": f"{trade.pnl:,.0f}",
+                "PnL %": f"{trade.pnl_pct:.2%}",
+                "Duration": f"{trade.duration:.1f}h" if trade.duration else "N/A",
+                "Result": "✅" if trade.is_win else "❌",
+            }
+        )
 
     df = pd.DataFrame(rows)
     st.dataframe(df, use_container_width=True, hide_index=True)
@@ -392,9 +432,7 @@ def _render_models() -> None:
 
     entries = LGBMTrainer.load_catalog(Path(model_dir))
     if not entries:
-        st.info(
-            "No saved models found. Train them first: `tradingbot ml-train-all`"
-        )
+        st.info("No saved models found. Train them first: `tradingbot ml-train-all`")
         return
 
     import pandas as pd
@@ -408,6 +446,7 @@ def _render_models() -> None:
 
 def _get_strategy_map() -> dict:
     from tradingbot.strategy.registry import get_strategy_map
+
     return get_strategy_map()
 
 
@@ -418,7 +457,7 @@ def _format_timestamp(ts: str) -> str:
     try:
         dt = datetime.fromisoformat(ts)
         if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=timezone.utc)
+            dt = dt.replace(tzinfo=UTC)
         dt_kst = dt.astimezone(KST)
         return dt_kst.strftime("%Y-%m-%d %H:%M KST")
     except (ValueError, TypeError):

@@ -62,13 +62,14 @@ def add_atr(df: pd.DataFrame, period: int = 14) -> pd.DataFrame:
     return df
 
 
-def add_stochastic(
-    df: pd.DataFrame, k_period: int = 14, d_period: int = 3
-) -> pd.DataFrame:
+def add_stochastic(df: pd.DataFrame, k_period: int = 14, d_period: int = 3) -> pd.DataFrame:
     """Stochastic Oscillator."""
     stoch = ta.momentum.StochasticOscillator(
-        high=df["high"], low=df["low"], close=df["close"],
-        window=k_period, smooth_window=d_period,
+        high=df["high"],
+        low=df["low"],
+        close=df["close"],
+        window=k_period,
+        smooth_window=d_period,
     )
     df[f"stoch_k_{k_period}"] = stoch.stoch()
     df[f"stoch_d_{k_period}_{d_period}"] = stoch.stoch_signal()
@@ -158,13 +159,14 @@ def add_obv(df: pd.DataFrame) -> pd.DataFrame:
 # ── Volatility indicators ────────────────────────────────────────
 
 
-def add_keltner_channel(
-    df: pd.DataFrame, period: int = 20, atr_period: int = 10
-) -> pd.DataFrame:
+def add_keltner_channel(df: pd.DataFrame, period: int = 20, atr_period: int = 10) -> pd.DataFrame:
     """Keltner Channel (upper, middle, lower)."""
     kc = ta.volatility.KeltnerChannel(
-        high=df["high"], low=df["low"], close=df["close"],
-        window=period, window_atr=atr_period,
+        high=df["high"],
+        low=df["low"],
+        close=df["close"],
+        window=period,
+        window_atr=atr_period,
     )
     df[f"kc_upper_{period}"] = kc.keltner_channel_hband()
     df[f"kc_middle_{period}"] = kc.keltner_channel_mband()

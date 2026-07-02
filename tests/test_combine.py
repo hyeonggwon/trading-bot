@@ -16,9 +16,8 @@ from tradingbot.strategy.filters.momentum import (
     StochOversoldFilter,
 )
 from tradingbot.strategy.filters.price import (
-    EmaCrossUpFilter,
     EmaAboveFilter,
-    PriceBreakoutFilter,
+    EmaCrossUpFilter,
 )
 from tradingbot.strategy.filters.registry import (
     get_filter_map,
@@ -87,11 +86,13 @@ class TestFilterRegistry:
     def test_parse_invalid_param(self):
         """Non-numeric params should raise clear ValueError."""
         import pytest
+
         with pytest.raises(ValueError, match="Invalid parameters"):
             parse_filter_spec("rsi_oversold:abc")
 
     def test_parse_unknown_filter(self):
         import pytest
+
         with pytest.raises(ValueError, match="Unknown filter"):
             parse_filter_spec("nonexistent_filter")
 
@@ -200,8 +201,11 @@ class TestTimeStopFilter:
         dates = pd.date_range("2024-01-01", periods=n, freq="h", tz="UTC")
         return pd.DataFrame(
             {
-                "open": [100.0] * n, "high": [101.0] * n,
-                "low": [99.0] * n, "close": [100.0] * n, "volume": [1.0] * n,
+                "open": [100.0] * n,
+                "high": [101.0] * n,
+                "low": [99.0] * n,
+                "close": [100.0] * n,
+                "volume": [1.0] * n,
             },
             index=dates,
         )
@@ -255,8 +259,11 @@ class TestTimeStopFilter:
         )
         strategy._entry_times = {"BTC/KRW": df.index[6]}
         position = Position(
-            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0,
-            entry_price=100.0, entry_time=df.index[6].to_pydatetime(),
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=100.0,
+            entry_time=df.index[6].to_pydatetime(),
         )
         signal = strategy.should_exit(df, "BTC/KRW", position)
         assert signal is not None
@@ -269,8 +276,11 @@ class TestTimeStopFilter:
         )
         strategy2._entry_times = {"BTC/KRW": df.index[7]}
         position2 = Position(
-            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0,
-            entry_price=100.0, entry_time=df.index[7].to_pydatetime(),
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=100.0,
+            entry_time=df.index[7].to_pydatetime(),
         )
         assert strategy2.should_exit(df, "BTC/KRW", position2) is None
 
@@ -294,8 +304,13 @@ class TestCombinedStrategy:
 
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
-            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
-                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            risk=RiskConfig(
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.3,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
 
@@ -314,8 +329,13 @@ class TestCombinedStrategy:
 
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
-            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
-                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            risk=RiskConfig(
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.3,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
 
@@ -335,8 +355,13 @@ class TestCombinedStrategy:
 
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
-            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
-                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            risk=RiskConfig(
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.3,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
 
@@ -394,7 +419,9 @@ class TestLgbmProbFilter:
         trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
 
         # Test filter with very low threshold (should pass)
-        f = LgbmProbFilter(threshold=0.01, symbol="BTC/KRW", timeframe="1h", model_dir=str(tmp_path))
+        f = LgbmProbFilter(
+            threshold=0.01, symbol="BTC/KRW", timeframe="1h", model_dir=str(tmp_path)
+        )
         df_test = _make_data(200)
         df_test = f.compute(df_test)
         result = f.check_entry(df_test)
@@ -429,7 +456,9 @@ class TestLgbmProbFilter:
         trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
 
         # CombinedStrategy with ML filter (low threshold to ensure entry)
-        ml_filter = LgbmProbFilter(threshold=0.01, symbol="BTC/KRW", timeframe="1h", model_dir=str(tmp_path))
+        ml_filter = LgbmProbFilter(
+            threshold=0.01, symbol="BTC/KRW", timeframe="1h", model_dir=str(tmp_path)
+        )
         entry = [RsiOversoldFilter(threshold=40), ml_filter]
         exit_ = [RsiOverboughtFilter(threshold=60)]
 
@@ -438,8 +467,13 @@ class TestLgbmProbFilter:
 
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
-            risk=RiskConfig(max_position_size_pct=0.5, max_open_positions=1,
-                           max_drawdown_pct=0.3, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02),
+            risk=RiskConfig(
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.3,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
 
@@ -497,8 +531,7 @@ def _wick_ohlcv(levels: list[float], peaks: dict[int, float]) -> pd.DataFrame:
     for i, h in peaks.items():
         high[i] = h
     return pd.DataFrame(
-        {"open": levels, "high": high, "low": levels, "close": levels,
-         "volume": [100.0] * n},
+        {"open": levels, "high": high, "low": levels, "close": levels, "volume": [100.0] * n},
         index=dates,
     )
 
@@ -592,8 +625,13 @@ class TestTrailingExitTimestampAnchor:
         # 2024-01-01, long before every bar still in the window.
         dates = pd.date_range("2024-01-05", periods=20, freq="h", tz="UTC")
         df = pd.DataFrame(
-            {"open": [100.0] * 20, "high": [100.0] * 20, "low": [100.0] * 20,
-             "close": [100.0] * 20, "volume": [100.0] * 20},
+            {
+                "open": [100.0] * 20,
+                "high": [100.0] * 20,
+                "low": [100.0] * 20,
+                "close": [100.0] * 20,
+                "volume": [100.0] * 20,
+            },
             index=dates,
         )
         strategy = CombinedStrategy(
@@ -601,7 +639,10 @@ class TestTrailingExitTimestampAnchor:
             exit_filters=[AtrTrailingExitFilter(period=3, multiplier=1.0)],
         )
         position = Position(
-            symbol="BTC/KRW", side=PositionSide.LONG, size=1.0, entry_price=100.0,
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=100.0,
             entry_time=pd.Timestamp("2024-01-01", tz="UTC").to_pydatetime(),
             stop_loss=None,
         )
@@ -633,9 +674,7 @@ class TestSessionKstFilter:
             SessionKstFilter(start_hour=9, end_hour=9)
 
     def _df_ending_at(self, utc_hour: int) -> pd.DataFrame:
-        idx = pd.date_range(
-            f"2024-01-02 {utc_hour:02d}:00", periods=1, freq="h", tz="UTC"
-        )
+        idx = pd.date_range(f"2024-01-02 {utc_hour:02d}:00", periods=1, freq="h", tz="UTC")
         return pd.DataFrame(
             {"open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0]},
             index=idx,
@@ -695,16 +734,17 @@ class TestRealizedVolRegimeFilters:
         """calm(0..119) → wild(120..179) → calm(180..239)."""
         np.random.seed(7)
         n = 240
-        noise = np.concatenate([
-            np.random.normal(0, 0.05, 120),
-            np.random.normal(0, 3.0, 60),
-            np.random.normal(0, 0.05, 60),
-        ])
+        noise = np.concatenate(
+            [
+                np.random.normal(0, 0.05, 120),
+                np.random.normal(0, 3.0, 60),
+                np.random.normal(0, 0.05, 60),
+            ]
+        )
         close = 100.0 + np.cumsum(noise)
         idx = pd.date_range("2024-01-01", periods=n, freq="h", tz="UTC")
         return pd.DataFrame(
-            {"open": close, "high": close, "low": close, "close": close,
-             "volume": np.ones(n)},
+            {"open": close, "high": close, "low": close, "close": close, "volume": np.ones(n)},
             index=idx,
         )
 

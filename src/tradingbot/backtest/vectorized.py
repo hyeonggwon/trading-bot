@@ -204,7 +204,9 @@ def _extract_trades(
                         fee = exit_price * quantity * fee_rate
                         pnl = (exit_price - entry_price) * quantity - entry_fee - fee
                         cash += exit_price * quantity - fee
-                        trades.append((entry_idx, i, entry_price, exit_price, quantity, entry_fee, pnl))
+                        trades.append(
+                            (entry_idx, i, entry_price, exit_price, quantity, entry_fee, pnl)
+                        )
                         in_position = False
                         continue
 
@@ -345,7 +347,9 @@ def _compute_metrics(
     else:
         profit_factor = 0.0
 
-    total_return = (final_balance - initial_balance) / initial_balance if initial_balance > 0 else 0.0
+    total_return = (
+        (final_balance - initial_balance) / initial_balance if initial_balance > 0 else 0.0
+    )
 
     return VectorizedResult(
         sharpe_ratio=sharpe,

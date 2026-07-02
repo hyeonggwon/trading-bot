@@ -217,7 +217,7 @@ class PctFromMaExitFilter(BaseFilter):
 
 
 class AtrTrailingExitFilter(BaseFilter):
-    """ATR trailing stop — exit when price drops below highest since entry minus ATR × multiplier."""
+    """ATR trailing stop — exit when price drops below post-entry high minus ATR × multiplier."""
 
     name = "atr_trailing_exit"
     role = "exit"

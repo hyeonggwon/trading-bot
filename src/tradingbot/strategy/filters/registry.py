@@ -130,9 +130,7 @@ def parse_filter_spec(spec: str, base_timeframe: str = "1h") -> BaseFilter:
     return filter_cls(**kwargs)
 
 
-def _parse_filter_params(
-    name: str, parts: list[str], kwargs: dict, base_timeframe: str
-) -> None:
+def _parse_filter_params(name: str, parts: list[str], kwargs: dict, base_timeframe: str) -> None:
     """Parse filter-specific parameters into kwargs dict."""
     if name in ("trend_up", "trend_down"):
         if len(parts) >= 2:

@@ -15,7 +15,6 @@ import pandas as pd
 import structlog
 
 from tradingbot.backtest.engine import BacktestEngine
-from tradingbot.backtest.report import BacktestReport
 from tradingbot.config import AppConfig
 from tradingbot.strategy.base import Strategy, StrategyParams
 
@@ -122,9 +121,7 @@ class GridSearchOptimizer:
             if self.max_workers == 1 or total <= 4:
                 # Sequential execution for small searches or debugging
                 for i, params in enumerate(combinations):
-                    result = _run_single_backtest(
-                        self.strategy_cls, params, data, self.config
-                    )
+                    result = _run_single_backtest(self.strategy_cls, params, data, self.config)
                     results.append(result)
                     if progress and opt_task is not None:
                         progress.advance(opt_task)
@@ -136,7 +133,10 @@ class GridSearchOptimizer:
                     futures = {
                         executor.submit(
                             _run_single_backtest,
-                            self.strategy_cls, params, data, self.config,
+                            self.strategy_cls,
+                            params,
+                            data,
+                            self.config,
                         ): params
                         for params in combinations
                     }

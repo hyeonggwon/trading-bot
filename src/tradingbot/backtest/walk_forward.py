@@ -7,14 +7,14 @@ how well optimized parameters generalize to unseen data.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 import pandas as pd
 import structlog
 
 from tradingbot.backtest.engine import BacktestEngine
-from tradingbot.backtest.optimizer import GridSearchOptimizer, OptimizationResult
+from tradingbot.backtest.optimizer import GridSearchOptimizer
 from tradingbot.backtest.report import BacktestReport
 from tradingbot.config import AppConfig
 from tradingbot.strategy.base import Strategy, StrategyParams
@@ -96,7 +96,7 @@ class WalkForwardReport:
         """Cumulative return across all test windows (compounded)."""
         cumulative = 1.0
         for w in self.windows:
-            cumulative *= (1 + w.test_return)
+            cumulative *= 1 + w.test_return
         return cumulative - 1.0
 
     def print_summary(self) -> None:
@@ -177,12 +177,14 @@ def create_walk_forward_windows(
         if test_end > end:
             break
 
-        windows.append((
-            pd.Timestamp(train_start),
-            pd.Timestamp(train_end),
-            pd.Timestamp(test_start),
-            pd.Timestamp(test_end),
-        ))
+        windows.append(
+            (
+                pd.Timestamp(train_start),
+                pd.Timestamp(train_end),
+                pd.Timestamp(test_start),
+                pd.Timestamp(test_end),
+            )
+        )
 
         # Slide forward by test_months
         current = test_start
@@ -249,7 +251,7 @@ class WalkForwardValidator:
         try:
             for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
                 if progress and wf_task is not None:
-                    desc = f"WF {i+1}/{len(windows)}: {train_start.date()}~{test_end.date()}"
+                    desc = f"WF {i + 1}/{len(windows)}: {train_start.date()}~{test_end.date()}"
                     progress.update(wf_task, description=desc)
                 logger.info(
                     "walk_forward_window",
@@ -280,24 +282,24 @@ class WalkForwardValidator:
                 test_df = df[(df.index >= test_start) & (df.index < test_end)]
                 test_data = {symbol: test_df}
 
-                test_result = _run_test(
-                    self.strategy_cls, best.params, test_data, wf_config
-                )
+                test_result = _run_test(self.strategy_cls, best.params, test_data, wf_config)
 
-                results.append(WalkForwardWindow(
-                    window_index=i,
-                    train_start=train_start,
-                    train_end=train_end,
-                    test_start=test_start,
-                    test_end=test_end,
-                    best_params=best.params,
-                    train_sharpe=best.sharpe_ratio,
-                    train_return=best.total_return,
-                    test_sharpe=test_result.sharpe_ratio,
-                    test_return=test_result.total_return,
-                    test_trades=test_result.total_trades,
-                    test_max_drawdown=test_result.max_drawdown,
-                ))
+                results.append(
+                    WalkForwardWindow(
+                        window_index=i,
+                        train_start=train_start,
+                        train_end=train_end,
+                        test_start=test_start,
+                        test_end=test_end,
+                        best_params=best.params,
+                        train_sharpe=best.sharpe_ratio,
+                        train_return=best.total_return,
+                        test_sharpe=test_result.sharpe_ratio,
+                        test_return=test_result.total_return,
+                        test_trades=test_result.total_trades,
+                        test_max_drawdown=test_result.max_drawdown,
+                    )
+                )
 
                 if progress and wf_task is not None:
                     progress.advance(wf_task)

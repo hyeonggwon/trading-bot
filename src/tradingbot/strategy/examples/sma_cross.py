@@ -60,9 +60,7 @@ class SmaCrossStrategy(Strategy):
 
         return None
 
-    def should_exit(
-        self, df: pd.DataFrame, symbol: str, position: Position
-    ) -> Signal | None:
+    def should_exit(self, df: pd.DataFrame, symbol: str, position: Position) -> Signal | None:
         if len(df) < 2:
             return None
 

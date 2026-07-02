@@ -6,7 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from tradingbot.backtest.vectorized import VectorizedResult, vectorized_backtest, _extract_trades
+from tradingbot.backtest.vectorized import VectorizedResult, _extract_trades, vectorized_backtest
 
 
 def _make_ohlcv(n: int = 200, seed: int = 42) -> pd.DataFrame:
@@ -20,13 +20,16 @@ def _make_ohlcv(n: int = 200, seed: int = 42) -> pd.DataFrame:
     open_ = close + rng.randn(n) * 0.3
     volume = rng.uniform(100, 1000, n)
 
-    df = pd.DataFrame({
-        "open": open_,
-        "high": high,
-        "low": low,
-        "close": close,
-        "volume": volume,
-    }, index=pd.date_range("2020-01-01", periods=n, freq="1h", tz="UTC"))
+    df = pd.DataFrame(
+        {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        },
+        index=pd.date_range("2020-01-01", periods=n, freq="1h", tz="UTC"),
+    )
     return df
 
 
@@ -46,7 +49,7 @@ class TestVectorizedFilters:
         start = max(60, len(df) - 50)
         mismatches = []
         for i in range(start, len(df)):
-            visible = df.iloc[:i + 1]
+            visible = df.iloc[: i + 1]
             if check_type == "entry":
                 scalar = filter_obj.check_entry(visible)
             else:
@@ -58,6 +61,7 @@ class TestVectorizedFilters:
 
     def test_rsi_oversold_entry(self):
         from tradingbot.strategy.filters.momentum import RsiOversoldFilter
+
         f = RsiOversoldFilter(period=14, threshold=30.0)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -65,6 +69,7 @@ class TestVectorizedFilters:
 
     def test_rsi_overbought_exit(self):
         from tradingbot.strategy.filters.momentum import RsiOverboughtFilter
+
         f = RsiOverboughtFilter(period=14, threshold=70.0)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "exit")
@@ -72,6 +77,7 @@ class TestVectorizedFilters:
 
     def test_macd_cross_up_entry(self):
         from tradingbot.strategy.filters.momentum import MacdCrossUpFilter
+
         f = MacdCrossUpFilter(fast=12, slow=26, signal=9)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -79,6 +85,7 @@ class TestVectorizedFilters:
 
     def test_macd_cross_up_exit(self):
         from tradingbot.strategy.filters.momentum import MacdCrossUpFilter
+
         f = MacdCrossUpFilter(fast=12, slow=26, signal=9)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "exit")
@@ -86,6 +93,7 @@ class TestVectorizedFilters:
 
     def test_ema_above_entry(self):
         from tradingbot.strategy.filters.price import EmaAboveFilter
+
         f = EmaAboveFilter(period=20)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -93,6 +101,7 @@ class TestVectorizedFilters:
 
     def test_ema_above_exit(self):
         from tradingbot.strategy.filters.price import EmaAboveFilter
+
         f = EmaAboveFilter(period=20)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "exit")
@@ -100,6 +109,7 @@ class TestVectorizedFilters:
 
     def test_volume_spike_entry(self):
         from tradingbot.strategy.filters.volume import VolumeSpikeFilter
+
         f = VolumeSpikeFilter(sma_period=20, threshold=2.5)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -107,6 +117,7 @@ class TestVectorizedFilters:
 
     def test_bb_upper_break_entry(self):
         from tradingbot.strategy.filters.price import BbUpperBreakFilter
+
         f = BbUpperBreakFilter(period=20, std=2.0)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -114,6 +125,7 @@ class TestVectorizedFilters:
 
     def test_ema_cross_up_entry(self):
         from tradingbot.strategy.filters.price import EmaCrossUpFilter
+
         f = EmaCrossUpFilter(fast=12, slow=26)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -121,6 +133,7 @@ class TestVectorizedFilters:
 
     def test_adx_strong_entry(self):
         from tradingbot.strategy.filters.trend import AdxStrongFilter
+
         f = AdxStrongFilter(threshold=25.0, period=14)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -128,6 +141,7 @@ class TestVectorizedFilters:
 
     def test_stoch_overbought_exit(self):
         from tradingbot.strategy.filters.exit import StochOverboughtFilter
+
         f = StochOverboughtFilter(threshold=80.0)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "exit")
@@ -135,6 +149,7 @@ class TestVectorizedFilters:
 
     def test_donchian_break_entry(self):
         from tradingbot.strategy.filters.price import DonchianBreakFilter
+
         f = DonchianBreakFilter(period=20)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -142,6 +157,7 @@ class TestVectorizedFilters:
 
     def test_bb_squeeze_entry(self):
         from tradingbot.strategy.filters.volatility import BbSqueezeFilter
+
         f = BbSqueezeFilter(bb_period=20, kc_period=20, bb_std=2.0)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -149,6 +165,7 @@ class TestVectorizedFilters:
 
     def test_obv_rising_entry(self):
         from tradingbot.strategy.filters.volume import ObvRisingFilter
+
         f = ObvRisingFilter(obv_sma_period=20)
         df = _make_ohlcv(200)
         mismatches = self._check_filter_consistency(f, df, "entry")
@@ -161,12 +178,14 @@ class TestVectorizedEngine:
     def test_no_signals_zero_trades(self):
         """When no entry signals fire, should produce zero trades."""
         from tradingbot.strategy.filters.momentum import RsiOversoldFilter
+
         df = _make_ohlcv(100)
         # Use extreme threshold so no signals fire
         f_entry = RsiOversoldFilter(period=14, threshold=1.0)
         df = f_entry.compute(df)
 
         from tradingbot.strategy.filters.momentum import RsiOverboughtFilter
+
         f_exit = RsiOverboughtFilter(period=14, threshold=99.0)
         df = f_exit.compute(df)
 
@@ -183,8 +202,8 @@ class TestVectorizedEngine:
 
     def test_basic_trades_produced(self):
         """With reasonable thresholds, some trades should be produced."""
-        from tradingbot.strategy.filters.price import EmaAboveFilter
         from tradingbot.strategy.filters.momentum import RsiOverboughtFilter
+        from tradingbot.strategy.filters.price import EmaAboveFilter
 
         df = _make_ohlcv(500, seed=123)
         f_entry = EmaAboveFilter(period=20)
@@ -209,13 +228,16 @@ class TestVectorizedEngine:
         """Stop loss should trigger when price drops below threshold."""
         n = 50
         close = np.array([100.0] * 10 + [110.0] * 5 + [90.0] * 5 + [100.0] * 30)
-        df = pd.DataFrame({
-            "open": close,
-            "high": close + 1,
-            "low": close - 3,
-            "close": close,
-            "volume": [1000.0] * n,
-        }, index=pd.date_range("2020-01-01", periods=n, freq="1h"))
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": close + 1,
+                "low": close - 3,
+                "close": close,
+                "volume": [1000.0] * n,
+            },
+            index=pd.date_range("2020-01-01", periods=n, freq="1h"),
+        )
 
         # Force an entry at index 5
         entry_signals = np.zeros(n, dtype=bool)
@@ -255,7 +277,10 @@ class TestVectorizedEngine:
         trades, _ = _extract_trades(
             entry_signals=entry_signals,
             exit_signals=exit_signals,
-            opens=opens, highs=highs, lows=lows, closes=closes,
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            closes=closes,
             initial_balance=10_000_000,
             fee_rate=0.0005,
             slippage_pct=0.001,
@@ -283,7 +308,10 @@ class TestVectorizedEngine:
         trades, _ = _extract_trades(
             entry_signals=entry_signals,
             exit_signals=exit_signals,
-            opens=opens, highs=highs, lows=lows, closes=closes,
+            opens=opens,
+            highs=highs,
+            lows=lows,
+            closes=closes,
             initial_balance=10_000_000,
             fee_rate=0.0005,
             slippage_pct=0.001,
@@ -331,12 +359,13 @@ class TestVectorizedEngine:
         """Verify win_rate and profit_factor with hand-crafted trades."""
         # 3 winning trades, 1 losing trade
         trades = [
-            (0, 5, 100.0, 110.0, 10.0, 0.5, 99.0),   # win: pnl=99
+            (0, 5, 100.0, 110.0, 10.0, 0.5, 99.0),  # win: pnl=99
             (10, 15, 100.0, 90.0, 10.0, 0.5, -100.5),  # loss: pnl=-100.5
-            (20, 25, 100.0, 105.0, 10.0, 0.5, 49.0),   # win: pnl=49
-            (30, 35, 100.0, 108.0, 10.0, 0.5, 79.0),   # win: pnl=79
+            (20, 25, 100.0, 105.0, 10.0, 0.5, 49.0),  # win: pnl=49
+            (30, 35, 100.0, 108.0, 10.0, 0.5, 79.0),  # win: pnl=79
         ]
         from tradingbot.backtest.vectorized import _compute_metrics
+
         result = _compute_metrics(
             trades=trades,
             initial_balance=10_000_000,
@@ -353,6 +382,7 @@ class TestVectorizedEngine:
         """DataFrame with < 3 rows should return zero result."""
         df = _make_ohlcv(2)
         from tradingbot.strategy.filters.price import EmaAboveFilter
+
         f = EmaAboveFilter(period=20)
         result = vectorized_backtest(df=df, entry_filters=[f], exit_filters=[], timeframe="1h")
         assert result.total_trades == 0
@@ -364,13 +394,22 @@ class TestVectorizedEngine:
         class DummyFilter(BaseFilter):
             name = "dummy"
             role = "entry"
-            def compute(self, df): return df
-            def check_entry(self, df): return False
-            def check_exit(self, df, entry_index=None): return False
+
+            def compute(self, df):
+                return df
+
+            def check_entry(self, df):
+                return False
+
+            def check_exit(self, df, entry_index=None):
+                return False
 
         df = _make_ohlcv(100)
         result = vectorized_backtest(
-            df=df, entry_filters=[DummyFilter()], exit_filters=[], timeframe="1h",
+            df=df,
+            entry_filters=[DummyFilter()],
+            exit_filters=[],
+            timeframe="1h",
         )
         assert result.total_trades == 0
 
@@ -405,12 +444,17 @@ class TestRunBatchRouting:
 
         config_dir = str(tmp_path / "config")
         import os
+
         os.makedirs(config_dir, exist_ok=True)
 
         jobs = [("Trend+RSI", "trend_up:4 + rsi_oversold:30", "rsi_overbought:70")]
         results = _run_batch(
-            symbol, timeframe, jobs,
-            str(tmp_path), 1_000_000, config_dir,
+            symbol,
+            timeframe,
+            jobs,
+            str(tmp_path),
+            1_000_000,
+            config_dir,
             force_engine=True,
         )
         assert len(results) == 1
@@ -448,20 +492,32 @@ class TestEngineParity:
         xm = exit_.vectorized_exit(dfi).fillna(False).values.astype(bool)
         same_bar = int((em & xm).sum())
         vtr, _ = _extract_trades(
-            em, xm, dfi["open"].values, dfi["high"].values, dfi["low"].values,
-            dfi["close"].values, 10_000_000, 0.0005, 0.001, stop_loss_pct, 0.10,
-            None, 0.0,
+            em,
+            xm,
+            dfi["open"].values,
+            dfi["high"].values,
+            dfi["low"].values,
+            dfi["close"].values,
+            10_000_000,
+            0.0005,
+            0.001,
+            stop_loss_pct,
+            0.10,
+            None,
+            0.0,
         )
         vec_bars = [t[0] for t in vtr]
 
         strat = CombinedStrategy(entry_filters=[entry], exit_filters=[exit_])
         strat.timeframe = "1h"
         cfg = AppConfig(
-            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h",
-                                  initial_balance=10_000_000),
-            risk=RiskConfig(default_stop_loss_pct=stop_loss_pct,
-                            max_position_size_pct=0.10, max_open_positions=1,
-                            max_drawdown_pct=0.99),
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(
+                default_stop_loss_pct=stop_loss_pct,
+                max_position_size_pct=0.10,
+                max_open_positions=1,
+                max_drawdown_pct=0.99,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
         rep = BacktestEngine(strategy=strat, config=cfg).run({"BTC/KRW": df})
@@ -530,9 +586,20 @@ class TestEngineParity:
         em = entry.vectorized_entry(dfi).fillna(False).values.astype(bool)
         xm = np.zeros(len(dfi), dtype=bool)
         vtr, _ = _extract_trades(
-            em, xm, dfi["open"].values, dfi["high"].values, dfi["low"].values,
-            dfi["close"].values, 10_000_000, 0.0005, 0.001, 0.99, 0.10,
-            None, 0.0, max_holding_bars=max_bars,
+            em,
+            xm,
+            dfi["open"].values,
+            dfi["high"].values,
+            dfi["low"].values,
+            dfi["close"].values,
+            10_000_000,
+            0.0005,
+            0.001,
+            0.99,
+            0.10,
+            None,
+            0.0,
+            max_holding_bars=max_bars,
         )
         vec = {t[0]: t[1] for t in vtr}  # entry_fill_bar -> exit_fill_bar
 
@@ -543,16 +610,20 @@ class TestEngineParity:
         )
         strat.timeframe = "1h"
         cfg = AppConfig(
-            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h",
-                                  initial_balance=10_000_000),
-            risk=RiskConfig(default_stop_loss_pct=0.99, max_position_size_pct=0.10,
-                            max_open_positions=1, max_drawdown_pct=0.99),
+            trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
+            risk=RiskConfig(
+                default_stop_loss_pct=0.99,
+                max_position_size_pct=0.10,
+                max_open_positions=1,
+                max_drawdown_pct=0.99,
+            ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
         rep = BacktestEngine(strategy=strat, config=cfg).run({"BTC/KRW": df})
         full = {
             df.index.get_loc(t.entry_order.filled_at): df.index.get_loc(t.exit_order.filled_at)
-            for t in rep.trades if t.exit_order is not None
+            for t in rep.trades
+            if t.exit_order is not None
         }
 
         # Only compare trades whose time_stop exit lands before the last bar —

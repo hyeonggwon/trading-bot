@@ -24,10 +24,15 @@ from tradingbot.core.models import Position, Signal
 from tradingbot.data.indicators import add_rsi
 from tradingbot.strategy.base import Strategy, StrategyParams
 
-
 TIMEFRAME_TO_MINUTES: dict[str, int] = {
-    "1m": 1, "3m": 3, "5m": 5, "15m": 15, "30m": 30,
-    "1h": 60, "4h": 240, "1d": 1440,
+    "1m": 1,
+    "3m": 3,
+    "5m": 5,
+    "15m": 15,
+    "30m": 30,
+    "1h": 60,
+    "4h": 240,
+    "1d": 1440,
 }
 
 
@@ -46,15 +51,19 @@ def _resample_to_higher_tf(
     base_minutes = TIMEFRAME_TO_MINUTES.get(base_timeframe, 60)
     higher_minutes = base_minutes * factor
 
-    resampled = df.resample(
-        f"{higher_minutes}min", label="right", closed="right"
-    ).agg({
-        "open": "first",
-        "high": "max",
-        "low": "min",
-        "close": "last",
-        "volume": "sum",
-    }).dropna()
+    resampled = (
+        df.resample(f"{higher_minutes}min", label="right", closed="right")
+        .agg(
+            {
+                "open": "first",
+                "high": "max",
+                "low": "min",
+                "close": "last",
+                "volume": "sum",
+            }
+        )
+        .dropna()
+    )
 
     return resampled
 
@@ -125,9 +134,7 @@ class MultiTimeframeStrategy(Strategy):
 
         return None
 
-    def should_exit(
-        self, df: pd.DataFrame, symbol: str, position: Position
-    ) -> Signal | None:
+    def should_exit(self, df: pd.DataFrame, symbol: str, position: Position) -> Signal | None:
         if len(df) < 2:
             return None
 

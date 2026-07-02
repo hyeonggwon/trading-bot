@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
@@ -91,7 +91,10 @@ class LGBMTrainer:
         )
 
         n_val = len(X_val) if X_val is not None else 0
-        log.info(f"LightGBM training complete: n_train={len(X_train)}, n_val={n_val}, best_iter={model.best_iteration}")
+        log.info(
+            f"LightGBM training complete: n_train={len(X_train)}, n_val={n_val}, "
+            f"best_iter={model.best_iteration}"
+        )
         return model
 
     def evaluate(self, model, X_test: pd.DataFrame, y_test: pd.Series) -> dict:
@@ -125,8 +128,10 @@ class LGBMTrainer:
 
             q1 = auc / (2 - auc)
             q2 = 2 * auc**2 / (1 + auc)
-            se = ((auc * (1 - auc) + (n_pos - 1) * (q1 - auc**2) + (n_neg - 1) * (q2 - auc**2))
-                  / (n_pos * n_neg)) ** 0.5
+            se = (
+                (auc * (1 - auc) + (n_pos - 1) * (q1 - auc**2) + (n_neg - 1) * (q2 - auc**2))
+                / (n_pos * n_neg)
+            ) ** 0.5
             z = (auc - 0.5) / se if se > 0 else 0.0
             p_value = float(1 - norm.cdf(z))
 
@@ -201,7 +206,7 @@ class LGBMTrainer:
             log.info(f"Calibrator saved: {cal_path}")
 
         full_meta = {
-            "trained_at": datetime.now(timezone.utc).isoformat(),
+            "trained_at": datetime.now(UTC).isoformat(),
             "symbol": symbol,
             "timeframe": timeframe,
             "n_features": len(feature_cols),
@@ -256,13 +261,18 @@ class LGBMTrainer:
         # fit collapses to a single (x, y) pair — fall back to a constant map.
         if len(x) > 1:
             calibrator.f_ = interp1d(
-                x, y, kind="linear", bounds_error=False,
+                x,
+                y,
+                kind="linear",
+                bounds_error=False,
                 fill_value=(y[0], y[-1]),
             )
         else:
             const_y = float(y[0])
             calibrator.f_ = lambda val, _c=const_y: np.full_like(
-                np.asarray(val, dtype=float), _c, dtype=float,
+                np.asarray(val, dtype=float),
+                _c,
+                dtype=float,
             )
         return calibrator
 
@@ -293,16 +303,18 @@ class LGBMTrainer:
             except (json.JSONDecodeError, OSError) as e:
                 log.warning(f"Unreadable model meta skipped: {meta_path} ({e})")
                 continue
-            entries.append({
-                "symbol": meta.get("symbol"),
-                "timeframe": meta.get("timeframe"),
-                "trained_at": meta.get("trained_at"),
-                "n_features": meta.get("n_features"),
-                "has_calibrator": meta.get("has_calibrator"),
-                "holdout_start": meta.get("holdout_start"),
-                "holdout_auc": meta.get("holdout_auc"),
-                "entry_threshold": meta.get("entry_threshold"),
-                "exit_threshold": meta.get("exit_threshold"),
-                "avg_win_loss_ratio": meta.get("avg_win_loss_ratio"),
-            })
+            entries.append(
+                {
+                    "symbol": meta.get("symbol"),
+                    "timeframe": meta.get("timeframe"),
+                    "trained_at": meta.get("trained_at"),
+                    "n_features": meta.get("n_features"),
+                    "has_calibrator": meta.get("has_calibrator"),
+                    "holdout_start": meta.get("holdout_start"),
+                    "holdout_auc": meta.get("holdout_auc"),
+                    "entry_threshold": meta.get("entry_threshold"),
+                    "exit_threshold": meta.get("exit_threshold"),
+                    "avg_win_loss_ratio": meta.get("avg_win_loss_ratio"),
+                }
+            )
         return entries

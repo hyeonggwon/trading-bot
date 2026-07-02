@@ -9,7 +9,6 @@ Tracks orders from creation to fill/cancel. Handles:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 
 import structlog
 
@@ -197,8 +196,7 @@ class OrderManager:
                 cancelled += 1
                 logger.info("order_cancelled", order_id=order.id, symbol=symbol)
         self._active_orders = {
-            oid: o for oid, o in self._active_orders.items()
-            if o.symbol != symbol
+            oid: o for oid, o in self._active_orders.items() if o.symbol != symbol
         }
         return cancelled
 

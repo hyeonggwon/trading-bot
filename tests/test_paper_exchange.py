@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-import json
-from datetime import datetime, timezone
-from pathlib import Path
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -25,13 +22,16 @@ class MockDataFeed(BaseExchange):
 
     async def fetch_ohlcv(self, symbol, timeframe="1h", since=None, limit=100):
         dates = pd.date_range("2024-01-01", periods=10, freq="h", tz="UTC")
-        return pd.DataFrame({
-            "open": [self._price] * 10,
-            "high": [self._price * 1.01] * 10,
-            "low": [self._price * 0.99] * 10,
-            "close": [self._price] * 10,
-            "volume": [100] * 10,
-        }, index=dates)
+        return pd.DataFrame(
+            {
+                "open": [self._price] * 10,
+                "high": [self._price * 1.01] * 10,
+                "low": [self._price * 0.99] * 10,
+                "close": [self._price] * 10,
+                "volume": [100] * 10,
+            },
+            index=dates,
+        )
 
     async def fetch_ticker(self, symbol):
         return {
@@ -39,7 +39,7 @@ class MockDataFeed(BaseExchange):
             "bid": self._price * 0.999,
             "ask": self._price * 1.001,
             "volume": 100,
-            "timestamp": datetime.now(timezone.utc),
+            "timestamp": datetime.now(UTC),
         }
 
     async def create_order(self, symbol, side, order_type, quantity, price=None):
@@ -171,7 +171,7 @@ class TestStateManager:
             side=PositionSide.LONG,
             size=0.001,
             entry_price=50_000_000,
-            entry_time=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            entry_time=datetime(2024, 1, 1, tzinfo=UTC),
             stop_loss=49_000_000,
         )
         state.positions["BTC/KRW"] = pos
@@ -207,8 +207,11 @@ class TestStateManager:
         state_file = tmp_path / "state.json"
         state = StateManager(state_file)
         state.positions["BTC/KRW"] = Position(
-            "BTC/KRW", PositionSide.LONG, 0.001, 50_000_000,
-            datetime(2024, 1, 1, tzinfo=timezone.utc),
+            "BTC/KRW",
+            PositionSide.LONG,
+            0.001,
+            50_000_000,
+            datetime(2024, 1, 1, tzinfo=UTC),
         )
         state.save()
         assert state_file.exists()
