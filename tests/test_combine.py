@@ -57,7 +57,10 @@ class TestFilterRegistry:
         assert "ema_above" in fmap
         assert "lgbm_prob" in fmap
         assert "time_stop" in fmap
-        assert len(fmap) == 32
+        assert "session_kst" in fmap
+        assert "realized_vol_low" in fmap
+        assert "realized_vol_high" in fmap
+        assert len(fmap) == 35
 
     def test_parse_simple(self):
         f = parse_filter_spec("rsi_oversold:30")
@@ -605,3 +608,148 @@ class TestTrailingExitTimestampAnchor:
         # No cached entry time -> uses persisted position.entry_time, which
         # predates the window: index-0 snap is wrong, None is the contract.
         assert strategy._resolve_entry_index(df, "BTC/KRW", position) is None
+
+
+class TestSessionKstFilter:
+    """KST session gate — entry-only, end-exclusive, overnight wrap."""
+
+    def test_parse_and_defaults(self):
+        from tradingbot.strategy.filters.session import SessionKstFilter
+
+        f = parse_filter_spec("session_kst")
+        assert isinstance(f, SessionKstFilter)
+        assert (f.start_hour, f.end_hour) == (9, 23)
+        f2 = parse_filter_spec("session_kst:10:22")
+        assert (f2.start_hour, f2.end_hour) == (10, 22)
+
+    def test_invalid_hours_rejected(self):
+        import pytest
+
+        from tradingbot.strategy.filters.session import SessionKstFilter
+
+        with pytest.raises(ValueError, match="0..23"):
+            SessionKstFilter(start_hour=24, end_hour=6)
+        with pytest.raises(ValueError, match="empty session"):
+            SessionKstFilter(start_hour=9, end_hour=9)
+
+    def _df_ending_at(self, utc_hour: int) -> pd.DataFrame:
+        idx = pd.date_range(
+            f"2024-01-02 {utc_hour:02d}:00", periods=1, freq="h", tz="UTC"
+        )
+        return pd.DataFrame(
+            {"open": [1.0], "high": [1.0], "low": [1.0], "close": [1.0], "volume": [1.0]},
+            index=idx,
+        )
+
+    def test_gate_by_kst_hour(self):
+        from tradingbot.strategy.filters.session import SessionKstFilter
+
+        f = SessionKstFilter(start_hour=9, end_hour=23)
+        # 05:00 UTC = 14:00 KST → in session
+        assert f.check_entry(self._df_ending_at(5)) is True
+        # 16:00 UTC = 01:00 KST → out of session
+        assert f.check_entry(self._df_ending_at(16)) is False
+        # end-exclusive: 14:00 UTC = 23:00 KST → out
+        assert f.check_entry(self._df_ending_at(14)) is False
+        # exit must never be gated
+        assert f.check_exit(self._df_ending_at(16)) is False
+
+    def test_overnight_wrap(self):
+        from tradingbot.strategy.filters.session import SessionKstFilter
+
+        f = SessionKstFilter(start_hour=22, end_hour=6)
+        # 14:00 UTC = 23:00 KST → in (after 22)
+        assert f.check_entry(self._df_ending_at(14)) is True
+        # 18:00 UTC = 03:00 KST → in (before 6)
+        assert f.check_entry(self._df_ending_at(18)) is True
+        # 03:00 UTC = 12:00 KST → out
+        assert f.check_entry(self._df_ending_at(3)) is False
+
+    def test_vectorized_matches_scalar(self):
+        from tradingbot.strategy.filters.session import SessionKstFilter
+
+        df = _make_data(48)
+        f = SessionKstFilter(start_hour=9, end_hour=23)
+        vec = f.vectorized_entry(df)
+        for i in range(1, 48):
+            assert bool(vec.iloc[i]) == f.check_entry(df.iloc[: i + 1]), f"row {i}"
+
+
+class TestRealizedVolRegimeFilters:
+    """Realized-vol percentile regime gates (calm vs expanding)."""
+
+    def test_parse(self):
+        from tradingbot.strategy.filters.volatility import (
+            RealizedVolHighFilter,
+            RealizedVolLowFilter,
+        )
+
+        lo = parse_filter_spec("realized_vol_low:0.25:20:50")
+        assert isinstance(lo, RealizedVolLowFilter)
+        assert (lo.threshold, lo.vol_period, lo.rank_period) == (0.25, 20, 50)
+        hi = parse_filter_spec("realized_vol_high")
+        assert isinstance(hi, RealizedVolHighFilter)
+        assert hi.threshold == 0.7
+
+    def _regime_df(self) -> pd.DataFrame:
+        """calm(0..119) → wild(120..179) → calm(180..239)."""
+        np.random.seed(7)
+        n = 240
+        noise = np.concatenate([
+            np.random.normal(0, 0.05, 120),
+            np.random.normal(0, 3.0, 60),
+            np.random.normal(0, 0.05, 60),
+        ])
+        close = 100.0 + np.cumsum(noise)
+        idx = pd.date_range("2024-01-01", periods=n, freq="h", tz="UTC")
+        return pd.DataFrame(
+            {"open": close, "high": close, "low": close, "close": close,
+             "volume": np.ones(n)},
+            index=idx,
+        )
+
+    def test_calm_vs_expanding_regime(self):
+        from tradingbot.strategy.filters.volatility import (
+            RealizedVolHighFilter,
+            RealizedVolLowFilter,
+        )
+
+        df = self._regime_df()
+        lo, hi = RealizedVolLowFilter(), RealizedVolHighFilter()
+        df = lo.compute(df)  # hi shares the same columns (idempotent)
+
+        # Bar 140: vol window is all-wild, rank window spans calm+wild → high regime.
+        # (truthiness, not `is True` — filters return numpy bools like their siblings)
+        wild = df.iloc[:141]
+        assert hi.check_entry(wild)
+        assert not lo.check_entry(wild)
+
+        # Bar 200: vol window is all-calm, rank window still spans wild → low regime.
+        calm = df.iloc[:201]
+        assert lo.check_entry(calm)
+        assert not hi.check_entry(calm)
+
+    def test_warmup_and_missing_column_are_false(self):
+        from tradingbot.strategy.filters.volatility import RealizedVolLowFilter
+
+        df = self._regime_df()
+        lo = RealizedVolLowFilter()
+        assert lo.check_entry(df.iloc[:5]) is False  # column not computed yet
+        df = lo.compute(df)
+        assert lo.check_entry(df.iloc[:5]) is False  # warmup NaN
+
+    def test_vectorized_matches_scalar(self):
+        """프리픽스에서 '재계산'한 scalar 와 full-df 벡터화가 일치해야 한다.
+
+        check_entry 에 full-df 계산 컬럼을 그대로 물려주면 두 경로가 같은
+        값을 읽는 항등식이 된다 — 프리픽스 재계산이어야 shift(-1) /
+        center=True 류 미래 누수 회귀를 실제로 검출한다 (code-review 지적).
+        """
+        from tradingbot.strategy.filters.volatility import RealizedVolHighFilter
+
+        raw = self._regime_df()
+        hi = RealizedVolHighFilter()
+        vec = hi.vectorized_entry(hi.compute(raw.copy()))
+        for i in (100, 140, 170, 200, 239):
+            prefix = hi.compute(raw.iloc[: i + 1].copy())
+            assert bool(vec.iloc[i]) == hi.check_entry(prefix), f"row {i}"
