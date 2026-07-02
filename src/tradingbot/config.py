@@ -4,18 +4,29 @@ from pathlib import Path
 from typing import Annotated, Any
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 from pydantic_settings import BaseSettings
 
 VALID_TIMEFRAMES = frozenset({"1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d"})
 
 
-class ExchangeConfig(BaseModel):
+class _StrictModel(BaseModel):
+    """Config base: reject unknown keys instead of silently dropping them.
+
+    Pydantic's default (extra="ignore") turns a typo'd YAML key — e.g.
+    ``max_drawdown_pcnt:`` — into the silent application of the built-in
+    default. On real-money risk settings that must fail loudly at load time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class ExchangeConfig(_StrictModel):
     name: str = "upbit"
     rate_limit_per_sec: Annotated[int, Field(ge=1)] = 10
 
 
-class TradingConfig(BaseModel):
+class TradingConfig(_StrictModel):
     symbols: list[str] = ["BTC/KRW"]
     timeframe: str = "1h"
     initial_balance: Annotated[float, Field(gt=0)] = 1_000_000  # KRW
@@ -28,7 +39,7 @@ class TradingConfig(BaseModel):
         return v
 
 
-class RiskConfig(BaseModel):
+class RiskConfig(_StrictModel):
     max_position_size_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.1
     max_open_positions: Annotated[int, Field(ge=1)] = 3
     max_drawdown_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.20
@@ -37,14 +48,14 @@ class RiskConfig(BaseModel):
     risk_per_trade_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.01
 
 
-class BacktestConfig(BaseModel):
+class BacktestConfig(_StrictModel):
     fee_rate: Annotated[float, Field(ge=0, le=1.0)] = 0.0005
     slippage_pct: Annotated[float, Field(ge=0, le=1.0)] = 0.001
     start_date: str | None = None
     end_date: str | None = None
 
 
-class AppConfig(BaseModel):
+class AppConfig(_StrictModel):
     exchange: ExchangeConfig = ExchangeConfig()
     trading: TradingConfig = TradingConfig()
     risk: RiskConfig = RiskConfig()

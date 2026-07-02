@@ -68,3 +68,16 @@ def test_appconfig_validates_nested_risk() -> None:
 def test_valid_timeframes_in_sync_with_engine() -> None:
     """config's whitelist is the single source of truth mirror of engine TIMEFRAME_SECONDS."""
     assert VALID_TIMEFRAMES == set(TIMEFRAME_SECONDS.keys())
+
+
+def test_unknown_yaml_key_rejected(tmp_path: Path) -> None:
+    """오타 난 YAML 키는 조용히 증발하지 않고 로드 시점에 실패해야 한다.
+
+    extra="ignore"(pydantic 기본)였다면 max_drawdown_pcnt 오타가 무시되고
+    내장 기본값 0.20 이 소리 없이 적용된다 — 리스크 설정에서는 치명적.
+    """
+    (tmp_path / "default.yaml").write_text(
+        "risk:\n  max_drawdown_pcnt: 0.5\n", encoding="utf-8"
+    )
+    with pytest.raises(ValidationError, match="max_drawdown_pcnt"):
+        load_config(config_dir=tmp_path)

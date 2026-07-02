@@ -69,6 +69,11 @@ class StateManager:
         try:
             with os.fdopen(tmp_fd, "w") as f:
                 json.dump(data, f, indent=2, default=str)
+                # Flush to disk before the atomic rename: without fsync a
+                # power loss can make the rename durable but not the data,
+                # replacing good state with an empty/truncated file.
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, self.state_path)
         except Exception:
             os.unlink(tmp_path)
