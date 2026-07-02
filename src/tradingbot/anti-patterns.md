@@ -17,3 +17,31 @@ CLAUDE.md 의 "How not" 섹션은 이 파일을 1줄로만 가리킨다.
 **참고:** 관련 PR / 이슈 / 커밋 (있으면).
 
 -->
+
+## raw `half_kelly` 를 Signal.strength 로 직접 사용 · 2026-07-02
+
+**증상:** ML 전략/필터의 포지션이 계통적으로 언더사이징 — 현실적 calibrated 확률대에서 strength 가 0.04–0.20 에 머물고, 사이저의 [0,1] 클램프는 dead code 가 됨.
+**원인:** `half_kelly()` 는 p=1.0 에서도 0.5 가 구조적 상한 (full Kelly 1.0 의 절반). [0,1] 스케일을 기대하는 사이저에 절반 스케일 값이 들어감.
+**처방:** strength 매핑은 항상 `ml/utils.py` 의 `kelly_strength()` (HALF_KELLY_MAX=0.5 로 정규화) 사용. 호출처: `strategy/lgbm_strategy.py`, `strategy/filters/ml.py`.
+**참고:** 83a3785 (사이징 spine 정합).
+
+## 드로다운 브레이커를 raw 계좌 equity 에 연결 · 2026-07-02
+
+**증상:** 외부 출금 직후 브레이커 오발동(전 포지션 강제 청산), 외부 입금은 실제 drawdown 을 마스킹.
+**원인:** raw 계좌 잔고는 트레이딩 성과가 아닌 입출금에도 움직인다. 피크 갱신(`update_peak_equity`)을 틱 루프에서 raw equity 로 호출하면 브레이커가 읽는 ledger 시리즈와 갈라진다.
+**처방:** 피크 추적·브레이커 판정은 `live/engine.py` 의 `_enforce_safety_rails` 안에서 `_ledger_equity`(baseline+누적 실현 PnL+미실현) 로만. `ledger_baseline`/`cum_realized_pnl` 은 `live/state.py` 가 영속.
+**참고:** e7d57a8 (드로다운 브레이커 이체 면역).
+
+## Upbit 마켓 매수를 reference price 없이 제출 · 2026-07-02
+
+**증상:** `CcxtExchange.create_order` 가 ValueError("requires a positive reference price") — 진입/재주문 스킵.
+**원인:** Upbit 마켓 BUY 는 quote 금액 주문(ord_type='price') — base 수량만으로는 KRW cost 를 계산할 수 없고, ccxt 는 전송 전에 InvalidOrder 를 던진다.
+**처방:** 마켓 BUY 에도 slippage 반영 기준가를 `price` 로 전달해 quote cost 를 계산시킨다. limit→market 재주문(`live/order_manager.py`)도 limit price 를 그대로 넘긴다.
+**참고:** ea237bb (라이브 마켓 매수 quote-cost).
+
+## config.yaml 에 모델에 없는 키 추가 · 2026-07-02
+
+**증상:** 부팅 시 pydantic ValidationError(extra_forbidden) 로 설정 로드 실패.
+**원인:** 설정 모델이 `extra="forbid"` (`config.py` `_StrictModel`) — 오타 키(`max_drawdown_pcnt` 등)가 조용히 기본값으로 대체되는 실계좌 사고를 막는 의도적 전환. pydantic 기본(ignore)과 다르다.
+**처방:** 새 설정 키는 `config.py` 의 해당 모델에 필드를 먼저 추가한 뒤 YAML 에 쓴다.
+**참고:** 5571ae0 (설정 오타 거부).
