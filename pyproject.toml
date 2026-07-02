@@ -30,6 +30,8 @@ dev = [
     "pytest-asyncio>=0.21",
     "ruff>=0.1",
     "mypy>=1.0",
+    # 테스트 스위트가 실제 LightGBM fit 을 전제하므로(tests/CLAUDE.md) ml 포함
+    "trading-bot[ml]",
 ]
 research = [
     "jupyter>=1.0",

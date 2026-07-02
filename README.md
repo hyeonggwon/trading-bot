@@ -108,7 +108,10 @@ cli.py ─┬─→ data/{fetcher, external_fetcher, storage, indicators}
 # Python 3.11+ 필요
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]" -c constraints.txt
+
+# pre-push 훅(문서 동기화 가드) 활성화 — clone 마다 1회
+git config core.hooksPath scripts/git-hooks
 ```
 
 ## 빠른 시작

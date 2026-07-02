@@ -20,11 +20,15 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install OpenMP runtime (LightGBM)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
       - name: Install package
-        run: pip install -e ".[dev,ml]"
+        # dev extra 가 ml 을 포함하고 constraints 가 버전을 고정 — README 설치
+        # 절차와 동일한 커맨드를 CI 가 그대로 검증한다.
+        run: pip install -e ".[dev]" -c constraints.txt
       - name: Run tests
         run: pytest tests/ -q
 
@@ -37,11 +41,13 @@ jobs:
         with:
           python-version: "3.11"
           cache: pip
-          cache-dependency-path: pyproject.toml
+          cache-dependency-path: |
+            pyproject.toml
+            constraints.txt
       - name: Install OpenMP runtime (LightGBM)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libgomp1
       - name: Install package
-        run: pip install -e ".[dev,ml]"
+        run: pip install -e ".[dev]" -c constraints.txt
       - name: ruff check
         continue-on-error: true
         run: ruff check src/ tests/

@@ -9,7 +9,7 @@
 - **Phase 파이프라인 변경**: `run_phase6.sh` 의 5단계(`ml-train-all` → `ml-tune-all` → `ml-tune-thresholds-all` → `scan` → `combine-scan`) 인자 수정. train/tune-all 의 `--train-months 6 --test-months 2` 정렬은 깨지 않게 유지.
 - **헬스체크 정책 변경**: `healthcheck.py` 의 `MAX_STALE_SECONDS` 기본값 또는 `STATE_FILE` 환경변수 해석 수정. exit 0/1 계약은 Dockerfile 의 HEALTHCHECK 기대값.
 - **새 진단 스크립트**: `inspect_<topic>.py` 네이밍으로 추가. 모델·calibrator 로드는 `inspect_eth_calibrator.py` 패턴 차용.
-- **pre-push 훅 변경**: `git-hooks/pre-push` 수정 후 반드시 `cp scripts/git-hooks/pre-push .git/hooks/pre-push && chmod +x .git/hooks/pre-push` (직접 복사, symlink 안 씀). 훅은 2단계 — (1) architecture-mapper `drift.py`/`extract.py` 로 `src/tradingbot/doc/mermaid` 정적 재생성(LLM 없음, `SKIP_ARCH_SYNC=1` 우회), (2) `claude -p` 로 영향 모듈 CLAUDE.md 동기화(`SKIP_CLAUDE_MD_SYNC=1` 우회). 아키텍처 문서(`src/tradingbot/doc/architecture.md`)가 없으면 1단계는 조용히 skip.
+- **pre-push 훅 변경**: 훅은 `git config core.hooksPath scripts/git-hooks` 로 활성화한다(clone 마다 1회, README 설치 절차에 포함). `git-hooks/pre-push` 를 직접 수정하면 즉시 반영 — 과거의 `.git/hooks` 복사 방식은 사본 drift 를 만들어 폐기. 훅은 2단계 — (1) architecture-mapper `drift.py`/`extract.py` 로 `src/tradingbot/doc/mermaid` 정적 재생성(LLM 없음, `SKIP_ARCH_SYNC=1` 우회), (2) `claude -p` 로 영향 모듈 CLAUDE.md 동기화(`SKIP_CLAUDE_MD_SYNC=1` 우회). 아키텍처 문서(`src/tradingbot/doc/architecture.md`)가 없으면 1단계는 조용히 skip.
 
 ## How not — 빌드를 깨뜨리는 비명백한 패턴
 

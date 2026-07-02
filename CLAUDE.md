@@ -19,10 +19,13 @@ Each module also keeps an `anti-patterns.md` (append-only, build-breaking gotcha
 ## Commands
 
 ```bash
-# Install (always use venv)
+# Install (always use venv; constraints pin exact versions for reproducibility)
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]" -c constraints.txt
+
+# Enable versioned git hooks (once per clone)
+git config core.hooksPath scripts/git-hooks
 
 # Run tests
 pytest tests/ -v
