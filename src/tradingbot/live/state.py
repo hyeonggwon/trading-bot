@@ -37,6 +37,12 @@ class StateManager:
         self.peak_equity: float = 0.0
         self.daily_pnl: float = 0.0
         self.daily_reset_date: str | None = None
+        # Drawdown-breaker ledger (live/engine._ledger_equity): baseline
+        # latches once to cost-basis equity; cum_realized_pnl books every
+        # closed trade. Keeps the breaker blind to external deposits and
+        # withdrawals, which move raw balance but not trading performance.
+        self.ledger_baseline: float | None = None
+        self.cum_realized_pnl: float = 0.0
 
     def save(self) -> None:
         """Save current state to JSON file."""
@@ -50,6 +56,8 @@ class StateManager:
             "peak_equity": self.peak_equity,
             "daily_pnl": self.daily_pnl,
             "daily_reset_date": self.daily_reset_date,
+            "ledger_baseline": self.ledger_baseline,
+            "cum_realized_pnl": self.cum_realized_pnl,
             "saved_at": datetime.now(timezone.utc).isoformat(),
         }
 
@@ -86,6 +94,8 @@ class StateManager:
             self.peak_equity = data.get("peak_equity", 0.0)
             self.daily_pnl = data.get("daily_pnl", 0.0)
             self.daily_reset_date = data.get("daily_reset_date")
+            self.ledger_baseline = data.get("ledger_baseline")
+            self.cum_realized_pnl = data.get("cum_realized_pnl", 0.0)
 
             logger.info(
                 "state_loaded",
@@ -102,6 +112,8 @@ class StateManager:
             self.peak_equity = 0.0
             self.daily_pnl = 0.0
             self.daily_reset_date = None
+            self.ledger_baseline = None
+            self.cum_realized_pnl = 0.0
 
     def record_equity(self, equity: float) -> None:
         """Record an equity snapshot.

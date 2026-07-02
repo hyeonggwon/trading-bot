@@ -1035,6 +1035,137 @@ class TestSafetyRailEnforcement:
         assert "BTC/KRW" in state.positions
 
 
+# --- Bug: external transfers must not move the drawdown breaker ---
+
+class TestTransferImmuneBreaker:
+    """The breaker runs on the bot's ledger (baseline + realized + unrealized),
+    not raw account equity: a withdrawal would otherwise read as a phantom
+    drawdown and force-flatten every position; a deposit would mask a real
+    drawdown and keep trading through a breached limit."""
+
+    @pytest.mark.asyncio
+    async def test_withdrawal_does_not_trip_breaker(self, tmp_path):
+        """A KRW withdrawal drops raw equity ~30% with zero trading loss —
+        the breaker must not fire and the position must stay open."""
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=10_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 50_000_000})
+        paper._holdings["BTC"] = 0.001
+
+        config = AppConfig(risk=RiskConfig(
+            max_drawdown_pct=0.10, default_stop_loss_pct=0.02,
+        ))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.001,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=45_000_000,  # below price: no stop-out
+        )
+
+        # First tick latches the ledger baseline and peak (~10.05M).
+        await engine._monitor_prices(["BTC/KRW"])
+        assert "BTC/KRW" in state.positions
+
+        # External withdrawal: raw equity -3M (~30% > 10% limit), price flat.
+        paper._cash -= 3_000_000
+        await engine._monitor_prices(["BTC/KRW"])
+
+        assert "BTC/KRW" in state.positions  # no phantom-drawdown flatten
+
+    @pytest.mark.asyncio
+    async def test_deposit_does_not_mask_real_drawdown(self, tmp_path):
+        """A big deposit lands on the same tick as a 15% trading loss. Raw
+        equity ends ABOVE its old peak, but the ledger is down 15% — the
+        breaker must still fire and flatten."""
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=5_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 50_000_000})
+        paper._holdings["BTC"] = 0.1
+
+        config = AppConfig(risk=RiskConfig(
+            max_drawdown_pct=0.10, default_stop_loss_pct=0.02,
+        ))
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.1,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=30_000_000,  # far below: the rail, not the stop, must act
+        )
+
+        # Baseline/peak latch at 5M cash + 5M position = 10M.
+        await engine._monitor_prices(["BTC/KRW"])
+
+        # Price crashes 30% (unrealized -1.5M = 15% of the 10M ledger) while
+        # a 5M deposit lands: raw equity 5+5+3.5 = 13.5M — above the old peak,
+        # which previously reset the peak and masked the drawdown.
+        feed._price = 35_000_000
+        paper.update_prices({"BTC/KRW": 35_000_000})
+        paper._cash += 5_000_000
+        await engine._monitor_prices(["BTC/KRW"])
+
+        assert "BTC/KRW" not in state.positions  # ledger dd 15% >= 10% limit
+
+    @pytest.mark.asyncio
+    async def test_realized_pnl_books_into_ledger_and_persists(self, tmp_path):
+        """Closed-trade PnL must accumulate into the ledger (same figure the
+        daily-loss validator receives) and survive a state save/load."""
+        from tradingbot.risk.validators import TradeValidator
+
+        feed = MockDataFeed(price=55_000_000)
+        paper = PaperExchange(
+            data_feed=feed, initial_balance=1_000_000,
+            fee_rate=0.0005, slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 55_000_000})
+        paper._holdings["BTC"] = 0.001
+
+        config = AppConfig(risk=RiskConfig(
+            max_drawdown_pct=0.99, default_stop_loss_pct=0.02,
+        ))
+        state = StateManager(tmp_path / "state.json")
+        validator = TradeValidator(daily_loss_limit_krw=10_000_000)
+        engine = LiveEngine(
+            strategy=StubStrategy(), exchange=paper, config=config,
+            state_manager=state, trade_validator=validator,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW", side=PositionSide.LONG, size=0.001,
+            entry_price=50_000_000, entry_time=datetime.now(UTC),
+            stop_loss=45_000_000,
+        )
+        sig = Signal(
+            timestamp=datetime.now(UTC), symbol="BTC/KRW",
+            signal_type=SignalType.LONG_EXIT, price=55_000_000, strength=1.0,
+        )
+        await engine._handle_exit(sig, "BTC/KRW", state.positions["BTC/KRW"])
+
+        assert "BTC/KRW" not in state.positions
+        daily_pnl, _ = validator.daily_state()
+        assert state.cum_realized_pnl == pytest.approx(daily_pnl)
+        assert state.cum_realized_pnl > 0  # profitable close actually booked
+
+        state.ledger_baseline = 10_000_000.0
+        state.save()
+        reloaded = StateManager(tmp_path / "state.json")
+        reloaded.load()
+        assert reloaded.ledger_baseline == 10_000_000.0
+        assert reloaded.cum_realized_pnl == pytest.approx(state.cum_realized_pnl)
+
+
 # --- Bug: a partial exit fill must not orphan the unsold remainder ---
 
 class TestExitPartialFill:

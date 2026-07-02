@@ -192,9 +192,10 @@ class LiveEngine:
         # Resolve current prices (fresh WS prices, else REST tickers)
         tickers = await self._resolve_tickers(symbols)
 
-        # Update equity using pre-fetched tickers (avoids redundant API calls)
+        # Update equity using pre-fetched tickers (avoids redundant API calls).
+        # Raw equity feeds the operator-facing history; breaker peak tracking
+        # happens in _enforce_safety_rails on the transfer-immune ledger.
         equity = await self._calculate_equity(tickers)
-        self.risk_manager.update_peak_equity(equity)
         self.state.record_equity(equity)
 
         # Enforce safety rails continuously (drawdown breaker + daily-loss
@@ -267,7 +268,6 @@ class LiveEngine:
         """
         tickers = await self._resolve_tickers(symbols)
         equity = await self._calculate_equity(tickers)
-        self.risk_manager.update_peak_equity(equity)
         self.state.record_equity(equity)
         # Enforce safety rails between candles too — a 4h timeframe would
         # otherwise leave a drawdown/daily-loss breach unaddressed for hours.
@@ -339,12 +339,32 @@ class LiveEngine:
         if self.notifier and hasattr(self.notifier, "send_error"):
             await self.notifier.send_error(message)
 
+    def _ledger_equity(self, raw_equity: float, unrealized: float) -> float:
+        """Equity series for the drawdown breaker: the bot's trading ledger.
+
+        Raw account equity moves with external deposits/withdrawals, so a
+        breaker fed on it reads a withdrawal as a phantom drawdown (force-
+        flattening every position) and lets a deposit mask a real one. The
+        ledger — baseline + cumulative realized PnL + current unrealized —
+        moves only with trading results. The baseline latches once to
+        cost-basis equity (raw minus unrealized), so ledger == raw until the
+        first external transfer, and survives restarts via state.
+
+        ponytail: a large external flow rescales the real book but not the
+        ledger, so dd% stays measured against the original bankroll; rebase
+        via exchange deposit/withdrawal history APIs if that ever matters.
+        """
+        if self.state.ledger_baseline is None:
+            self.state.ledger_baseline = raw_equity - unrealized
+        return self.state.ledger_baseline + self.state.cum_realized_pnl + unrealized
+
     async def _enforce_safety_rails(
         self, equity: float, tickers: dict[str, dict]
     ) -> bool:
         """Continuously enforce the drawdown breaker and daily-loss limit.
 
-        Both rails are evaluated every tick on live equity — not only when an
+        Both rails are evaluated every tick — the breaker on the bot's ledger
+        equity (``_ledger_equity``), not raw account balance — not only when an
         entry signal fires — and the daily-loss check folds in open-position
         unrealized PnL. Otherwise a position bleeding out between entries would
         breach neither rail until it was finally closed. On breach all open
@@ -380,7 +400,12 @@ class LiveEngine:
             )
             return False
 
-        breaker = self.risk_manager.check_circuit_breaker(equity)
+        # The breaker runs on the transfer-immune ledger, not raw account
+        # equity (see _ledger_equity). Peak tracking lives here — not in the
+        # tick loops — so peak and breaker read the same series.
+        ledger_equity = self._ledger_equity(equity, unrealized)
+        self.risk_manager.update_peak_equity(ledger_equity)
+        breaker = self.risk_manager.check_circuit_breaker(ledger_equity)
         daily_loss = (
             self.trade_validator.daily_loss_breached(unrealized)
             if self.trade_validator is not None
@@ -398,12 +423,14 @@ class LiveEngine:
             "safety_rail_breached",
             reason=reason,
             equity=f"{equity:,.0f}",
+            ledger_equity=f"{ledger_equity:,.0f}",
             unrealized=f"{unrealized:,.0f}",
             positions=len(self.state.positions),
         )
         await self._notify_alert(
             f"SAFETY HALT ({reason}): flattening {len(self.state.positions)} "
-            f"position(s), equity={equity:,.0f}, unrealized={unrealized:,.0f}"
+            f"position(s), ledger={ledger_equity:,.0f}, equity={equity:,.0f}, "
+            f"unrealized={unrealized:,.0f}"
         )
         for sym, position in list(self.state.positions.items()):
             ticker = tickers.get(sym)
@@ -670,11 +697,27 @@ class LiveEngine:
         equity = await self._calculate_equity(balance=balance, out_prices=prices)
         prices[symbol] = current_price
 
-        # Validate with risk manager using mark-to-market equity
+        # Validate with risk manager using mark-to-market equity. The
+        # validator re-runs the drawdown breaker internally, so hand it the
+        # same transfer-immune ledger the safety rails use (_ledger_equity):
+        # ledger cash = ledger equity minus marked position value, so
+        # PortfolioState.equity(prices) reproduces the ledger. Raw cash would
+        # let an external deposit/withdrawal skew peak tracking between rail
+        # ticks. Sizing below still uses raw equity/cash — the spendable
+        # budget is real money regardless of ledger accounting.
         from tradingbot.core.models import PortfolioState
+        unrealized = sum(
+            (prices.get(p.symbol, p.entry_price) - p.entry_price) * p.size
+            for p in self.state.positions.values()
+        )
+        marked_value = sum(
+            prices.get(p.symbol, p.entry_price) * p.size
+            for p in self.state.positions.values()
+        )
+        ledger_cash = self._ledger_equity(equity, unrealized) - marked_value
         portfolio = PortfolioState(
             timestamp=datetime.now(UTC),
-            cash=cash,
+            cash=ledger_cash,
             positions=list(self.state.positions.values()),
         )
         if not self.risk_manager.validate_signal(signal_obj, portfolio, prices):
@@ -853,6 +896,8 @@ class LiveEngine:
             # Track PnL for daily loss limit
             if self.trade_validator is not None:
                 self.trade_validator.record_trade_pnl(pnl)
+            # ...and cumulatively for the breaker's transfer-immune ledger
+            self.state.cum_realized_pnl += pnl
 
             if fully_closed:
                 self.state.entry_fees.pop(symbol, None)
