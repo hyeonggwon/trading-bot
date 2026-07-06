@@ -32,7 +32,7 @@ def _get_default_state_file() -> str:
 
 
 def main() -> None:
-    st.title("📊 Trading Bot Dashboard")
+    st.title("Trading Bot Dashboard")
 
     # Sidebar: mode selection
     mode = st.sidebar.radio("Mode", ["Live Monitor", "Backtest Viewer", "Models"])
@@ -147,9 +147,8 @@ def _render_header_metrics(data: dict) -> None:
     cols[2].metric("Open Positions", str(len(positions)))
     cols[3].metric("Last Update", _format_timestamp(saved_at))
     st.caption(
-        "Drawdown breaker and daily-loss limit run on the transfer-immune "
-        "ledger inside the engine — identical to the numbers above until an "
-        "external deposit/withdrawal happens."
+        "The breaker and daily-loss limit run on the engine's transfer-immune "
+        "ledger, which matches these figures until an external transfer occurs."
     )
 
 
@@ -223,7 +222,7 @@ def _render_equity_chart(data: dict) -> None:
 
 def _render_backtest_viewer() -> None:
     """Backtest result visualization."""
-    st.subheader("Run a backtest to visualize results")
+    st.subheader("Backtest")
 
     # Strategy selection — from the registry so new strategies show up
     # automatically. lgbm needs saved models + per-symbol thresholds; the
@@ -358,13 +357,13 @@ def _render_backtest_equity(report) -> None:
     )
 
     # Trade markers at equity curve values
-    import pandas as pd_check
+    import pandas as pd
 
     for trade in report.trades:
         if trade.entry_order.filled_at:
             # Look up equity at entry time
             equity_at_entry = equity.asof(trade.entry_order.filled_at)
-            if pd_check.isna(equity_at_entry):
+            if pd.isna(equity_at_entry):
                 continue
             color = "#4CAF50" if trade.is_win else "#F44336"
             fig.add_trace(
@@ -434,7 +433,7 @@ def _render_trade_list(report) -> None:
                 "PnL": f"{trade.pnl:,.0f}",
                 "PnL %": f"{trade.pnl_pct:.2%}",
                 "Duration": f"{trade.duration:.1f}h" if trade.duration else "N/A",
-                "Result": "✅" if trade.is_win else "❌",
+                "Result": "Win" if trade.is_win else "Loss",
             }
         )
 
@@ -479,7 +478,7 @@ def _render_models() -> None:
     num_cols = df.select_dtypes("number").columns
     df[num_cols] = df[num_cols].round(3)
 
-    st.caption(f"{len(entries)} model(s) in `{model_dir}/`")
+    st.caption(f"{len(entries)} models in `{model_dir}/`")
     st.dataframe(df, use_container_width=True, hide_index=True)
 
 
