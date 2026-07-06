@@ -71,5 +71,6 @@ jobs:
           echo "mypy errors: ${count} (baseline: ${baseline})"
           if [ "${count}" -gt "${baseline}" ]; then
             echo "::error::mypy error count ${count} exceeds baseline ${baseline}"
+            printf '%s\n' "${out}" | grep ' error: '
             exit 1
           fi

@@ -34,6 +34,9 @@ dev = [
     "mypy>=1.0",
     # 테스트 스위트가 실제 LightGBM fit 을 전제하므로(tests/CLAUDE.md) ml 포함
     "trading-bot[ml]",
+    # mypy 대상(src/tradingbot/dashboard)과 AppTest 테스트가 streamlit 을
+    # import 하므로 dashboard 도 포함 — 없으면 CI mypy 오류 수가 로컬과 어긋난다.
+    "trading-bot[dashboard]",
 ]
 research = [
     "jupyter>=1.0",
