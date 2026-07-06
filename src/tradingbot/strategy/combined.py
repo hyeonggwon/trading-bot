@@ -45,6 +45,11 @@ class CombinedStrategy(Strategy):
         self._entry_times: dict[str, pd.Timestamp] = {}
         self._unique_filters = self._deduplicate_filters()
 
+    @property
+    def min_history(self) -> int:
+        """Candles needed so every filter's last-candle value matches full history."""
+        return max((f.min_history for f in self._unique_filters), default=0)
+
     def _deduplicate_filters(self) -> list[BaseFilter]:
         """Pre-compute unique filter list for indicators() (avoid per-call key sorting)."""
         seen: set[tuple] = set()

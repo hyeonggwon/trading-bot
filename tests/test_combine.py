@@ -793,3 +793,39 @@ class TestRealizedVolRegimeFilters:
         for i in (100, 140, 170, 200, 239):
             prefix = hi.compute(raw.iloc[: i + 1].copy())
             assert bool(vec.iloc[i]) == hi.check_entry(prefix), f"row {i}"
+
+    def test_min_history_parity_bound(self):
+        """min_history 개 캔들만으로 마지막 값이 풀 히스토리와 일치해야 한다.
+
+        라이브 엔진은 200캔들 창에서 지표를 계산하므로, 이 경계
+        (vol_period + rank_period + 1)가 지켜져야 백테스트로 검증한 신호와
+        동일하다 — 기본 파라미터는 71 ≤ 200 으로 안전. 경계보다 짧게 자르면
+        partial-window vol 이 랭크 창에 섞여 조용히 어긋난다.
+        """
+        from tradingbot.strategy.filters.volatility import RealizedVolLowFilter
+
+        f = RealizedVolLowFilter()  # 20/50 → min_history 71
+        assert f.min_history == 71
+        raw = self._regime_df()
+        col = "realized_vol_pct_20_50"
+        ref = f.compute(raw.copy())[col]
+        for end in (100, 150, 200, 239):
+            window = raw.iloc[end - f.min_history + 1 : end + 1].copy()
+            live_val = f.compute(window)[col].iloc[-1]
+            assert np.isclose(live_val, ref.iloc[end]), f"row {end}"
+
+    def test_combined_strategy_aggregates_min_history(self):
+        """CombinedStrategy.min_history 는 필터 최댓값 — 라이브 엔진이 워밍업
+        창(200)과 비교해 초과 시 filter_history_truncated 경고를 내는 근거."""
+        from tradingbot.strategy.combined import CombinedStrategy
+        from tradingbot.strategy.filters.momentum import RsiOversoldFilter
+        from tradingbot.strategy.filters.volatility import RealizedVolHighFilter
+
+        strategy = CombinedStrategy(
+            entry_filters=[
+                RsiOversoldFilter(),
+                RealizedVolHighFilter(vol_period=50, rank_period=160),
+            ],
+            exit_filters=[],
+        )
+        assert strategy.min_history == 211  # 50 + 160 + 1 > 200 → 경고 대상

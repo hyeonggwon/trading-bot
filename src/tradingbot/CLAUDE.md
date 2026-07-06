@@ -8,7 +8,7 @@
 
 - **새 CLI 명령**: `cli.py` 에 `@app.command()` 함수 추가 → 필요한 서브패키지 import만 lazy 로 (cold-start 무겁지 않게). README/루트 CLAUDE.md 의 CLI Reference 갱신.
 - **새 전략**: `strategy/examples/<name>.py` 에 `Strategy` 상속 클래스 → `strategy/registry.py` 의 `get_strategy_map()` 에 등록. 테스트는 `tests/test_strategies.py`.
-- **새 필터**: `strategy/filters/<role>.py` (trend/momentum/price/volatility/session/volume/exit/ml) 에 `BaseFilter` 상속 → `strategy/filters/registry.py` 에 추가. `combine`/`combine-scan` 에서 자동 사용.
+- **새 필터**: `strategy/filters/<role>.py` (trend/momentum/price/volatility/session/volume/exit/ml) 에 `BaseFilter` 상속 → `strategy/filters/registry.py` 에 추가. `combine`/`combine-scan` 에서 자동 사용. lookback 긴 필터는 `min_history` 선언 — 라이브 워밍업 창(200캔들) 초과 시 `live/engine.py` 가 `filter_history_truncated` 경고 ([`anti-patterns.md`](./anti-patterns.md) 참조).
 - **백테스트 엔진/사이저 변경**: `backtest/engine.py` (anti-lookahead 핵심) 또는 `backtest/simulator.py`. 변경 시 `tests/test_backtest_engine.py`·`tests/test_multi_symbol.py` 동시 갱신.
 - **ML 학습/튜닝 흐름**: `ml/trainer.py`(단일 fit) → `ml/walk_forward.py`(holdout 분할) → `ml/strategy_walk_forward.py`(time-honest WF) → `ml/tuner.py`(Optuna) → `ml/threshold_tuner.py`(threshold sweep). 메타 키(`holdout_start`, `avg_win_loss_ratio`, `best_params`) 는 `LGBMStrategy._load_model` 이 읽으므로 깨지면 inference 가 정렬을 잃는다.
 - **모든 수정 공통 — CI 차단 게이트**: ruff check/format, mypy 오류 수 ≤ `.mypy-baseline`(래칫 — 부채 줄이면 baseline 도 함께 내림), pytest 커버리지 ≥ 60% (`.github/workflows/ci.yml`).
