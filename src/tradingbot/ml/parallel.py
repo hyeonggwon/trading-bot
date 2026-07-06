@@ -331,9 +331,7 @@ def tune_pair(
                             "elapsed_sec": result.elapsed_sec,
                         }
                         tmp_path = meta_path.with_suffix(".json.tmp")
-                        tmp_path.write_text(
-                            json.dumps(meta_dict, indent=2, default=str)
-                        )
+                        tmp_path.write_text(json.dumps(meta_dict, indent=2, default=str))
                         os.replace(tmp_path, meta_path)
                     except (json.JSONDecodeError, OSError):
                         # Meta corruption shouldn't kill the run; users can
@@ -372,9 +370,7 @@ def tune_pair(
                 "final_holdout_precision": final_holdout_precision,
                 "final_model_path": str(final_model_path) if final_model_path else None,
             }
-            (out_dir / f"{base}.json").write_text(
-                json.dumps(payload, indent=2, default=str)
-            )
+            (out_dir / f"{base}.json").write_text(json.dumps(payload, indent=2, default=str))
 
             md_lines = [
                 f"# ML Tuning — {symbol} {timeframe} ({label})",
@@ -383,7 +379,8 @@ def tune_pair(
                 (
                     f"- Target: binary (forward_candles={forward_candles}, threshold={threshold})"
                     if target_kind == "binary"
-                    else f"- Target: {target_kind} (forward_candles={forward_candles}, atr_mult={atr_mult})"
+                    else f"- Target: {target_kind} "
+                    f"(forward_candles={forward_candles}, atr_mult={atr_mult})"
                 ),
                 f"- Objective: **{objective}**",
                 f"- Trials: {result.n_trials_completed} / {trials} requested",
@@ -556,9 +553,7 @@ def tune_thresholds_pair(
         meta_path: Path | None = None
         if write_meta:
             try:
-                meta_path = patch_meta_thresholds(
-                    symbol, timeframe, Path(model_dir), result
-                )
+                meta_path = patch_meta_thresholds(symbol, timeframe, Path(model_dir), result)
             except Exception as exc:
                 return ThresholdTunePairResult(
                     symbol=symbol,

@@ -7,9 +7,9 @@ import logging
 import pandas as pd
 
 from tradingbot.data.indicators import add_cci, add_macd, add_mfi, add_roc, add_rsi, add_stochastic
+from tradingbot.strategy.filters.base import BaseFilter
 
 log = logging.getLogger(__name__)
-from tradingbot.strategy.filters.base import BaseFilter
 
 
 class RsiOversoldFilter(BaseFilter):

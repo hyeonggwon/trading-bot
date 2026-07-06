@@ -13,7 +13,6 @@ from typing import Any
 
 import pandas as pd
 
-from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 
 
@@ -79,9 +78,7 @@ class Strategy(ABC):
         ...
 
     @abstractmethod
-    def should_exit(
-        self, df: pd.DataFrame, symbol: str, position: Position
-    ) -> Signal | None:
+    def should_exit(self, df: pd.DataFrame, symbol: str, position: Position) -> Signal | None:
         """Determine if an existing position should be closed.
 
         Args:

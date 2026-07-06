@@ -30,6 +30,7 @@ graph TB
         tradingbot_exchange_paper[exchange.paper]
         tradingbot_exchange_ws_client[exchange.ws_client]
         tradingbot_live[live]
+        tradingbot_live_control[live.control]
         tradingbot_live_engine[live.engine]
         tradingbot_live_order_manager[live.order_manager]
         tradingbot_live_state[live.state]
@@ -69,7 +70,6 @@ graph TB
     tradingbot_backtest_engine --> tradingbot_risk_manager
     tradingbot_backtest_engine --> tradingbot_strategy_base
     tradingbot_backtest_optimizer --> tradingbot_backtest_engine
-    tradingbot_backtest_optimizer --> tradingbot_backtest_report
     tradingbot_backtest_optimizer --> tradingbot_config
     tradingbot_backtest_optimizer --> tradingbot_strategy_base
     tradingbot_backtest_parallel --> tradingbot_backtest_engine
@@ -128,6 +128,8 @@ graph TB
     tradingbot_dashboard_app --> tradingbot_backtest_engine
     tradingbot_dashboard_app --> tradingbot_config
     tradingbot_dashboard_app --> tradingbot_data_storage
+    tradingbot_dashboard_app --> tradingbot_live_control
+    tradingbot_dashboard_app --> tradingbot_ml_trainer
     tradingbot_dashboard_app --> tradingbot_strategy_registry
     tradingbot_data_external_fetcher --> tradingbot_data_storage
     tradingbot_data_fetcher --> tradingbot_config
@@ -144,6 +146,7 @@ graph TB
     tradingbot_live_engine --> tradingbot_core_enums
     tradingbot_live_engine --> tradingbot_core_models
     tradingbot_live_engine --> tradingbot_exchange_base
+    tradingbot_live_engine --> tradingbot_live_control
     tradingbot_live_engine --> tradingbot_live_state
     tradingbot_live_engine --> tradingbot_risk_manager
     tradingbot_live_engine --> tradingbot_strategy_base
@@ -183,7 +186,6 @@ graph TB
     tradingbot_risk_manager --> tradingbot_config
     tradingbot_risk_manager --> tradingbot_core_enums
     tradingbot_risk_manager --> tradingbot_core_models
-    tradingbot_strategy_base --> tradingbot_core_enums
     tradingbot_strategy_base --> tradingbot_core_models
     tradingbot_strategy_combined --> tradingbot_core_enums
     tradingbot_strategy_combined --> tradingbot_core_models

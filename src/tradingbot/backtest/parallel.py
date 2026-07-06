@@ -73,23 +73,37 @@ def _run_batch(
     except FileNotFoundError:
         return [
             ScanResult(
-                strategy=name, symbol=symbol, timeframe=timeframe,
-                sharpe_ratio=0, total_return=0, max_drawdown=0,
-                win_rate=0, profit_factor=0, total_trades=0,
-                entry=entry, exit=exit_, error="no data",
+                strategy=name,
+                symbol=symbol,
+                timeframe=timeframe,
+                sharpe_ratio=0,
+                total_return=0,
+                max_drawdown=0,
+                win_rate=0,
+                profit_factor=0,
+                total_trades=0,
+                entry=entry,
+                exit=exit_,
+                error="no data",
             )
             for name, entry, exit_ in jobs
         ]
 
     # Resolve evaluation window for this batch. None → keep edge.
     effective_start, effective_end, _note = resolve_holdout_window(
-        df, start, end, include_train,
+        df,
+        start,
+        end,
+        include_train,
     )
 
-    config = load_config(Path(config_dir), overrides={
-        "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
-        "backtest": {"start_date": effective_start, "end_date": effective_end},
-    })
+    config = load_config(
+        Path(config_dir),
+        overrides={
+            "trading": {"symbols": [symbol], "timeframe": timeframe, "initial_balance": balance},
+            "backtest": {"start_date": effective_start, "end_date": effective_end},
+        },
+    )
 
     # Empty-range short-circuit. Indicators are still computed on the full df
     # below so the eval window keeps proper warmup; this check just avoids
@@ -105,10 +119,18 @@ def _run_batch(
     if df_in_range.empty:
         return [
             ScanResult(
-                strategy=name, symbol=symbol, timeframe=timeframe,
-                sharpe_ratio=0, total_return=0, max_drawdown=0,
-                win_rate=0, profit_factor=0, total_trades=0,
-                entry=entry, exit=exit_, error="no data in range",
+                strategy=name,
+                symbol=symbol,
+                timeframe=timeframe,
+                sharpe_ratio=0,
+                total_return=0,
+                max_drawdown=0,
+                win_rate=0,
+                profit_factor=0,
+                total_trades=0,
+                entry=entry,
+                exit=exit_,
+                error="no data in range",
             )
             for name, entry, exit_ in jobs
         ]
@@ -117,9 +139,16 @@ def _run_batch(
 
     if force_engine:
         # Re-verification: all jobs go through full engine (honors config dates).
-        results.extend(_run_engine_batch(
-            df, symbol, timeframe, jobs, config, balance,
-        ))
+        results.extend(
+            _run_engine_batch(
+                df,
+                symbol,
+                timeframe,
+                jobs,
+                config,
+                balance,
+            )
+        )
     else:
         # Split jobs: vectorizable combined vs fallback (registered strategies + ML)
         #
@@ -143,23 +172,44 @@ def _run_batch(
 
         # --- Vectorized path: combined templates without ML ---
         if vectorizable_jobs:
-            results.extend(_run_vectorized_batch(
-                df, symbol, timeframe, vectorizable_jobs, config, balance,
-                start_ts=start_ts, end_ts=end_ts,
-            ))
+            results.extend(
+                _run_vectorized_batch(
+                    df,
+                    symbol,
+                    timeframe,
+                    vectorizable_jobs,
+                    config,
+                    balance,
+                    start_ts=start_ts,
+                    end_ts=end_ts,
+                )
+            )
 
         # --- Fallback path: registered strategies + ML templates ---
         if fallback_jobs:
-            results.extend(_run_engine_batch(
-                df, symbol, timeframe, fallback_jobs, config, balance,
-            ))
+            results.extend(
+                _run_engine_batch(
+                    df,
+                    symbol,
+                    timeframe,
+                    fallback_jobs,
+                    config,
+                    balance,
+                )
+            )
 
     return results
 
 
 def _run_vectorized_batch(
-    df, symbol, timeframe, jobs, config, balance,
-    start_ts=None, end_ts=None,
+    df,
+    symbol,
+    timeframe,
+    jobs,
+    config,
+    balance,
+    start_ts=None,
+    end_ts=None,
 ) -> list[ScanResult]:
     """Run combined templates via vectorized engine.
 
@@ -214,29 +264,49 @@ def _run_vectorized_batch(
                 max_position_pct=config.risk.max_position_size_pct,
                 timeframe=timeframe,
             )
-            results.append(ScanResult(
-                strategy=name, symbol=symbol, timeframe=timeframe,
-                sharpe_ratio=result.sharpe_ratio,
-                total_return=result.total_return,
-                max_drawdown=result.max_drawdown,
-                win_rate=result.win_rate,
-                profit_factor=result.profit_factor,
-                total_trades=result.total_trades,
-                entry=entry, exit=exit_,
-            ))
+            results.append(
+                ScanResult(
+                    strategy=name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    sharpe_ratio=result.sharpe_ratio,
+                    total_return=result.total_return,
+                    max_drawdown=result.max_drawdown,
+                    win_rate=result.win_rate,
+                    profit_factor=result.profit_factor,
+                    total_trades=result.total_trades,
+                    entry=entry,
+                    exit=exit_,
+                )
+            )
         except Exception as e:
-            results.append(ScanResult(
-                strategy=name, symbol=symbol, timeframe=timeframe,
-                sharpe_ratio=0, total_return=0, max_drawdown=0,
-                win_rate=0, profit_factor=0, total_trades=0,
-                entry=entry, exit=exit_, error=str(e),
-            ))
+            results.append(
+                ScanResult(
+                    strategy=name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    sharpe_ratio=0,
+                    total_return=0,
+                    max_drawdown=0,
+                    win_rate=0,
+                    profit_factor=0,
+                    total_trades=0,
+                    entry=entry,
+                    exit=exit_,
+                    error=str(e),
+                )
+            )
 
     return results
 
 
 def _run_engine_batch(
-    df, symbol, timeframe, jobs, config, balance,
+    df,
+    symbol,
+    timeframe,
+    jobs,
+    config,
+    balance,
 ) -> list[ScanResult]:
     """Run jobs via the full BacktestEngine (registered strategies + ML)."""
     from tradingbot.backtest.engine import BacktestEngine
@@ -278,6 +348,7 @@ def _run_engine_batch(
                 strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
             else:
                 from tradingbot.strategy.registry import get_strategy_map
+
                 strategy_cls = get_strategy_map()[strategy_name]
                 strategy = strategy_cls()
 
@@ -290,22 +361,37 @@ def _run_engine_batch(
                 precomputed_indicators=precomputed if entry else None,
             )
 
-            results.append(ScanResult(
-                strategy=strategy_name, symbol=symbol, timeframe=timeframe,
-                sharpe_ratio=report.sharpe_ratio,
-                total_return=report.total_return,
-                max_drawdown=report.max_drawdown,
-                win_rate=report.win_rate,
-                profit_factor=report.profit_factor,
-                total_trades=report.total_trades,
-                entry=entry, exit=exit_,
-            ))
+            results.append(
+                ScanResult(
+                    strategy=strategy_name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    sharpe_ratio=report.sharpe_ratio,
+                    total_return=report.total_return,
+                    max_drawdown=report.max_drawdown,
+                    win_rate=report.win_rate,
+                    profit_factor=report.profit_factor,
+                    total_trades=report.total_trades,
+                    entry=entry,
+                    exit=exit_,
+                )
+            )
         except Exception as e:
-            results.append(ScanResult(
-                strategy=strategy_name, symbol=symbol, timeframe=timeframe,
-                sharpe_ratio=0, total_return=0, max_drawdown=0,
-                win_rate=0, profit_factor=0, total_trades=0,
-                entry=entry, exit=exit_, error=str(e),
-            ))
+            results.append(
+                ScanResult(
+                    strategy=strategy_name,
+                    symbol=symbol,
+                    timeframe=timeframe,
+                    sharpe_ratio=0,
+                    total_return=0,
+                    max_drawdown=0,
+                    win_rate=0,
+                    profit_factor=0,
+                    total_trades=0,
+                    entry=entry,
+                    exit=exit_,
+                    error=str(e),
+                )
+            )
 
     return results

@@ -23,6 +23,7 @@ from tradingbot.config import AppConfig
 from tradingbot.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.exchange.base import BaseExchange
+from tradingbot.live.control import control_path_for, read_pause
 from tradingbot.live.state import StateManager
 from tradingbot.risk.manager import RiskManager
 from tradingbot.strategy.base import Strategy
@@ -78,6 +79,9 @@ class LiveEngine:
         self.ws_client = ws_client  # UpbitWebSocketClient for real-time prices
 
         self._running = False
+        # Operator kill-switch state, refreshed from the control file each
+        # tick (see live/control.py). Blocks NEW entries only.
+        self._entries_paused = False
         # Per-symbol last confirmed candle timestamp
         self._last_candle_ts: dict[str, datetime] = {}
         # Symbols held at startup whose exit must be re-evaluated on the first
@@ -103,7 +107,7 @@ class LiveEngine:
             symbols=symbols,
             timeframe=timeframe,
             poll_interval=f"{poll_seconds}s",
-            mode="paper" if hasattr(self.exchange, '_feed') else "live",
+            mode="paper" if hasattr(self.exchange, "_feed") else "live",
             websocket=ws_mode,
         )
 
@@ -120,8 +124,7 @@ class LiveEngine:
         # Initial warmup per symbol (parallel)
         warmup_candles = 200
         warmup_tasks = [
-            self.exchange.fetch_ohlcv(sym, timeframe, limit=warmup_candles)
-            for sym in symbols
+            self.exchange.fetch_ohlcv(sym, timeframe, limit=warmup_candles) for sym in symbols
         ]
         warmup_results = await asyncio.gather(*warmup_tasks, return_exceptions=True)
         for sym, result in zip(symbols, warmup_results):
@@ -151,7 +154,7 @@ class LiveEngine:
                 await self._tick_all(symbols, timeframe)
             except Exception as e:
                 logger.error("tick_error", error=str(e), type=type(e).__name__)
-                if self.notifier and hasattr(self.notifier, 'send_error'):
+                if self.notifier and hasattr(self.notifier, "send_error"):
                     await self.notifier.send_error(f"Tick error: {e}")
 
             # Between candle polls, monitor prices + stop losses at a faster
@@ -165,9 +168,7 @@ class LiveEngine:
                     try:
                         await self._monitor_prices(symbols)
                     except Exception as e:
-                        logger.error(
-                            "monitor_error", error=str(e), type=type(e).__name__
-                        )
+                        logger.error("monitor_error", error=str(e), type=type(e).__name__)
 
         # Shutdown
         logger.info("live_engine_stopping")
@@ -192,9 +193,10 @@ class LiveEngine:
         # Resolve current prices (fresh WS prices, else REST tickers)
         tickers = await self._resolve_tickers(symbols)
 
-        # Update equity using pre-fetched tickers (avoids redundant API calls)
+        # Update equity using pre-fetched tickers (avoids redundant API calls).
+        # Raw equity feeds the operator-facing history; breaker peak tracking
+        # happens in _enforce_safety_rails on the transfer-immune ledger.
         equity = await self._calculate_equity(tickers)
-        self.risk_manager.update_peak_equity(equity)
         self.state.record_equity(equity)
 
         # Enforce safety rails continuously (drawdown breaker + daily-loss
@@ -203,6 +205,17 @@ class LiveEngine:
         if await self._enforce_safety_rails(equity, tickers):
             self._persist_state()
             return
+
+        # Operator kill-switch (dashboard writes the control file, we only
+        # read): pause blocks NEW entries; stops/take-profits/exits/rails on
+        # existing positions keep running. Log/notify transitions only.
+        paused = read_pause(control_path_for(self.state.state_path))
+        if paused != self._entries_paused:
+            self._entries_paused = paused
+            logger.warning("entries_paused" if paused else "entries_resumed")
+            await self._notify_alert(
+                "Entries PAUSED via control file" if paused else "Entries resumed"
+            )
 
         # Process each symbol
         for sym, result in zip(symbols, ohlcv_results):
@@ -216,8 +229,10 @@ class LiveEngine:
                 await self._tick_symbol(sym, result, tickers.get(sym))
             except Exception as e:
                 logger.error(
-                    "symbol_tick_error", symbol=sym,
-                    error=str(e), type=type(e).__name__,
+                    "symbol_tick_error",
+                    symbol=sym,
+                    error=str(e),
+                    type=type(e).__name__,
                 )
 
         # Persist state after processing all symbols
@@ -267,7 +282,6 @@ class LiveEngine:
         """
         tickers = await self._resolve_tickers(symbols)
         equity = await self._calculate_equity(tickers)
-        self.risk_manager.update_peak_equity(equity)
         self.state.record_equity(equity)
         # Enforce safety rails between candles too — a 4h timeframe would
         # otherwise leave a drawdown/daily-loss breach unaddressed for hours.
@@ -311,9 +325,7 @@ class LiveEngine:
                 # A corrupt daily_reset_date must not crash startup and defeat
                 # the crash-recovery this restore exists for; drop it so the
                 # daily-loss counter re-baselines to today.
-                logger.error(
-                    "bad_daily_reset_date", value=self.state.daily_reset_date
-                )
+                logger.error("bad_daily_reset_date", value=self.state.daily_reset_date)
                 reset_date = None
             self.trade_validator.restore_daily_state(self.state.daily_pnl, reset_date)
 
@@ -324,14 +336,10 @@ class LiveEngine:
         must survive restarts — both are real-money safety rails.
         """
         self.state.peak_equity = self.risk_manager.peak_equity
-        if self.trade_validator is not None and hasattr(
-            self.trade_validator, "daily_state"
-        ):
+        if self.trade_validator is not None and hasattr(self.trade_validator, "daily_state"):
             daily_pnl, reset_date = self.trade_validator.daily_state()
             self.state.daily_pnl = daily_pnl
-            self.state.daily_reset_date = (
-                reset_date.isoformat() if reset_date else None
-            )
+            self.state.daily_reset_date = reset_date.isoformat() if reset_date else None
         self.state.save()
 
     async def _notify_alert(self, message: str) -> None:
@@ -339,12 +347,30 @@ class LiveEngine:
         if self.notifier and hasattr(self.notifier, "send_error"):
             await self.notifier.send_error(message)
 
-    async def _enforce_safety_rails(
-        self, equity: float, tickers: dict[str, dict]
-    ) -> bool:
+    def _ledger_equity(self, raw_equity: float, unrealized: float) -> float:
+        """Equity series for the drawdown breaker: the bot's trading ledger.
+
+        Raw account equity moves with external deposits/withdrawals, so a
+        breaker fed on it reads a withdrawal as a phantom drawdown (force-
+        flattening every position) and lets a deposit mask a real one. The
+        ledger — baseline + cumulative realized PnL + current unrealized —
+        moves only with trading results. The baseline latches once to
+        cost-basis equity (raw minus unrealized), so ledger == raw until the
+        first external transfer, and survives restarts via state.
+
+        ponytail: a large external flow rescales the real book but not the
+        ledger, so dd% stays measured against the original bankroll; rebase
+        via exchange deposit/withdrawal history APIs if that ever matters.
+        """
+        if self.state.ledger_baseline is None:
+            self.state.ledger_baseline = raw_equity - unrealized
+        return self.state.ledger_baseline + self.state.cum_realized_pnl + unrealized
+
+    async def _enforce_safety_rails(self, equity: float, tickers: dict[str, dict]) -> bool:
         """Continuously enforce the drawdown breaker and daily-loss limit.
 
-        Both rails are evaluated every tick on live equity — not only when an
+        Both rails are evaluated every tick — the breaker on the bot's ledger
+        equity (``_ledger_equity``), not raw account balance — not only when an
         entry signal fires — and the daily-loss check folds in open-position
         unrealized PnL. Otherwise a position bleeding out between entries would
         breach neither rail until it was finally closed. On breach all open
@@ -380,7 +406,12 @@ class LiveEngine:
             )
             return False
 
-        breaker = self.risk_manager.check_circuit_breaker(equity)
+        # The breaker runs on the transfer-immune ledger, not raw account
+        # equity (see _ledger_equity). Peak tracking lives here — not in the
+        # tick loops — so peak and breaker read the same series.
+        ledger_equity = self._ledger_equity(equity, unrealized)
+        self.risk_manager.update_peak_equity(ledger_equity)
+        breaker = self.risk_manager.check_circuit_breaker(ledger_equity)
         daily_loss = (
             self.trade_validator.daily_loss_breached(unrealized)
             if self.trade_validator is not None
@@ -398,20 +429,18 @@ class LiveEngine:
             "safety_rail_breached",
             reason=reason,
             equity=f"{equity:,.0f}",
+            ledger_equity=f"{ledger_equity:,.0f}",
             unrealized=f"{unrealized:,.0f}",
             positions=len(self.state.positions),
         )
         await self._notify_alert(
             f"SAFETY HALT ({reason}): flattening {len(self.state.positions)} "
-            f"position(s), equity={equity:,.0f}, unrealized={unrealized:,.0f}"
+            f"position(s), ledger={ledger_equity:,.0f}, equity={equity:,.0f}, "
+            f"unrealized={unrealized:,.0f}"
         )
         for sym, position in list(self.state.positions.items()):
             ticker = tickers.get(sym)
-            price = (
-                float(ticker["last"])
-                if ticker and ticker.get("last")
-                else position.entry_price
-            )
+            price = float(ticker["last"]) if ticker and ticker.get("last") else position.entry_price
             flat_signal = Signal(
                 timestamp=datetime.now(UTC),
                 symbol=sym,
@@ -520,13 +549,9 @@ class LiveEngine:
                     local_size=f"{old_size:.8f}",
                     held=f"{held:.8f}",
                 )
-                await self._notify_alert(
-                    f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}"
-                )
+                await self._notify_alert(f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}")
 
-    async def _tick_symbol(
-        self, symbol: str, df: pd.DataFrame, ticker: dict | None = None
-    ) -> None:
+    async def _tick_symbol(self, symbol: str, df: pd.DataFrame, ticker: dict | None = None) -> None:
         """Process a single symbol's candle data."""
         if df.empty or len(df) < 2:
             return
@@ -576,15 +601,14 @@ class LiveEngine:
 
         # Check entry signals (only if no position in this symbol). Entries are
         # gated to genuinely new candles so a restart exit re-eval never opens a
-        # position on a candle that closed before the bot came back up.
-        if is_new_candle and symbol not in self.state.positions:
+        # position on a candle that closed before the bot came back up, and to
+        # the operator kill-switch (control file, refreshed in _tick_all).
+        if is_new_candle and not self._entries_paused and symbol not in self.state.positions:
             entry_signal = self.strategy.should_entry(confirmed_df, symbol)
             if entry_signal:
                 await self._handle_entry(entry_signal, symbol, current_price)
 
-    async def _maybe_stop_out(
-        self, symbol: str, position: Position, current_price: float
-    ) -> bool:
+    async def _maybe_stop_out(self, symbol: str, position: Position, current_price: float) -> bool:
         """Close the position if ``current_price`` breached its stop loss.
 
         Returns True if the stop fired and the position was closed. Shared by
@@ -609,7 +633,7 @@ class LiveEngine:
         )
         await self._handle_exit(stop_signal, symbol, position)
         if symbol not in self.state.positions:
-            if self.notifier and hasattr(self.notifier, 'send_signal'):
+            if self.notifier and hasattr(self.notifier, "send_signal"):
                 await self.notifier.send_signal(
                     f"STOP LOSS {symbol}: price={current_price:,.0f}, "
                     f"stop={position.stop_loss:,.0f}"
@@ -646,7 +670,7 @@ class LiveEngine:
         )
         await self._handle_exit(tp_signal, symbol, position)
         if symbol not in self.state.positions:
-            if self.notifier and hasattr(self.notifier, 'send_signal'):
+            if self.notifier and hasattr(self.notifier, "send_signal"):
                 await self.notifier.send_signal(
                     f"TAKE PROFIT {symbol}: price={current_price:,.0f}, "
                     f"target={position.take_profit:,.0f}"
@@ -655,9 +679,7 @@ class LiveEngine:
         logger.error("take_profit_exit_failed", symbol=symbol)
         return False
 
-    async def _handle_entry(
-        self, signal_obj: Signal, symbol: str, current_price: float
-    ) -> None:
+    async def _handle_entry(self, signal_obj: Signal, symbol: str, current_price: float) -> None:
         """Process an entry signal."""
         balance = await self.exchange.get_balance()
         cash = balance.get("KRW", 0)
@@ -670,11 +692,27 @@ class LiveEngine:
         equity = await self._calculate_equity(balance=balance, out_prices=prices)
         prices[symbol] = current_price
 
-        # Validate with risk manager using mark-to-market equity
+        # Validate with risk manager using mark-to-market equity. The
+        # validator re-runs the drawdown breaker internally, so hand it the
+        # same transfer-immune ledger the safety rails use (_ledger_equity):
+        # ledger cash = ledger equity minus marked position value, so
+        # PortfolioState.equity(prices) reproduces the ledger. Raw cash would
+        # let an external deposit/withdrawal skew peak tracking between rail
+        # ticks. Sizing below still uses raw equity/cash — the spendable
+        # budget is real money regardless of ledger accounting.
         from tradingbot.core.models import PortfolioState
+
+        unrealized = sum(
+            (prices.get(p.symbol, p.entry_price) - p.entry_price) * p.size
+            for p in self.state.positions.values()
+        )
+        marked_value = sum(
+            prices.get(p.symbol, p.entry_price) * p.size for p in self.state.positions.values()
+        )
+        ledger_cash = self._ledger_equity(equity, unrealized) - marked_value
         portfolio = PortfolioState(
             timestamp=datetime.now(UTC),
-            cash=cash,
+            cash=ledger_cash,
             positions=list(self.state.positions.values()),
         )
         if not self.risk_manager.validate_signal(signal_obj, portfolio, prices):
@@ -687,14 +725,12 @@ class LiveEngine:
         # realized risk can drift slightly from risk_per_trade_pct when the fill
         # deviates from the estimate. Accepted: re-sizing a filled market order
         # would require cancel/replace round-trips.
-        slippage_pct = getattr(self.exchange, '_slippage_pct', 0.001)
+        slippage_pct = getattr(self.exchange, "_slippage_pct", 0.001)
         expected_price = current_price * (1 + slippage_pct)
 
         # Calculate position size using expected fill price
         stop_loss = self.risk_manager.calculate_stop_loss(expected_price)
-        quantity = self.risk_manager.calculate_position_size(
-            expected_price, stop_loss, equity
-        )
+        quantity = self.risk_manager.calculate_position_size(expected_price, stop_loss, equity)
         # ML sizing; the [0,1] clamp keeps strength from breaching the cap
         quantity = quantity * max(0.0, min(1.0, signal_obj.strength))
 
@@ -735,6 +771,7 @@ class LiveEngine:
                     side=OrderSide.BUY,
                     order_type=OrderType.MARKET,
                     quantity=quantity,
+                    price=expected_price,
                 )
             else:
                 order = await self.exchange.create_order(
@@ -742,6 +779,7 @@ class LiveEngine:
                     side=OrderSide.BUY,
                     order_type=OrderType.MARKET,
                     quantity=quantity,
+                    price=expected_price,
                 )
         except Exception as e:
             logger.error("entry_order_failed", symbol=symbol, error=str(e))
@@ -774,15 +812,24 @@ class LiveEngine:
                 quantity=f"{order.quantity:.8f}",
                 price=f"{order.filled_price:,.0f}" if order.filled_price else "N/A",
             )
-            if self.notifier and hasattr(self.notifier, 'send_signal'):
+            if self.notifier and hasattr(self.notifier, "send_signal"):
                 await self.notifier.send_signal(
-                    f"BUY {symbol}: qty={order.quantity:.8f}, "
-                    f"price={order.filled_price:,.0f}"
+                    f"BUY {symbol}: qty={order.quantity:.8f}, price={order.filled_price:,.0f}"
                 )
+        else:
+            # Order came back without a confirmed fill — e.g. a market order
+            # that timed out as PENDING because every status poll errored, or
+            # an unexpected cancel. The real outcome is unknown, so reconcile
+            # (same as the exception path): a fill we failed to observe is
+            # adopted with a stop instead of becoming an unmanaged orphan the
+            # engine believes it doesn't hold.
+            logger.warning("entry_order_unconfirmed", symbol=symbol, status=order.status.value)
+            await self._reconcile_with_exchange()
+            await self._notify_alert(
+                f"Entry order unconfirmed {symbol} (status={order.status.value}) — reconciled"
+            )
 
-    async def _handle_exit(
-        self, signal_obj: Signal, symbol: str, position: Position
-    ) -> None:
+    async def _handle_exit(self, signal_obj: Signal, symbol: str, position: Position) -> None:
         """Process an exit signal."""
         # A raised exception means the outcome is unknown: the sell may have
         # executed before the response was lost. Reconcile so local state
@@ -818,24 +865,20 @@ class LiveEngine:
             # Settle PnL on the quantity actually sold and keep any unsold
             # remainder as a managed position (it retains its stop) instead of
             # deleting the whole position and orphaning the residual.
-            sold_qty = (
-                min(order.quantity, position.size)
-                if order.quantity > 0
-                else position.size
-            )
+            sold_qty = min(order.quantity, position.size) if order.quantity > 0 else position.size
             fully_closed = sold_qty >= position.size - 1e-12
 
             entry_fee_total = self.state.entry_fees.get(symbol, 0)
             entry_fee = (
-                entry_fee_total
-                if fully_closed
-                else entry_fee_total * (sold_qty / position.size)
+                entry_fee_total if fully_closed else entry_fee_total * (sold_qty / position.size)
             )
             pnl = (fill_price - position.entry_price) * sold_qty - entry_fee - exit_fee
 
             # Track PnL for daily loss limit
             if self.trade_validator is not None:
                 self.trade_validator.record_trade_pnl(pnl)
+            # ...and cumulatively for the breaker's transfer-immune ledger
+            self.state.cum_realized_pnl += pnl
 
             if fully_closed:
                 self.state.entry_fees.pop(symbol, None)
@@ -856,10 +899,21 @@ class LiveEngine:
                 exit=f"{fill_price:,.0f}",
                 pnl=f"{pnl:,.0f}",
             )
-            if self.notifier and hasattr(self.notifier, 'send_signal'):
+            if self.notifier and hasattr(self.notifier, "send_signal"):
                 await self.notifier.send_signal(
                     f"SELL {symbol}: price={fill_price:,.0f}, PnL={pnl:,.0f} KRW"
                 )
+        else:
+            # Sell came back without a confirmed fill (timed out as PENDING on
+            # errored polls, or an unexpected cancel). We don't know if it
+            # executed, so reconcile: if it did sell, the now-phantom position
+            # is dropped/shrunk to the real held amount; if it didn't, the
+            # position is kept and retried next tick.
+            logger.warning("exit_order_unconfirmed", symbol=symbol, status=order.status.value)
+            await self._reconcile_with_exchange()
+            await self._notify_alert(
+                f"Exit order unconfirmed {symbol} (status={order.status.value}) — reconciled"
+            )
 
     async def _calculate_equity(
         self,
@@ -867,7 +921,13 @@ class LiveEngine:
         balance: dict | None = None,
         out_prices: dict[str, float] | None = None,
     ) -> float:
-        """Calculate total equity from exchange balances.
+        """Calculate total equity from managed holdings.
+
+        Equity is scoped to the bot's tradeable universe — the configured
+        strategy symbols plus any open positions. Untraded balances (coins the
+        user holds outside this bot) are ignored so they neither inflate the
+        risk/sizing budget nor cost a per-tick ``fetch_ticker`` call. This
+        mirrors the backtest engine, which only values managed positions + cash.
 
         Uses cached_tickers/balance if provided to avoid redundant API calls.
         If out_prices is given, it is populated with {symbol: last_price} for
@@ -876,11 +936,14 @@ class LiveEngine:
         """
         if balance is None:
             balance = await self.exchange.get_balance()
+        tradeable = set(self.strategy.symbols) | set(self.state.positions)
         equity = balance.get("KRW", 0)
         for currency, qty in balance.items():
             if currency == "KRW":
                 continue
             symbol = f"{currency}/KRW"
+            if symbol not in tradeable:
+                continue  # untraded holding — outside the bot's managed universe
             # Use cached ticker if available, otherwise fetch
             ticker = (cached_tickers or {}).get(symbol)
             if ticker:

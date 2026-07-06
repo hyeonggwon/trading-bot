@@ -16,9 +16,7 @@ def _symbol_to_dirname(symbol: str) -> str:
     return symbol.replace("/", "_")
 
 
-def get_parquet_path(
-    symbol: str, timeframe: str, data_dir: Path = DEFAULT_DATA_DIR
-) -> Path:
+def get_parquet_path(symbol: str, timeframe: str, data_dir: Path = DEFAULT_DATA_DIR) -> Path:
     """Get the parquet file path for a symbol/timeframe pair."""
     dirname = _symbol_to_dirname(symbol)
     return data_dir / dirname / f"{timeframe}.parquet"
@@ -127,11 +125,13 @@ def list_available_data(data_dir: Path = DEFAULT_DATA_DIR) -> list[dict[str, str
         for parquet_file in sorted(symbol_dir.glob("*.parquet")):
             timeframe = parquet_file.stem
             df = pd.read_parquet(parquet_file)
-            results.append({
-                "symbol": symbol,
-                "timeframe": timeframe,
-                "rows": str(len(df)),
-                "start": str(df.index.min()),
-                "end": str(df.index.max()),
-            })
+            results.append(
+                {
+                    "symbol": symbol,
+                    "timeframe": timeframe,
+                    "rows": str(len(df)),
+                    "start": str(df.index.min()),
+                    "end": str(df.index.max()),
+                }
+            )
     return results

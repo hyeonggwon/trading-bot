@@ -19,10 +19,16 @@ Each module also keeps an `anti-patterns.md` (append-only, build-breaking gotcha
 ## Commands
 
 ```bash
-# Install (always use venv)
+# One-shot bootstrap (venv + pinned deps + .env + git hooks): bash scripts/setup.sh
+# Or manually (always use venv; constraints pin exact versions):
 python -m venv .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev]" -c constraints.txt
+
+# Enable versioned git hooks (once per clone)
+git config core.hooksPath scripts/git-hooks
+
+# Running the CLI outside the repo root: set TRADINGBOT_HOME=/path/to/trading-bot
 
 # Run tests
 pytest tests/ -v
@@ -145,16 +151,17 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip, ML strength collection) + OR exit with entry_index for trailing stops
 - `src/tradingbot/strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing (empirical avg_win/avg_loss ratio from training meta). Default thresholds: entry 0.45 / exit 0.30 (calibrated probabilities cluster below 0.50 due to isotonic squashing toward base rate). Reads per-symbol entry/exit thresholds from meta when present (Phase 5 threshold tuner output) — falls back to CLI/param defaults otherwise. `set_model()` injects pre-trained models for time-honest walk-forward.
 - `src/tradingbot/strategy/examples/` — 6 built-in strategy files (sma_cross, rsi_mean_reversion, macd_momentum, bollinger_breakout, multi_timeframe, volume_breakout)
-- `src/tradingbot/strategy/filters/` — 31 reusable filters with role tagging (entry/trend/volatility/volume/exit)
+- `src/tradingbot/strategy/filters/` — 35 reusable filters with role tagging (entry/trend/volatility/volume/exit)
   - `base.py` — BaseFilter ABC with `role` field + `check_exit(df, entry_index)` for trailing exits + `vectorized_entry/exit()` for screening
   - `trend.py` — TrendUp/Down, AdxStrong, IchimokuAbove, AroonUp
   - `momentum.py` — RsiOversold, RsiOverbought, MacdCrossUp, StochOversold, CciOversold, RocPositive, MfiOversold
   - `price.py` — PriceBreakout, EmaAbove, BbUpperBreak, EmaCrossUp, DonchianBreak
-  - `volatility.py` — AtrBreakout, KeltnerBreak, BbSqueeze, BbBandwidthLow
+  - `volatility.py` — AtrBreakout, KeltnerBreak, BbSqueeze, BbBandwidthLow, RealizedVolLow/High (레짐 게이트: 실현변동성 백분위)
+  - `session.py` — SessionKst: KST 세션 시간대 진입 게이트 (overnight wrap 지원, 청산은 항상 허용)
   - `volume.py` — VolumeSpike, ObvRising, MfiConfirm
   - `exit.py` — StochOverbought, CciOverbought, MfiOverbought, ZscoreExtreme, PctFromMaExit, AtrTrailingExit
   - `ml.py` — LgbmProbFilter: ML probability as entry veto + Half-Kelly strength for position sizing
-  - `registry.py` — 31 filters registered, 48 combine templates, parse_filter_spec/parse_filter_string
+  - `registry.py` — 35 filters registered, 48 combine templates, parse_filter_spec/parse_filter_string
 - `src/tradingbot/backtest/engine.py` — Core backtest loop, multi-symbol support, indicator pre-computation (most critical file). Reindexes precomputed indicators to match config-date-sliced data so iloc lookups stay aligned.
 - `src/tradingbot/backtest/vectorized.py` — Vectorized screening engine for fast combine-scan (~100x vs candle-by-candle). NOT for live/paper — screening only. Computes indicators on the full df, then slices the indicator frame by timestamp so warmup is preserved.
 - `src/tradingbot/backtest/holdout.py` — `resolve_holdout_window()` shared helper. Default behavior for backtest/combine/scan/combine-scan slices to the data's last 20% so rule-based runs are directly comparable to `ml-backtest` (which uses meta.json `holdout_start`). Precedence: `--start`/`--end` > `--include-train` > auto holdout. Multi-symbol picks the cutoff in the symbols' common timestamp window.
@@ -183,11 +190,12 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/exchange/ws_client.py` — Upbit WebSocket client (real-time ticker, auto-reconnect, interruptible cooldown)
 - `src/tradingbot/live/engine.py` — Async live/paper trading loop (polling, candle detection, signal execution). Syncs WebSocket prices to `PaperExchange` each tick, recalculates stop loss from filled price, enforces stop in `_tick_symbol` with notification, uses slippage-adjusted expected price for sizing/validation, records equity each tick.
 - `src/tradingbot/live/state.py` — JSON-based state persistence with atomic write (positions, equity history, crash recovery)
+- `src/tradingbot/live/control.py` — Dashboard→engine control file (entry pause/resume kill-switch; engine polls it each tick, new entries only — exits/stops/rails unaffected)
 - `src/tradingbot/live/order_manager.py` — Order lifecycle (submit, poll, timeout cancel, market re-order)
 - `src/tradingbot/risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
 - `src/tradingbot/risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown)
 - `src/tradingbot/notifications/telegram.py` — Telegram Bot API notifications
-- `src/tradingbot/dashboard/app.py` — Streamlit web dashboard (Live Monitor + Backtest Viewer)
+- `src/tradingbot/dashboard/app.py` — Streamlit web dashboard (Live Monitor + entry pause/resume control + Backtest Viewer + Model Catalog)
 - `src/tradingbot/config.py` — Pydantic settings from YAML + .env override
 - `src/tradingbot/utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
 

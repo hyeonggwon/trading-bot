@@ -57,10 +57,14 @@ class AtrBreakoutFilter(BaseFilter):
         return True
 
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return df["close"] > df[f"ema_{self.ema_period}"] + df[f"atr_{self.period}"] * self.multiplier
+        return (
+            df["close"] > df[f"ema_{self.ema_period}"] + df[f"atr_{self.period}"] * self.multiplier
+        )
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return df["close"] < df[f"ema_{self.ema_period}"] - df[f"atr_{self.period}"] * self.multiplier
+        return (
+            df["close"] < df[f"ema_{self.ema_period}"] - df[f"atr_{self.period}"] * self.multiplier
+        )
 
 
 class KeltnerBreakFilter(BaseFilter):
@@ -204,6 +208,104 @@ class BbBandwidthLowFilter(BaseFilter):
         mid = df[f"bb_middle_{self.period}_{self.std}"]
         bandwidth = (upper - lower) / mid.replace(0, float("nan"))
         return bandwidth < self.threshold
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
+
+def _add_realized_vol(df: pd.DataFrame, vol_period: int, rank_period: int) -> pd.DataFrame:
+    """Add the realized-vol percentile-rank column (mirrors ml/features.py extras)."""
+    vol_col = f"realized_vol_{vol_period}"
+    pct_col = f"realized_vol_pct_{vol_period}_{rank_period}"
+    if pct_col not in df.columns:
+        ret = df["close"].pct_change()
+        df[vol_col] = ret.rolling(vol_period, min_periods=10).std()
+        df[pct_col] = df[vol_col].rolling(rank_period, min_periods=10).rank(pct=True)
+    return df
+
+
+class RealizedVolLowFilter(BaseFilter):
+    """Realized-vol percentile below threshold → calm regime confirmation.
+
+    The regime idea from the ML extras (``features.py`` ``realized_vol_pct_50``)
+    as a tradable gate: mean-reversion entries behave in quiet tape and get run
+    over in expanding volatility. Percentile rank (not absolute vol) keeps one
+    threshold meaningful across symbols and timeframes.
+    """
+
+    name = "realized_vol_low"
+    role = "volatility"
+
+    def __init__(self, threshold: float = 0.3, vol_period: int = 20, rank_period: int = 50):
+        super().__init__(threshold=threshold, vol_period=vol_period, rank_period=rank_period)
+        self.threshold = threshold
+        self.vol_period = vol_period
+        self.rank_period = rank_period
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return _add_realized_vol(df, self.vol_period, self.rank_period)
+
+    def check_entry(self, df: pd.DataFrame) -> bool:
+        col = f"realized_vol_pct_{self.vol_period}_{self.rank_period}"
+        if col not in df.columns:
+            return False
+        val = df[col].iloc[-1]
+        if pd.isna(val):
+            return False
+        return bool(val < self.threshold)
+
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        return False  # Confirmation filter only
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"realized_vol_pct_{self.vol_period}_{self.rank_period}"] < self.threshold
+
+    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
+        return pd.Series(False, index=df.index)
+
+
+class RealizedVolHighFilter(BaseFilter):
+    """Realized-vol percentile above threshold → expanding-vol regime.
+
+    Sibling of ``RealizedVolLowFilter`` for breakout-style entries that want
+    the tape moving (momentum/breakout signals fire best when volatility is
+    ranking high against its own recent history).
+    """
+
+    name = "realized_vol_high"
+    role = "volatility"
+
+    def __init__(self, threshold: float = 0.7, vol_period: int = 20, rank_period: int = 50):
+        super().__init__(threshold=threshold, vol_period=vol_period, rank_period=rank_period)
+        self.threshold = threshold
+        self.vol_period = vol_period
+        self.rank_period = rank_period
+
+    def compute(self, df: pd.DataFrame) -> pd.DataFrame:
+        return _add_realized_vol(df, self.vol_period, self.rank_period)
+
+    def check_entry(self, df: pd.DataFrame) -> bool:
+        col = f"realized_vol_pct_{self.vol_period}_{self.rank_period}"
+        if col not in df.columns:
+            return False
+        val = df[col].iloc[-1]
+        if pd.isna(val):
+            return False
+        return bool(val > self.threshold)
+
+    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
+        return False  # Confirmation filter only
+
+    @property
+    def supports_vectorized(self) -> bool:
+        return True
+
+    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
+        return df[f"realized_vol_pct_{self.vol_period}_{self.rank_period}"] > self.threshold
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
         return pd.Series(False, index=df.index)

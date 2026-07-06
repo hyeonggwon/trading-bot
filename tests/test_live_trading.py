@@ -2,8 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
-from datetime import UTC, datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -13,18 +12,25 @@ from tradingbot.exchange.base import BaseExchange
 from tradingbot.live.order_manager import OrderManager
 from tradingbot.risk.validators import TradeValidator
 
-
 # --- Mock exchange for testing ---
+
 
 class InstantFillExchange(BaseExchange):
     """Exchange that fills orders instantly."""
 
     async def fetch_ohlcv(self, symbol, timeframe="1h", since=None, limit=100):
         import pandas as pd
+
         return pd.DataFrame()
 
     async def fetch_ticker(self, symbol):
-        return {"last": 50_000_000, "bid": 49_999_000, "ask": 50_001_000, "volume": 100, "timestamp": datetime.now(timezone.utc)}
+        return {
+            "last": 50_000_000,
+            "bid": 49_999_000,
+            "ask": 50_001_000,
+            "volume": 100,
+            "timestamp": datetime.now(UTC),
+        }
 
     async def create_order(self, symbol, side, order_type, quantity, price=None):
         return Order(
@@ -35,18 +41,22 @@ class InstantFillExchange(BaseExchange):
             quantity=quantity,
             price=price,
             status=OrderStatus.FILLED,
-            created_at=datetime.now(timezone.utc),
-            filled_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
+            filled_at=datetime.now(UTC),
             filled_price=50_000_000,
             fee=25_000,
         )
 
     async def fetch_order(self, order_id, symbol):
         return Order(
-            id=order_id, symbol=symbol, side=OrderSide.BUY,
-            order_type=OrderType.MARKET, quantity=0.001,
+            id=order_id,
+            symbol=symbol,
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=0.001,
             status=OrderStatus.FILLED,
-            filled_price=50_000_000, fee=25_000,
+            filled_price=50_000_000,
+            fee=25_000,
         )
 
     async def cancel_order(self, order_id, symbol):
@@ -70,33 +80,50 @@ class DelayedFillExchange(BaseExchange):
 
     async def fetch_ohlcv(self, symbol, timeframe="1h", since=None, limit=100):
         import pandas as pd
+
         return pd.DataFrame()
 
     async def fetch_ticker(self, symbol):
-        return {"last": 50_000_000, "bid": 49_999_000, "ask": 50_001_000, "volume": 100, "timestamp": datetime.now(timezone.utc)}
+        return {
+            "last": 50_000_000,
+            "bid": 49_999_000,
+            "ask": 50_001_000,
+            "volume": 100,
+            "timestamp": datetime.now(UTC),
+        }
 
     async def create_order(self, symbol, side, order_type, quantity, price=None):
         self._poll_count = 0
         return Order(
-            id="delayed-001", symbol=symbol, side=side,
-            order_type=order_type, quantity=quantity,
+            id="delayed-001",
+            symbol=symbol,
+            side=side,
+            order_type=order_type,
+            quantity=quantity,
             status=OrderStatus.PENDING,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
     async def fetch_order(self, order_id, symbol):
         self._poll_count += 1
         if self._poll_count >= 2:  # Fill after 2 polls
             return Order(
-                id=order_id, symbol=symbol, side=OrderSide.BUY,
-                order_type=OrderType.MARKET, quantity=0.001,
+                id=order_id,
+                symbol=symbol,
+                side=OrderSide.BUY,
+                order_type=OrderType.MARKET,
+                quantity=0.001,
                 status=OrderStatus.FILLED,
-                filled_price=50_000_000, fee=25_000,
-                filled_at=datetime.now(timezone.utc),
+                filled_price=50_000_000,
+                fee=25_000,
+                filled_at=datetime.now(UTC),
             )
         return Order(
-            id=order_id, symbol=symbol, side=OrderSide.BUY,
-            order_type=OrderType.MARKET, quantity=0.001,
+            id=order_id,
+            symbol=symbol,
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=0.001,
             status=OrderStatus.PENDING,
         )
 
@@ -129,28 +156,41 @@ class PartialFillLimitExchange(BaseExchange):
 
     async def fetch_ohlcv(self, symbol, timeframe="1h", since=None, limit=100):
         import pandas as pd
+
         return pd.DataFrame()
 
     async def fetch_ticker(self, symbol):
-        return {"last": self.MARKET_PRICE, "bid": self.MARKET_PRICE,
-                "ask": self.MARKET_PRICE, "volume": 100,
-                "timestamp": datetime.now(UTC)}
+        return {
+            "last": self.MARKET_PRICE,
+            "bid": self.MARKET_PRICE,
+            "ask": self.MARKET_PRICE,
+            "volume": 100,
+            "timestamp": datetime.now(UTC),
+        }
 
     async def create_order(self, symbol, side, order_type, quantity, price=None):
         if order_type == OrderType.MARKET:
             # The re-order for the unfilled remainder.
             return Order(
-                id="market-002", symbol=symbol, side=side,
-                order_type=OrderType.MARKET, quantity=quantity,
+                id="market-002",
+                symbol=symbol,
+                side=side,
+                order_type=OrderType.MARKET,
+                quantity=quantity,
                 status=OrderStatus.FILLED,
-                filled_price=self.MARKET_PRICE, fee=self.MARKET_FEE,
+                filled_price=self.MARKET_PRICE,
+                fee=self.MARKET_FEE,
                 created_at=datetime.now(UTC),
                 filled_at=datetime.now(UTC),
             )
         # The initial LIMIT — stays pending so it times out.
         return Order(
-            id="limit-001", symbol=symbol, side=side,
-            order_type=OrderType.LIMIT, quantity=quantity, price=price,
+            id="limit-001",
+            symbol=symbol,
+            side=side,
+            order_type=OrderType.LIMIT,
+            quantity=quantity,
+            price=price,
             status=OrderStatus.PENDING,
             created_at=datetime.now(UTC),
         )
@@ -160,15 +200,22 @@ class PartialFillLimitExchange(BaseExchange):
             # Post-cancel: reports the partially-filled portion (CCXT maps the
             # filled base amount onto Order.quantity).
             return Order(
-                id=order_id, symbol=symbol, side=OrderSide.BUY,
-                order_type=OrderType.LIMIT, quantity=self.FILLED_QTY,
+                id=order_id,
+                symbol=symbol,
+                side=OrderSide.BUY,
+                order_type=OrderType.LIMIT,
+                quantity=self.FILLED_QTY,
                 status=OrderStatus.CANCELLED,
-                filled_price=self.LIMIT_PRICE, fee=self.LIMIT_FEE,
+                filled_price=self.LIMIT_PRICE,
+                fee=self.LIMIT_FEE,
             )
         # During polling: still pending → forces the timeout path.
         return Order(
-            id=order_id, symbol=symbol, side=OrderSide.BUY,
-            order_type=OrderType.LIMIT, quantity=self.TOTAL_QTY,
+            id=order_id,
+            symbol=symbol,
+            side=OrderSide.BUY,
+            order_type=OrderType.LIMIT,
+            quantity=self.TOTAL_QTY,
             status=OrderStatus.PENDING,
         )
 
@@ -188,14 +235,13 @@ class PartialFillLimitExchange(BaseExchange):
 
 # --- OrderManager tests ---
 
+
 class TestOrderManager:
     @pytest.mark.asyncio
     async def test_instant_fill(self):
         """Order that fills immediately should return filled order."""
         mgr = OrderManager(InstantFillExchange(), timeout_seconds=10)
-        order = await mgr.submit_and_wait(
-            "BTC/KRW", OrderSide.BUY, OrderType.MARKET, 0.001
-        )
+        order = await mgr.submit_and_wait("BTC/KRW", OrderSide.BUY, OrderType.MARKET, 0.001)
         assert order.status == OrderStatus.FILLED
         assert order.filled_price == 50_000_000
         assert mgr.active_order_count == 0
@@ -204,9 +250,7 @@ class TestOrderManager:
     async def test_delayed_fill(self):
         """Order that needs polling should eventually fill."""
         mgr = OrderManager(DelayedFillExchange(), timeout_seconds=30)
-        order = await mgr.submit_and_wait(
-            "BTC/KRW", OrderSide.BUY, OrderType.MARKET, 0.001
-        )
+        order = await mgr.submit_and_wait("BTC/KRW", OrderSide.BUY, OrderType.MARKET, 0.001)
         assert order.status == OrderStatus.FILLED
         assert mgr.active_order_count == 0
 
@@ -233,8 +277,11 @@ class TestOrderManager:
         mgr = OrderManager(ex, timeout_seconds=1)
 
         order = await mgr.submit_and_wait(
-            "BTC/KRW", OrderSide.BUY, OrderType.LIMIT,
-            ex.TOTAL_QTY, price=ex.LIMIT_PRICE,
+            "BTC/KRW",
+            OrderSide.BUY,
+            OrderType.LIMIT,
+            ex.TOTAL_QTY,
+            price=ex.LIMIT_PRICE,
         )
 
         remaining = ex.TOTAL_QTY - ex.FILLED_QTY
@@ -251,6 +298,7 @@ class TestOrderManager:
 
 
 # --- TradeValidator tests ---
+
 
 class TestTradeValidator:
     def test_order_size_within_limit(self):

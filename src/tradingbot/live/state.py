@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 
 import structlog
@@ -37,35 +37,43 @@ class StateManager:
         self.peak_equity: float = 0.0
         self.daily_pnl: float = 0.0
         self.daily_reset_date: str | None = None
+        # Drawdown-breaker ledger (live/engine._ledger_equity): baseline
+        # latches once to cost-basis equity; cum_realized_pnl books every
+        # closed trade. Keeps the breaker blind to external deposits and
+        # withdrawals, which move raw balance but not trading performance.
+        self.ledger_baseline: float | None = None
+        self.cum_realized_pnl: float = 0.0
 
     def save(self) -> None:
         """Save current state to JSON file."""
         data = {
-            "positions": {
-                symbol: _position_to_dict(pos)
-                for symbol, pos in self.positions.items()
-            },
+            "positions": {symbol: _position_to_dict(pos) for symbol, pos in self.positions.items()},
             "entry_fees": self.entry_fees,
             "equity_history": self.equity_history[-1000:],  # Keep last 1000
             "peak_equity": self.peak_equity,
             "daily_pnl": self.daily_pnl,
             "daily_reset_date": self.daily_reset_date,
-            "saved_at": datetime.now(timezone.utc).isoformat(),
+            "ledger_baseline": self.ledger_baseline,
+            "cum_realized_pnl": self.cum_realized_pnl,
+            "saved_at": datetime.now(UTC).isoformat(),
         }
 
         # Atomic write: write to temp file then rename (prevents partial reads)
         self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(
-            dir=self.state_path.parent, suffix=".tmp"
-        )
+        tmp_fd, tmp_path = tempfile.mkstemp(dir=self.state_path.parent, suffix=".tmp")
         try:
             with os.fdopen(tmp_fd, "w") as f:
                 json.dump(data, f, indent=2, default=str)
+                # Flush to disk before the atomic rename: without fsync a
+                # power loss can make the rename durable but not the data,
+                # replacing good state with an empty/truncated file.
+                f.flush()
+                os.fsync(f.fileno())
             os.replace(tmp_path, self.state_path)
         except Exception:
             os.unlink(tmp_path)
             raise
-        self.last_save = datetime.now(timezone.utc)
+        self.last_save = datetime.now(UTC)
         logger.debug("state_saved", positions=len(self.positions))
 
     def load(self) -> None:
@@ -86,6 +94,8 @@ class StateManager:
             self.peak_equity = data.get("peak_equity", 0.0)
             self.daily_pnl = data.get("daily_pnl", 0.0)
             self.daily_reset_date = data.get("daily_reset_date")
+            self.ledger_baseline = data.get("ledger_baseline")
+            self.cum_realized_pnl = data.get("cum_realized_pnl", 0.0)
 
             logger.info(
                 "state_loaded",
@@ -102,6 +112,8 @@ class StateManager:
             self.peak_equity = 0.0
             self.daily_pnl = 0.0
             self.daily_reset_date = None
+            self.ledger_baseline = None
+            self.cum_realized_pnl = 0.0
 
     def record_equity(self, equity: float) -> None:
         """Record an equity snapshot.
@@ -110,10 +122,12 @@ class StateManager:
         slice in ``save()``); the between-candle monitor records every few
         seconds, so an unbounded list would grow without limit on a long run.
         """
-        self.equity_history.append({
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "equity": equity,
-        })
+        self.equity_history.append(
+            {
+                "timestamp": datetime.now(UTC).isoformat(),
+                "equity": equity,
+            }
+        )
         if len(self.equity_history) > 1000:
             self.equity_history = self.equity_history[-1000:]
 

@@ -3,7 +3,6 @@ from __future__ import annotations
 import pandas as pd
 import pytest
 
-from tradingbot.core.models import candles_to_dataframe
 from tradingbot.data.storage import (
     detect_gaps,
     get_parquet_path,

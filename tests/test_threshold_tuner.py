@@ -165,22 +165,19 @@ class TestThresholdTuner:
         if result.grid and result.best_sharpe > float("-inf"):
             df_sorted = df[~df.index.duplicated(keep="last")].sort_index()
             slice_df = tuner._slice_holdout(df_sorted, str(holdout_start), None)
-            eval_df, eval_ind = tuner._precompute_indicators(
-                slice_df, str(holdout_start)
-            )
+            eval_df, eval_ind = tuner._precompute_indicators(slice_df, str(holdout_start))
             valid_start = pd.Timestamp(result.validation_start)
             valid_df = eval_df[eval_df.index >= valid_start]
             valid_ind = eval_ind[eval_ind.index >= valid_start]
-            reeval = tuner._evaluate(
-                valid_df, valid_ind, result.best_entry, result.best_exit
-            )
+            reeval = tuner._evaluate(valid_df, valid_ind, result.best_entry, result.best_exit)
             assert reeval is not None
             # Reported best == independent validation re-eval (out-of-sample).
             assert result.best_sharpe == pytest.approx(reeval["sharpe"])
             # The same combo's selection-grid Sharpe is a different window, so
             # the reported number is genuinely not the in-sample selection value.
             sel = next(
-                g for g in result.grid
+                g
+                for g in result.grid
                 if g["entry"] == result.best_entry and g["exit"] == result.best_exit
             )
             assert sel["sharpe"] != pytest.approx(result.best_sharpe)
@@ -248,14 +245,42 @@ class TestSelectBest:
         # Crafted to exercise the floor: a high-Sharpe outlier with few
         # trades vs a slightly-lower-Sharpe combo with many trades.
         return [
-            {"entry": 0.55, "exit": 0.35, "sharpe": 1.46, "trades": 5,
-             "return_pct": 3.58, "win_rate": 0.40, "max_dd_pct": -1.5},
-            {"entry": 0.40, "exit": 0.35, "sharpe": 1.29, "trades": 44,
-             "return_pct": 3.51, "win_rate": 0.55, "max_dd_pct": -1.2},
-            {"entry": 0.45, "exit": 0.30, "sharpe": 0.62, "trades": 37,
-             "return_pct": 2.56, "win_rate": 0.50, "max_dd_pct": -1.3},
-            {"entry": 0.60, "exit": 0.40, "sharpe": 2.50, "trades": 0,
-             "return_pct": 0.0, "win_rate": 0.0, "max_dd_pct": 0.0},
+            {
+                "entry": 0.55,
+                "exit": 0.35,
+                "sharpe": 1.46,
+                "trades": 5,
+                "return_pct": 3.58,
+                "win_rate": 0.40,
+                "max_dd_pct": -1.5,
+            },
+            {
+                "entry": 0.40,
+                "exit": 0.35,
+                "sharpe": 1.29,
+                "trades": 44,
+                "return_pct": 3.51,
+                "win_rate": 0.55,
+                "max_dd_pct": -1.2,
+            },
+            {
+                "entry": 0.45,
+                "exit": 0.30,
+                "sharpe": 0.62,
+                "trades": 37,
+                "return_pct": 2.56,
+                "win_rate": 0.50,
+                "max_dd_pct": -1.3,
+            },
+            {
+                "entry": 0.60,
+                "exit": 0.40,
+                "sharpe": 2.50,
+                "trades": 0,
+                "return_pct": 0.0,
+                "win_rate": 0.0,
+                "max_dd_pct": 0.0,
+            },
         ]
 
     def test_default_floor_picks_5_trade_outlier(self):
@@ -286,8 +311,15 @@ class TestSelectBest:
 
     def test_returns_none_when_grid_all_zero_trades(self):
         zero_grid = [
-            {"entry": 0.55, "exit": 0.35, "sharpe": 0.0, "trades": 0,
-             "return_pct": 0.0, "win_rate": 0.0, "max_dd_pct": 0.0},
+            {
+                "entry": 0.55,
+                "exit": 0.35,
+                "sharpe": 0.0,
+                "trades": 0,
+                "return_pct": 0.0,
+                "win_rate": 0.0,
+                "max_dd_pct": 0.0,
+            },
         ]
         assert _select_best(zero_grid, min_trades=1) is None
 

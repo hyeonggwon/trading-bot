@@ -15,8 +15,8 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from datetime import datetime, timezone
-from typing import Awaitable, Callable, Union
+from collections.abc import Awaitable, Callable
+from datetime import UTC, datetime
 
 import structlog
 
@@ -73,7 +73,7 @@ class TickerData:
 
 
 # Callback: can be sync or async
-TickerCallback = Union[Callable[[TickerData], None], Callable[[TickerData], Awaitable[None]]]
+TickerCallback = Callable[[TickerData], None] | Callable[[TickerData], Awaitable[None]]
 
 
 class UpbitWebSocketClient:
@@ -112,7 +112,7 @@ class UpbitWebSocketClient:
         price. Callers (the live engine) use this to fall back to a fresh REST
         pull when WebSocket data goes stale.
         """
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         fresh: dict[str, float] = {}
         for symbol, price in self._last_prices.items():
             ts = self._last_price_ts.get(symbol)
@@ -145,11 +145,9 @@ class UpbitWebSocketClient:
                     )
                     # Cooldown then reset — allows recovery after temporary outages
                     try:
-                        await asyncio.wait_for(
-                            self._stop_event.wait(), timeout=COOLDOWN_SECONDS
-                        )
+                        await asyncio.wait_for(self._stop_event.wait(), timeout=COOLDOWN_SECONDS)
                         break  # stop() was called during cooldown
-                    except asyncio.TimeoutError:
+                    except TimeoutError:
                         pass
                     self._reconnect_attempts = 0
                     self._reconnect_delay = RECONNECT_BASE_DELAY
@@ -164,16 +162,12 @@ class UpbitWebSocketClient:
 
                 # Interruptible sleep — stop() wakes us immediately
                 try:
-                    await asyncio.wait_for(
-                        self._stop_event.wait(), timeout=self._reconnect_delay
-                    )
+                    await asyncio.wait_for(self._stop_event.wait(), timeout=self._reconnect_delay)
                     break  # stop() was called
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     pass  # Normal timeout, retry
 
-                self._reconnect_delay = min(
-                    self._reconnect_delay * 2, RECONNECT_MAX_DELAY
-                )
+                self._reconnect_delay = min(self._reconnect_delay * 2, RECONNECT_MAX_DELAY)
 
         logger.info("ws_client_stopped")
 
@@ -187,14 +181,16 @@ class UpbitWebSocketClient:
             ping_timeout=10,
         ) as ws:
             # Subscribe to ticker stream
-            subscribe_msg = json.dumps([
-                {"ticket": str(uuid.uuid4())[:8]},
-                {
-                    "type": "ticker",
-                    "codes": self._codes,
-                    "isOnlyRealtime": True,
-                },
-            ])
+            subscribe_msg = json.dumps(
+                [
+                    {"ticket": str(uuid.uuid4())[:8]},
+                    {
+                        "type": "ticker",
+                        "codes": self._codes,
+                        "isOnlyRealtime": True,
+                    },
+                ]
+            )
             await ws.send(subscribe_msg)
             logger.info("ws_subscribed", codes=self._codes)
 
@@ -231,14 +227,14 @@ class UpbitWebSocketClient:
         self._last_prices[symbol] = price
         # Local receive time — used by fresh_prices() to detect a dead/silent
         # connection (the exchange event timestamp can't reveal a stalled feed).
-        self._last_price_ts[symbol] = datetime.now(timezone.utc)
+        self._last_price_ts[symbol] = datetime.now(UTC)
 
         ticker = TickerData(
             symbol=symbol,
             price=price,
             volume=float(data.get("acc_trade_volume_24h", 0)),
             change=data.get("change", ""),
-            timestamp=datetime.fromtimestamp(data.get("timestamp", 0) / 1000, tz=timezone.utc),
+            timestamp=datetime.fromtimestamp(data.get("timestamp", 0) / 1000, tz=UTC),
         )
 
         for callback in self._callbacks:

@@ -7,6 +7,7 @@ Filters are combined via AND (entry) / OR (exit) in CombinedStrategy.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import pandas as pd
 
@@ -17,7 +18,7 @@ class BaseFilter(ABC):
     name: str = "base"
     role: str = "entry"  # "entry" | "trend" | "volatility" | "volume" | "exit"
 
-    def __init__(self, **kwargs):
+    def __init__(self, **kwargs: Any) -> None:
         self.params = kwargs
 
     @abstractmethod

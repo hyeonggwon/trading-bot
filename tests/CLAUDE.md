@@ -2,7 +2,7 @@
 
 ## What — 무엇을 하는가
 
-`tradingbot` 패키지의 pytest 스위트. 20 개 `test_*.py` 파일이 모듈별 단위·통합 테스트를 모은다. 외부 거래소·네트워크는 mock 으로 대체하고 candle/Parquet I/O 는 합성 데이터(fixture)로 검증.
+`tradingbot` 패키지의 pytest 스위트. 24 개 `test_*.py` 파일이 모듈별 단위·통합 테스트를 모은다. 외부 거래소·네트워크는 mock 으로 대체하고 candle/Parquet I/O 는 합성 데이터(fixture)로 검증.
 
 ## How — 일반적인 수정
 
@@ -18,7 +18,7 @@
 
 ## Where — 의존성
 
-- **Incoming**: `pytest`(직접 실행), CI(있다면 `pytest tests/`), 개발자 수동 실행.
+- **Incoming**: `pytest`(직접 실행), GitHub Actions CI(`.github/workflows/ci.yml` — `pytest --cov=src/tradingbot --cov-fail-under=60` 차단 게이트), 개발자 수동 실행.
 - **Outgoing**: `tradingbot.*` 전 서브패키지(테스트 대상), `pandas` / `numpy` (합성 데이터), `lightgbm` (ML 테스트), `pytest` fixtures, `tmp_path`(파일 I/O 격리).
 
 ## Why — 코드에 안 적힌 부족 지식

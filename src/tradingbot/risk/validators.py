@@ -8,7 +8,7 @@ Provides guards against:
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta, timezone
+from datetime import UTC, date, datetime
 
 import structlog
 
@@ -49,7 +49,7 @@ class TradeValidator:
         if self._last_order_time is None:
             return True
 
-        elapsed = (datetime.now(timezone.utc) - self._last_order_time).total_seconds()
+        elapsed = (datetime.now(UTC) - self._last_order_time).total_seconds()
         if elapsed < self.order_cooldown_seconds:
             logger.warning(
                 "order_rejected_cooldown",
@@ -104,7 +104,7 @@ class TradeValidator:
 
     def record_order(self) -> None:
         """Record that an order was placed (for cooldown tracking)."""
-        self._last_order_time = datetime.now(timezone.utc)
+        self._last_order_time = datetime.now(UTC)
 
     def record_trade_pnl(self, pnl: float) -> None:
         """Record a completed trade's PnL for daily tracking."""
@@ -127,7 +127,7 @@ class TradeValidator:
 
     def _reset_daily_if_needed(self) -> None:
         """Reset daily PnL at midnight UTC."""
-        today = datetime.now(timezone.utc).date()
+        today = datetime.now(UTC).date()
         if self._daily_reset_date != today:
             if self._daily_reset_date is not None:
                 logger.info("daily_pnl_reset", previous=f"{self._daily_pnl:,.0f}")

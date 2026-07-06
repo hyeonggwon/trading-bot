@@ -9,7 +9,6 @@ Tracks orders from creation to fill/cancel. Handles:
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
 
 import structlog
 
@@ -109,12 +108,16 @@ class OrderManager:
                 # Fully filled during cancel race — return the filled order
                 return final_state if filled_qty > 0 else filled_order
 
-            # Re-submit the remaining quantity as a market order.
+            # Re-submit the remaining quantity as a market order. Carry the
+            # limit price through as the reference: a market BUY re-order needs
+            # it to compute Upbit's quote cost (ord_type='price'); a SELL
+            # re-order ignores it (base volume).
             market_order = await self.submit_and_wait(
                 symbol=symbol,
                 side=side,
                 order_type=OrderType.MARKET,
                 quantity=remaining,
+                price=price,
             )
 
             # Nothing filled on the original limit — the market order alone
@@ -193,8 +196,7 @@ class OrderManager:
                 cancelled += 1
                 logger.info("order_cancelled", order_id=order.id, symbol=symbol)
         self._active_orders = {
-            oid: o for oid, o in self._active_orders.items()
-            if o.symbol != symbol
+            oid: o for oid, o in self._active_orders.items() if o.symbol != symbol
         }
         return cancelled
 

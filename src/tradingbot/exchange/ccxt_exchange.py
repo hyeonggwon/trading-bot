@@ -8,8 +8,7 @@ Phase 5: full order management.
 from __future__ import annotations
 
 import asyncio
-import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import ccxt.async_support as ccxt_async
 import pandas as pd
@@ -52,10 +51,14 @@ class CcxtExchange(BaseExchange):
         for attempt in range(MAX_RETRIES):
             try:
                 return await coro_func(*args, **kwargs)
-            except (ccxt_async.NetworkError, ccxt_async.ExchangeNotAvailable, ccxt_async.DDoSProtection) as e:
+            except (
+                ccxt_async.NetworkError,
+                ccxt_async.ExchangeNotAvailable,
+                ccxt_async.DDoSProtection,
+            ) as e:
                 if attempt == MAX_RETRIES - 1:
                     raise
-                wait = RETRY_BACKOFF_BASE ** attempt
+                wait = RETRY_BACKOFF_BASE**attempt
                 logger.warning(
                     "exchange_retry",
                     error=str(e),
@@ -73,15 +76,16 @@ class CcxtExchange(BaseExchange):
     ) -> pd.DataFrame:
         ohlcv = await self._retry(
             self._exchange.fetch_ohlcv,
-            symbol, timeframe, since, limit,
+            symbol,
+            timeframe,
+            since,
+            limit,
         )
 
         if not ohlcv:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
 
-        df = pd.DataFrame(
-            ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"]
-        )
+        df = pd.DataFrame(ohlcv, columns=["timestamp", "open", "high", "low", "close", "volume"])
         df["timestamp"] = pd.to_datetime(df["timestamp"], unit="ms", utc=True)
         df = df.set_index("timestamp")
         df = df.astype(float)
@@ -94,7 +98,7 @@ class CcxtExchange(BaseExchange):
             "bid": ticker.get("bid", 0),
             "ask": ticker.get("ask", 0),
             "volume": ticker.get("baseVolume", 0),
-            "timestamp": datetime.now(timezone.utc),
+            "timestamp": datetime.now(UTC),
         }
 
     async def create_order(
@@ -108,13 +112,35 @@ class CcxtExchange(BaseExchange):
         ccxt_side = "buy" if side == OrderSide.BUY else "sell"
         ccxt_type = "market" if order_type == OrderType.MARKET else "limit"
 
+        # Upbit market BUY is quote-denominated (ord_type='price'): the exchange
+        # spends a KRW cost, not a base quantity. ccxt needs that cost up front —
+        # given only a base `quantity` and no price it raises InvalidOrder before
+        # the order is ever sent. Convert our base quantity to a quote cost with
+        # the caller's (slippage-adjusted) reference price and pass it explicitly
+        # so this holds regardless of ccxt's createMarketBuyOrderRequiresPrice
+        # default. Market SELL (base volume) and limit orders (explicit price)
+        # are unaffected.
+        params: dict = {}
+        if ccxt_type == "market" and ccxt_side == "buy":
+            if price is None or price <= 0:
+                raise ValueError(
+                    "Upbit market buy requires a positive reference price to "
+                    "compute the quote cost (ord_type='price')"
+                )
+            params["cost"] = quantity * price
+
         # Order submission is intentionally NOT wrapped in self._retry: it is
         # non-idempotent. A NetworkError raised *after* the exchange accepted
         # the order (lost response) would, on retry, place a second order.
         # We let the network error surface — the entry is skipped and the next
         # candle re-evaluates — rather than risk a duplicate fill.
         result = await self._exchange.create_order(
-            symbol, ccxt_type, ccxt_side, quantity, price,
+            symbol,
+            ccxt_type,
+            ccxt_side,
+            quantity,
+            price,
+            params,
         )
 
         return Order(
@@ -125,7 +151,7 @@ class CcxtExchange(BaseExchange):
             quantity=quantity,
             price=price,
             status=OrderStatus.PENDING,
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
         )
 
     async def fetch_order(self, order_id: str, symbol: str) -> Order:
@@ -140,9 +166,7 @@ class CcxtExchange(BaseExchange):
         filled_price = raw.get("average") or raw.get("price")
         filled_at = None
         if raw.get("lastTradeTimestamp"):
-            filled_at = datetime.fromtimestamp(
-                raw["lastTradeTimestamp"] / 1000, tz=timezone.utc
-            )
+            filled_at = datetime.fromtimestamp(raw["lastTradeTimestamp"] / 1000, tz=UTC)
 
         # Safe parsing for side (can be None in some CCXT responses)
         raw_side = raw.get("side", "buy")
@@ -160,7 +184,7 @@ class CcxtExchange(BaseExchange):
             quantity=float(raw.get("filled") or raw.get("amount") or 0),
             price=raw.get("price"),
             status=status_map.get(raw.get("status", ""), OrderStatus.PENDING),
-            created_at=datetime.now(timezone.utc),
+            created_at=datetime.now(UTC),
             filled_at=filled_at,
             filled_price=float(filled_price) if filled_price else None,
             fee=fee_cost,
@@ -186,16 +210,18 @@ class CcxtExchange(BaseExchange):
         raw_orders = await self._retry(self._exchange.fetch_open_orders, symbol)
         orders = []
         for raw in raw_orders:
-            orders.append(Order(
-                id=raw["id"],
-                symbol=raw["symbol"],
-                side=OrderSide.BUY if raw["side"] == "buy" else OrderSide.SELL,
-                order_type=OrderType.MARKET if raw["type"] == "market" else OrderType.LIMIT,
-                quantity=raw["amount"],
-                price=raw.get("price"),
-                status=OrderStatus.PENDING,
-                created_at=datetime.now(timezone.utc),
-            ))
+            orders.append(
+                Order(
+                    id=raw["id"],
+                    symbol=raw["symbol"],
+                    side=OrderSide.BUY if raw["side"] == "buy" else OrderSide.SELL,
+                    order_type=OrderType.MARKET if raw["type"] == "market" else OrderType.LIMIT,
+                    quantity=raw["amount"],
+                    price=raw.get("price"),
+                    status=OrderStatus.PENDING,
+                    created_at=datetime.now(UTC),
+                )
+            )
         return orders
 
     async def close(self) -> None:

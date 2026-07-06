@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from datetime import UTC
+
 from tradingbot.exchange.ws_client import (
     TickerData,
     _symbol_to_upbit_code,
@@ -28,14 +30,14 @@ class TestSymbolConversion:
 
 class TestTickerData:
     def test_creation(self):
-        from datetime import datetime, timezone
+        from datetime import datetime
 
         td = TickerData(
             symbol="BTC/KRW",
             price=50_000_000,
             volume=1234.5,
             change="RISE",
-            timestamp=datetime.now(timezone.utc),
+            timestamp=datetime.now(UTC),
         )
         assert td.symbol == "BTC/KRW"
         assert td.price == 50_000_000
@@ -71,6 +73,7 @@ class TestUpbitWebSocketClient:
     def test_handle_message(self):
         """Test message parsing without actual WebSocket connection."""
         import asyncio
+
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW"])
@@ -94,6 +97,7 @@ class TestUpbitWebSocketClient:
     def test_ignore_non_ticker(self):
         """Non-ticker messages should be ignored."""
         import asyncio
+
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW"])
@@ -106,12 +110,19 @@ class TestUpbitWebSocketClient:
     def test_ignore_zero_price(self):
         """Zero/negative prices should be ignored."""
         import asyncio
+
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW"])
-        asyncio.run(client._handle_message({
-            "type": "ticker", "code": "KRW-BTC", "trade_price": 0,
-        }))
+        asyncio.run(
+            client._handle_message(
+                {
+                    "type": "ticker",
+                    "code": "KRW-BTC",
+                    "trade_price": 0,
+                }
+            )
+        )
         assert "BTC/KRW" not in client.last_prices
 
 
@@ -119,12 +130,12 @@ class TestFreshPrices:
     """Regression: stale cached WS prices must not be served as current."""
 
     def test_drops_stale_keeps_fresh(self):
-        from datetime import datetime, timedelta, timezone
+        from datetime import datetime, timedelta
 
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW", "ETH/KRW"])
-        now = datetime.now(timezone.utc)
+        now = datetime.now(UTC)
         client._last_prices = {"BTC/KRW": 50_000_000, "ETH/KRW": 3_000_000}
         client._last_price_ts = {
             "BTC/KRW": now,  # fresh
@@ -145,8 +156,14 @@ class TestFreshPrices:
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW"])
-        asyncio.run(client._handle_message({
-            "type": "ticker", "code": "KRW-BTC", "trade_price": 50_000_000,
-        }))
+        asyncio.run(
+            client._handle_message(
+                {
+                    "type": "ticker",
+                    "code": "KRW-BTC",
+                    "trade_price": 50_000_000,
+                }
+            )
+        )
         # A just-received price is fresh under any sane age bound.
         assert client.fresh_prices(max_age_seconds=60) == {"BTC/KRW": 50_000_000}

@@ -19,11 +19,11 @@ import logging
 import pandas as pd
 
 from tradingbot.core.enums import SignalType
-
-log = logging.getLogger(__name__)
 from tradingbot.core.models import Position, Signal
 from tradingbot.strategy.base import Strategy
 from tradingbot.strategy.filters.base import BaseFilter
+
+log = logging.getLogger(__name__)
 
 
 class CombinedStrategy(Strategy):
@@ -95,9 +95,7 @@ class CombinedStrategy(Strategy):
             strength=strength,
         )
 
-    def should_exit(
-        self, df: pd.DataFrame, symbol: str, position: Position
-    ) -> Signal | None:
+    def should_exit(self, df: pd.DataFrame, symbol: str, position: Position) -> Signal | None:
         if len(df) < 2 or not self.exit_filters:
             return None
 
@@ -118,9 +116,7 @@ class CombinedStrategy(Strategy):
 
         return None
 
-    def _resolve_entry_index(
-        self, df: pd.DataFrame, symbol: str, position: Position
-    ) -> int | None:
+    def _resolve_entry_index(self, df: pd.DataFrame, symbol: str, position: Position) -> int | None:
         """Positional index of the entry candle in the *current* df window.
 
         Anchored on the entry *timestamp* (the signal candle, cached in

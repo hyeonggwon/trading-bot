@@ -17,3 +17,10 @@ CLAUDE.md 의 "How not" 섹션은 이 파일을 1줄로만 가리킨다.
 **참고:** 관련 PR / 이슈 / 커밋 (있으면).
 
 -->
+
+## Python 3.12 아닌 인터프리터로 constraints.txt 설치 · 2026-07-06
+
+**증상:** `setup.sh`(또는 `pip install -e ".[dev]" -c constraints.txt`)가 `ResolutionImpossible` 로 실패. CI 도 3.11 러너에서 동일하게 죽었음.
+**원인:** `constraints.txt` 는 Python 3.12 개발 venv 의 `pip freeze` 라 `scipy>=1.18` 등 3.12 전용 핀을 포함 — 3.11 이하에서는 해석 자체가 불가능. `setup.sh` 는 `PYTHON=${PYTHON:-python3}` 라 시스템 python3 가 3.11 이면 그대로 밟는다.
+**처방:** 부트스트랩은 `PYTHON=python3.12 bash scripts/setup.sh` 로 실행. CI 는 `.github/workflows/ci.yml` 의 `python-version: "3.12"` 유지 — freeze 재생성 시 CI 러너 버전도 함께 정렬할 것.
+**참고:** commit e7cb47b (ci: CI Python 3.12 정렬 - constraints 해석 불가 수리).

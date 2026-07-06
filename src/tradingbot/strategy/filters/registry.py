@@ -33,6 +33,7 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
         EmaCrossUpFilter,
         PriceBreakoutFilter,
     )
+    from tradingbot.strategy.filters.session import SessionKstFilter
     from tradingbot.strategy.filters.trend import (
         AdxStrongFilter,
         AroonUpFilter,
@@ -45,6 +46,8 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
         BbBandwidthLowFilter,
         BbSqueezeFilter,
         KeltnerBreakFilter,
+        RealizedVolHighFilter,
+        RealizedVolLowFilter,
     )
     from tradingbot.strategy.filters.volume import (
         MfiConfirmFilter,
@@ -76,6 +79,10 @@ def get_filter_map() -> dict[str, type[BaseFilter]]:
         "keltner_break": KeltnerBreakFilter,
         "bb_squeeze": BbSqueezeFilter,
         "bb_bandwidth_low": BbBandwidthLowFilter,
+        "realized_vol_low": RealizedVolLowFilter,
+        "realized_vol_high": RealizedVolHighFilter,
+        # Session gate
+        "session_kst": SessionKstFilter,
         # Volume confirm
         "volume_spike": VolumeSpikeFilter,
         "obv_rising": ObvRisingFilter,
@@ -123,9 +130,7 @@ def parse_filter_spec(spec: str, base_timeframe: str = "1h") -> BaseFilter:
     return filter_cls(**kwargs)
 
 
-def _parse_filter_params(
-    name: str, parts: list[str], kwargs: dict, base_timeframe: str
-) -> None:
+def _parse_filter_params(name: str, parts: list[str], kwargs: dict, base_timeframe: str) -> None:
     """Parse filter-specific parameters into kwargs dict."""
     if name in ("trend_up", "trend_down"):
         if len(parts) >= 2:
@@ -261,6 +266,20 @@ def _parse_filter_params(
             kwargs["threshold"] = float(parts[1])
         if len(parts) >= 3:
             kwargs["period"] = int(parts[2])
+
+    elif name in ("realized_vol_low", "realized_vol_high"):
+        if len(parts) >= 2:
+            kwargs["threshold"] = float(parts[1])
+        if len(parts) >= 3:
+            kwargs["vol_period"] = int(parts[2])
+        if len(parts) >= 4:
+            kwargs["rank_period"] = int(parts[3])
+
+    elif name == "session_kst":
+        if len(parts) >= 2:
+            kwargs["start_hour"] = int(parts[1])
+        if len(parts) >= 3:
+            kwargs["end_hour"] = int(parts[2])
 
     elif name == "obv_rising":
         if len(parts) >= 2:

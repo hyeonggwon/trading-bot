@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
@@ -11,7 +11,6 @@ from tradingbot.core.models import Candle
 @pytest.fixture
 def sample_candles() -> list[Candle]:
     """Generate a list of sample candles for testing."""
-    base_ts = datetime(2024, 1, 1, tzinfo=timezone.utc)
     candles = []
     prices = [
         (100, 110, 95, 105, 1000),
@@ -25,9 +24,9 @@ def sample_candles() -> list[Candle]:
         (120, 126, 115, 118, 1050),
         (118, 124, 114, 122, 1150),
     ]
-    for i, (o, h, l, c, v) in enumerate(prices):
-        ts = datetime(2024, 1, 1, i, tzinfo=timezone.utc)
-        candles.append(Candle(timestamp=ts, open=o, high=h, low=l, close=c, volume=v))
+    for i, (o, h, lo, c, v) in enumerate(prices):
+        ts = datetime(2024, 1, 1, i, tzinfo=UTC)
+        candles.append(Candle(timestamp=ts, open=o, high=h, low=lo, close=c, volume=v))
     return candles
 
 

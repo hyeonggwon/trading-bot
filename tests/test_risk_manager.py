@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import pytest
 
@@ -24,15 +24,17 @@ class TestRiskManager:
 
     def _make_signal(self, signal_type: SignalType) -> Signal:
         return Signal(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
             symbol="BTC/KRW",
             signal_type=signal_type,
             price=50_000_000,
         )
 
-    def _make_portfolio(self, cash: float, positions: list[Position] | None = None) -> PortfolioState:
+    def _make_portfolio(
+        self, cash: float, positions: list[Position] | None = None
+    ) -> PortfolioState:
         return PortfolioState(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
             cash=cash,
             positions=positions or [],
         )
@@ -58,14 +60,29 @@ class TestRiskManager:
 
     def test_max_positions(self):
         positions = [
-            Position("BTC/KRW", PositionSide.LONG, 0.01, 50_000_000,
-                     datetime(2024, 1, 1, tzinfo=timezone.utc)),
-            Position("ETH/KRW", PositionSide.LONG, 0.1, 3_000_000,
-                     datetime(2024, 1, 1, tzinfo=timezone.utc)),
+            Position(
+                "BTC/KRW",
+                PositionSide.LONG,
+                0.01,
+                50_000_000,
+                datetime(2024, 1, 1, tzinfo=UTC),
+            ),
+            Position(
+                "ETH/KRW",
+                PositionSide.LONG,
+                0.1,
+                3_000_000,
+                datetime(2024, 1, 1, tzinfo=UTC),
+            ),
         ]
         signal = self._make_signal(SignalType.LONG_ENTRY)
         portfolio = self._make_portfolio(500_000, positions)
-        assert self.rm.validate_signal(signal, portfolio, {"BTC/KRW": 50_000_000, "ETH/KRW": 3_000_000}) is False
+        assert (
+            self.rm.validate_signal(
+                signal, portfolio, {"BTC/KRW": 50_000_000, "ETH/KRW": 3_000_000}
+            )
+            is False
+        )
 
     def test_position_sizing_with_stop_loss(self):
         # Risk 1% of 1M = 10,000 KRW per trade

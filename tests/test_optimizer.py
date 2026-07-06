@@ -14,7 +14,6 @@ from tradingbot.backtest.walk_forward import (
     create_walk_forward_windows,
 )
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
-from tradingbot.strategy.base import StrategyParams
 from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
 
 
@@ -45,8 +44,11 @@ def _make_config() -> AppConfig:
     return AppConfig(
         trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
         risk=RiskConfig(
-            max_position_size_pct=0.5, max_open_positions=1,
-            max_drawdown_pct=0.30, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02,
+            max_position_size_pct=0.5,
+            max_open_positions=1,
+            max_drawdown_pct=0.30,
+            default_stop_loss_pct=0.05,
+            risk_per_trade_pct=0.02,
         ),
         backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
     )
@@ -76,7 +78,9 @@ class TestGridSearchOptimizer:
         config = _make_config()
 
         optimizer = GridSearchOptimizer(
-            strategy_cls=SmaCrossStrategy, config=config, max_workers=1,
+            strategy_cls=SmaCrossStrategy,
+            config=config,
+            max_workers=1,
         )
         results = optimizer.optimize(
             {config.trading.symbols[0]: df},
@@ -95,7 +99,9 @@ class TestGridSearchOptimizer:
         config = _make_config()
 
         optimizer = GridSearchOptimizer(
-            strategy_cls=SmaCrossStrategy, config=config, max_workers=1,
+            strategy_cls=SmaCrossStrategy,
+            config=config,
+            max_workers=1,
         )
         results = optimizer.optimize(
             {config.trading.symbols[0]: df},
@@ -111,7 +117,9 @@ class TestGridSearchOptimizer:
         config = _make_config()
 
         optimizer = GridSearchOptimizer(
-            strategy_cls=SmaCrossStrategy, config=config, max_workers=1,
+            strategy_cls=SmaCrossStrategy,
+            config=config,
+            max_workers=1,
         )
         results = optimizer.optimize(
             {config.trading.symbols[0]: df},
@@ -156,8 +164,10 @@ class TestWalkForwardValidator:
         config = _make_config()
 
         validator = WalkForwardValidator(
-            strategy_cls=SmaCrossStrategy, config=config,
-            train_months=3, test_months=1,
+            strategy_cls=SmaCrossStrategy,
+            config=config,
+            train_months=3,
+            test_months=1,
         )
         report = validator.validate(
             {config.trading.symbols[0]: df},
@@ -179,8 +189,10 @@ class TestWalkForwardValidator:
         config = _make_config()
 
         validator = WalkForwardValidator(
-            strategy_cls=SmaCrossStrategy, config=config,
-            train_months=3, test_months=1,
+            strategy_cls=SmaCrossStrategy,
+            config=config,
+            train_months=3,
+            test_months=1,
         )
         report = validator.validate(
             {config.trading.symbols[0]: df},

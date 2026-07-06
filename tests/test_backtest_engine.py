@@ -9,7 +9,7 @@ Uses synthetic data with known price patterns to verify:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 import numpy as np
 import pandas as pd
@@ -45,13 +45,16 @@ def _make_trending_data(n: int = 200) -> pd.DataFrame:
     open_ = close + np.random.normal(0, 300_000, n)
     volume = np.random.uniform(100, 1000, n)
 
-    df = pd.DataFrame({
-        "open": open_,
-        "high": high,
-        "low": low,
-        "close": close,
-        "volume": volume,
-    }, index=dates)
+    df = pd.DataFrame(
+        {
+            "open": open_,
+            "high": high,
+            "low": low,
+            "close": close,
+            "volume": volume,
+        },
+        index=dates,
+    )
 
     return df
 
@@ -173,7 +176,8 @@ class TestAntiLookahead:
         df = _make_trending_data(100)
         config = AppConfig(
             trading=TradingConfig(
-                symbols=["BTC/KRW"], initial_balance=10_000_000,
+                symbols=["BTC/KRW"],
+                initial_balance=10_000_000,
             ),
             risk=RiskConfig(
                 max_position_size_pct=0.5,
@@ -187,15 +191,11 @@ class TestAntiLookahead:
         params = StrategyParams({"fast_period": 5, "slow_period": 15})
 
         # Run 1: full backtest
-        engine1 = BacktestEngine(
-            strategy=SmaCrossStrategy(params), config=config
-        )
+        engine1 = BacktestEngine(strategy=SmaCrossStrategy(params), config=config)
         report1 = engine1.run({"BTC/KRW": df})
 
         # Run 2: same data, same engine — should be deterministic
-        engine2 = BacktestEngine(
-            strategy=SmaCrossStrategy(params), config=config
-        )
+        engine2 = BacktestEngine(strategy=SmaCrossStrategy(params), config=config)
         report2 = engine2.run({"BTC/KRW": df})
 
         assert report1.total_trades == report2.total_trades
@@ -208,7 +208,9 @@ class TestBugFixes:
     def _make_config(self, balance: float = 10_000_000) -> AppConfig:
         return AppConfig(
             trading=TradingConfig(
-                symbols=["BTC/KRW"], timeframe="1h", initial_balance=balance,
+                symbols=["BTC/KRW"],
+                timeframe="1h",
+                initial_balance=balance,
             ),
             risk=RiskConfig(
                 max_position_size_pct=0.5,
@@ -273,8 +275,7 @@ class TestBugFixes:
         short_ts = df_short.index[-1]
         trades_short = report_short.trades
         trades_long_subset = [
-            t for t in report_long.trades
-            if t.entry_order.created_at <= short_ts.to_pydatetime()
+            t for t in report_long.trades if t.entry_order.created_at <= short_ts.to_pydatetime()
         ]
 
         assert len(trades_short) == len(trades_long_subset)
@@ -302,20 +303,24 @@ class TestBugFixes:
 
     def test_bug6_sharpe_respects_timeframe(self):
         """Bug #6: Sharpe ratio should use correct annualization for timeframe."""
-        from tradingbot.backtest.report import BacktestReport, PERIODS_PER_YEAR
+        from tradingbot.backtest.report import PERIODS_PER_YEAR, BacktestReport
 
         # Create a simple equity curve
         dates = pd.date_range("2024-01-01", periods=100, freq="h", tz="UTC")
         equity = pd.Series(np.linspace(1_000_000, 1_100_000, 100), index=dates)
 
         report_1h = BacktestReport(
-            trades=[], equity_curve=equity,
-            initial_balance=1_000_000, final_balance=1_100_000,
+            trades=[],
+            equity_curve=equity,
+            initial_balance=1_000_000,
+            final_balance=1_100_000,
             timeframe="1h",
         )
         report_1d = BacktestReport(
-            trades=[], equity_curve=equity,
-            initial_balance=1_000_000, final_balance=1_100_000,
+            trades=[],
+            equity_curve=equity,
+            initial_balance=1_000_000,
+            final_balance=1_100_000,
             timeframe="1d",
         )
 
@@ -327,6 +332,7 @@ class TestBugFixes:
     def test_bug8_zero_price_position_sizing(self):
         """Bug #8: Position sizing should return 0 for zero price."""
         from tradingbot.risk.manager import RiskManager
+
         rm = RiskManager()
         qty = rm.calculate_position_size(0, None, 1_000_000)
         assert qty == 0.0
@@ -352,12 +358,15 @@ class TestBugFixes:
         # Mix of up and down moves
         equity = pd.Series(
             [100, 102, 101, 103, 100, 105, 104, 107, 106, 110],
-            index=dates, dtype=float,
+            index=dates,
+            dtype=float,
         )
 
         report = BacktestReport(
-            trades=[], equity_curve=equity,
-            initial_balance=100, final_balance=110,
+            trades=[],
+            equity_curve=equity,
+            initial_balance=100,
+            final_balance=110,
             timeframe="1h",
         )
 
@@ -382,11 +391,16 @@ class TestBugFixes:
         config = AppConfig(
             trading=TradingConfig(symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000),
             risk=RiskConfig(
-                max_position_size_pct=0.5, max_open_positions=1,
-                max_drawdown_pct=0.30, default_stop_loss_pct=0.05, risk_per_trade_pct=0.02,
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.30,
+                default_stop_loss_pct=0.05,
+                risk_per_trade_pct=0.02,
             ),
             backtest=BacktestConfig(
-                fee_rate=0.0005, slippage_pct=0.001, start_date=sliced_start,
+                fee_rate=0.0005,
+                slippage_pct=0.001,
+                start_date=sliced_start,
             ),
         )
 
@@ -421,8 +435,12 @@ class TestStopLossGapDown:
         from tradingbot.core.models import Candle
 
         return Candle(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            open=open_, high=high, low=low, close=close, volume=1.0,
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            open=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=1.0,
         )
 
     def test_gap_down_fills_at_open_not_stop(self):
@@ -457,8 +475,12 @@ class TestTakeProfitGapUp:
         from tradingbot.core.models import Candle
 
         return Candle(
-            timestamp=datetime(2024, 1, 1, tzinfo=timezone.utc),
-            open=open_, high=high, low=low, close=close, volume=1.0,
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            open=open_,
+            high=high,
+            low=low,
+            close=close,
+            volume=1.0,
         )
 
     def test_gap_up_fills_at_open_not_target(self):
@@ -534,11 +556,15 @@ class TestBacktestStrengthSizing:
     def _config(self) -> AppConfig:
         return AppConfig(
             trading=TradingConfig(
-                symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000,
+                symbols=["BTC/KRW"],
+                timeframe="1h",
+                initial_balance=10_000_000,
             ),
             risk=RiskConfig(
-                max_position_size_pct=0.5, max_open_positions=1,
-                max_drawdown_pct=0.99, default_stop_loss_pct=0.05,
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.99,
+                default_stop_loss_pct=0.05,
                 risk_per_trade_pct=0.02,
             ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
@@ -629,12 +655,17 @@ class TestBacktestTakeProfit:
     def _config(self, take_profit_pct: float) -> AppConfig:
         return AppConfig(
             trading=TradingConfig(
-                symbols=["BTC/KRW"], timeframe="1h", initial_balance=10_000_000,
+                symbols=["BTC/KRW"],
+                timeframe="1h",
+                initial_balance=10_000_000,
             ),
             risk=RiskConfig(
-                max_position_size_pct=0.5, max_open_positions=1,
-                max_drawdown_pct=0.99, default_stop_loss_pct=0.05,
-                default_take_profit_pct=take_profit_pct, risk_per_trade_pct=0.02,
+                max_position_size_pct=0.5,
+                max_open_positions=1,
+                max_drawdown_pct=0.99,
+                default_stop_loss_pct=0.05,
+                default_take_profit_pct=take_profit_pct,
+                risk_per_trade_pct=0.02,
             ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
@@ -642,13 +673,15 @@ class TestBacktestTakeProfit:
     def test_take_profit_closes_winning_trade(self):
         # Entry fills at candle 1's open (100 * 1.001 = 100.1); the 10% target
         # sits at 110.11. Candle 3 gaps up through it → exit at the target.
-        df = _ohlcv_df([
-            (100, 101, 99, 100),
-            (100, 101, 99, 100),   # entry fills here at open=100
-            (100, 101, 99, 100),
-            (105, 115, 104, 112),  # high pierces the take profit
-            (112, 113, 111, 112),
-        ])
+        df = _ohlcv_df(
+            [
+                (100, 101, 99, 100),
+                (100, 101, 99, 100),  # entry fills here at open=100
+                (100, 101, 99, 100),
+                (105, 115, 104, 112),  # high pierces the take profit
+                (112, 113, 111, 112),
+            ]
+        )
         engine = BacktestEngine(strategy=_EnterOnceStrategy(), config=self._config(0.10))
         report = engine.run({"BTC/KRW": df})
 
@@ -662,11 +695,13 @@ class TestBacktestTakeProfit:
         # One candle reaches BOTH the stop (low 90 <= 95.095) and the target
         # (high 115 >= 110.11). Phase-1 checks the stop first via `or`
         # short-circuit, so it must exit at the stop (a loss), never the target.
-        df = _ohlcv_df([
-            (100, 101, 99, 100),
-            (100, 101, 99, 100),   # entry fills here at open=100
-            (100, 115, 90, 100),   # stop AND target both reachable this candle
-        ])
+        df = _ohlcv_df(
+            [
+                (100, 101, 99, 100),
+                (100, 101, 99, 100),  # entry fills here at open=100
+                (100, 115, 90, 100),  # stop AND target both reachable this candle
+            ]
+        )
         engine = BacktestEngine(strategy=_EnterOnceStrategy(), config=self._config(0.10))
         report = engine.run({"BTC/KRW": df})
 

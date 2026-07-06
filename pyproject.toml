@@ -15,7 +15,9 @@ dependencies = [
     "pydantic>=2.0",
     "pydantic-settings>=2.0",
     "pyyaml>=6.0",
-    "typer>=0.9",
+    # 0.16 미만은 click>=8.2 와 비호환("Secondary flag is not valid...")으로
+    # 콘솔 스크립트 조립이 깨진다 — 테스트는 커맨드 함수를 직접 불러 못 잡는다.
+    "typer>=0.16",
     "pyarrow>=14.0",
     "structlog>=23.0",
     "python-dotenv>=1.0",
@@ -30,6 +32,11 @@ dev = [
     "pytest-asyncio>=0.21",
     "ruff>=0.1",
     "mypy>=1.0",
+    # 테스트 스위트가 실제 LightGBM fit 을 전제하므로(tests/CLAUDE.md) ml 포함
+    "trading-bot[ml]",
+    # mypy 대상(src/tradingbot/dashboard)과 AppTest 테스트가 streamlit 을
+    # import 하므로 dashboard 도 포함 — 없으면 CI mypy 오류 수가 로컬과 어긋난다.
+    "trading-bot[dashboard]",
 ]
 research = [
     "jupyter>=1.0",
@@ -60,6 +67,20 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "N", "W", "UP"]
+ignore = [
+    # (str, Enum) → StrEnum 마이그레이션은 str()/f-string 출력 의미가 바뀐다
+    # (멤버명 → 값). 로그·알림·직렬화에 스며든 현행 의미 보존을 택한다.
+    "UP042",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# sklearn 관례(X, y, X_train, X_cal …)를 따르는 ML 코드와 그 테스트
+"src/tradingbot/ml/*" = ["N803", "N806"]
+"src/tradingbot/strategy/lgbm_strategy.py" = ["N806"]
+"src/tradingbot/strategy/filters/ml.py" = ["N806"]
+"tests/test_ml.py" = ["N803", "N806"]
+"tests/test_threshold_tuner.py" = ["N806"]
+"tests/test_combine.py" = ["N806"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
@@ -68,3 +89,22 @@ pythonpath = ["src"]
 [tool.mypy]
 python_version = "3.11"
 strict = true
+
+[[tool.mypy.overrides]]
+# 스텁 없는 서드파티: import 를 Any 로 취급(사실상 현행 동작 그대로)해
+# import-untyped 노이즈만 제거. pandas-stubs 등 실제 스텁 도입은 오류
+# 표면을 크게 바꾸므로 별도 유닛에서 검토한다.
+module = [
+    "pandas",
+    "pandas.*",
+    "ccxt",
+    "ccxt.*",
+    "ta",
+    "ta.*",
+    "yaml",
+    "sklearn.*",
+    "scipy.*",
+    "plotly",
+    "plotly.*",
+]
+ignore_missing_imports = true
