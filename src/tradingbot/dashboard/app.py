@@ -130,11 +130,27 @@ def _render_header_metrics(data: dict) -> None:
         latest_equity = 0
         total_return = 0
 
+    peak = data.get("peak_equity") or 0
+    drawdown = (peak - latest_equity) / peak if peak > 0 else 0
+    daily_pnl = data.get("daily_pnl") or 0
+    cum_pnl = data.get("cum_realized_pnl") or 0
+
     cols = st.columns(4)
     cols[0].metric("Equity", f"{latest_equity:,.0f} KRW")
     cols[1].metric("Return", f"{total_return:.2%}")
+    cols[2].metric("Drawdown vs Peak", f"{drawdown:.2%}")
+    cols[3].metric("Daily PnL (realized)", f"{daily_pnl:+,.0f} KRW")
+
+    cols = st.columns(4)
+    cols[0].metric("Cum Realized PnL", f"{cum_pnl:+,.0f} KRW")
+    cols[1].metric("Peak Equity", f"{peak:,.0f} KRW" if peak else "N/A")
     cols[2].metric("Open Positions", str(len(positions)))
     cols[3].metric("Last Update", _format_timestamp(saved_at))
+    st.caption(
+        "Drawdown breaker and daily-loss limit run on the transfer-immune "
+        "ledger inside the engine — identical to the numbers above until an "
+        "external deposit/withdrawal happens."
+    )
 
 
 def _render_positions(data: dict) -> None:
@@ -157,6 +173,11 @@ def _render_positions(data: dict) -> None:
                 "Size": f"{pos.get('size', 0):.8f}",
                 "Entry Price": f"{pos.get('entry_price', 0):,.0f}",
                 "Stop Loss": f"{pos.get('stop_loss', 0):,.0f}" if pos.get("stop_loss") else "N/A",
+                "Stop %": (
+                    f"{pos['stop_loss'] / pos['entry_price'] - 1:+.1%}"
+                    if pos.get("stop_loss") and pos.get("entry_price")
+                    else "N/A"
+                ),
                 "Entry Time": _format_timestamp(pos.get("entry_time", "")),
             }
         )
@@ -186,12 +207,9 @@ def _render_equity_chart(data: dict) -> None:
             mode="lines",
             name="Equity",
             line=dict(color="#2196F3", width=2),
-            fill="tozeroy",
-            fillcolor="rgba(33, 150, 243, 0.1)",
         )
     )
     fig.update_layout(
-        xaxis_title="Time",
         yaxis_title="Equity (KRW)",
         height=400,
         margin=dict(l=0, r=0, t=10, b=0),
@@ -207,12 +225,16 @@ def _render_backtest_viewer() -> None:
     """Backtest result visualization."""
     st.subheader("Run a backtest to visualize results")
 
-    # Strategy selection
+    # Strategy selection — from the registry so new strategies show up
+    # automatically. lgbm needs saved models + per-symbol thresholds; the
+    # proper path for it is `tradingbot ml-backtest`.
+    names = sorted(n for n in _get_strategy_map() if n != "lgbm")
     col1, col2 = st.columns(2)
     with col1:
         strategy = st.selectbox(
             "Strategy",
-            ["sma_cross", "rsi_mean_reversion", "macd_momentum", "bollinger_breakout"],
+            names,
+            index=names.index("sma_cross") if "sma_cross" in names else 0,
         )
     with col2:
         symbol = st.text_input("Symbol", value="BTC/KRW")
@@ -437,8 +459,28 @@ def _render_models() -> None:
 
     import pandas as pd
 
+    df = pd.DataFrame(entries)
+    # Operator-relevant columns first; whatever else the meta grows stays behind.
+    front = [
+        c
+        for c in (
+            "symbol",
+            "timeframe",
+            "holdout_auc",
+            "entry_threshold",
+            "exit_threshold",
+            "has_calibrator",
+            "n_features",
+            "trained_at",
+        )
+        if c in df.columns
+    ]
+    df = df[front + [c for c in df.columns if c not in front]]
+    num_cols = df.select_dtypes("number").columns
+    df[num_cols] = df[num_cols].round(3)
+
     st.caption(f"{len(entries)} model(s) in `{model_dir}/`")
-    st.dataframe(pd.DataFrame(entries), use_container_width=True, hide_index=True)
+    st.dataframe(df, use_container_width=True, hide_index=True)
 
 
 # ── Helpers ──────────────────────────────────────────────────────────
@@ -459,7 +501,8 @@ def _format_timestamp(ts: str) -> str:
         if dt.tzinfo is None:
             dt = dt.replace(tzinfo=UTC)
         dt_kst = dt.astimezone(KST)
-        return dt_kst.strftime("%Y-%m-%d %H:%M KST")
+        # Year dropped so the value fits st.metric without clipping.
+        return dt_kst.strftime("%m-%d %H:%M KST")
     except (ValueError, TypeError):
         return str(ts)
 
