@@ -2,6 +2,7 @@
 # pyproject 는 >= 범위만 선언하므로, PC 가 달라도 같은 버전이 풀리도록
 # 설치 시 반드시 함께 사용: pip install -e ".[dev]" -c constraints.txt
 # 갱신(의존성 업그레이드 후): .venv/bin/pip freeze | grep -v "^-e" 로 재생성.
+# freeze 기준 Python 3.12 (scipy 1.18+ 등 3.12 전용 핀 포함 — CI 러너도 3.12).
 aiodns==4.0.4
 aiohappyeyeballs==2.6.2
 aiohttp==3.14.1

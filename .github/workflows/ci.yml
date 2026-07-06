@@ -4,6 +4,9 @@ name: CI
 # ruff format. mypy 는 baseline 래칫 — 오류 수가 .mypy-baseline 을 넘으면
 # 실패한다(감소는 언제나 허용; 부채를 줄이면 .mypy-baseline 도 함께 내려
 # 그 수준을 새 바닥으로 고정). ruff 부채는 0 으로 정리 완료(2026-07).
+#
+# Python 은 constraints.txt 를 freeze 한 개발 venv 와 동일한 3.12 — 핀 중
+# scipy>=1.18 등이 3.12 전용이라 3.11 러너에서는 해석 불가능(ResolutionImpossible).
 
 on:
   push:
@@ -18,7 +21,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
@@ -33,13 +36,13 @@ jobs:
         run: pytest tests/ -q --cov=src/tradingbot --cov-fail-under=60
 
   lint:
-    name: lint & types (informational)
+    name: lint & types (blocking + mypy ratchet)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: "3.12"
           cache: pip
           cache-dependency-path: |
             pyproject.toml
