@@ -131,7 +131,9 @@ def _render_header_metrics(data: dict) -> None:
         total_return = 0
 
     peak = data.get("peak_equity") or 0
-    drawdown = (peak - latest_equity) / peak if peak > 0 else 0
+    # Clamped: after an external deposit raw equity can sit above the
+    # ledger-tracked peak, which would read as a negative drawdown.
+    drawdown = max(0.0, (peak - latest_equity) / peak) if peak > 0 else 0
     daily_pnl = data.get("daily_pnl") or 0
     cum_pnl = data.get("cum_realized_pnl") or 0
 
