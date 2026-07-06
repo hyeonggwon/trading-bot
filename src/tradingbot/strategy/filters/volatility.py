@@ -241,6 +241,10 @@ class RealizedVolLowFilter(BaseFilter):
         self.threshold = threshold
         self.vol_period = vol_period
         self.rank_period = rank_period
+        # Full-window parity bound: pct_change eats 1 candle and the rank
+        # window must hold only full-window vols (bit-exact at the bound;
+        # beyond it live values silently drift from backtest).
+        self.min_history = vol_period + rank_period + 1
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         return _add_realized_vol(df, self.vol_period, self.rank_period)
@@ -284,6 +288,8 @@ class RealizedVolHighFilter(BaseFilter):
         self.threshold = threshold
         self.vol_period = vol_period
         self.rank_period = rank_period
+        # Same parity bound as RealizedVolLowFilter.
+        self.min_history = vol_period + rank_period + 1
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         return _add_realized_vol(df, self.vol_period, self.rank_period)

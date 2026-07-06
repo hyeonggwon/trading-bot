@@ -17,6 +17,10 @@ class BaseFilter(ABC):
 
     name: str = "base"
     role: str = "entry"  # "entry" | "trend" | "volatility" | "volume" | "exit"
+    # Candles required for the last-candle value to match a full-history
+    # computation. Filters whose indicators look further back than the live
+    # engine's fetch window declare it so the engine can warn at startup.
+    min_history: int = 0
 
     def __init__(self, **kwargs: Any) -> None:
         self.params = kwargs

@@ -45,3 +45,9 @@ CLAUDE.md 의 "How not" 섹션은 이 파일을 1줄로만 가리킨다.
 **원인:** 설정 모델이 `extra="forbid"` (`config.py` `_StrictModel`) — 오타 키(`max_drawdown_pcnt` 등)가 조용히 기본값으로 대체되는 실계좌 사고를 막는 의도적 전환. pydantic 기본(ignore)과 다르다.
 **처방:** 새 설정 키는 `config.py` 의 해당 모델에 필드를 먼저 추가한 뒤 YAML 에 쓴다.
 **참고:** 5571ae0 (설정 오타 거부).
+
+## 레짐 필터 커스텀 파라미터가 라이브 200캔들 창을 초과 · 2026-07-06
+
+**증상:** `realized_vol_low/high` 의 커스텀 `vol_period`/`rank_period` 가 크면(합+1 > 200) 라이브/페이퍼 신호가 백테스트와 조용히 어긋난다(에러·NaN 없음 — `min_periods=10` 때문에 값은 항상 나온다).
+**원인:** 라이브 엔진은 캔들을 200개만 fetch 하는데, 백분위 랭크 창에 partial-window vol 값이 섞이면 풀 히스토리 계산과 순위가 달라진다. 풀 윈도우 패리티 경계는 `vol_period + rank_period + 1 ≤ 200` (기본 20/50 → 71, 안전).
+**처방:** 필터는 `min_history`(BaseFilter 기본 0)를 선언하고 `CombinedStrategy.min_history` 가 최댓값을 집계 — 라이브 엔진이 워밍업에서 200 초과 시 `filter_history_truncated` 경고를 낸다. 새 장주기 필터를 만들면 `min_history` 를 같이 선언할 것. 회귀: `tests/test_combine.py::test_min_history_parity_bound`.

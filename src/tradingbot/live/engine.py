@@ -123,6 +123,18 @@ class LiveEngine:
 
         # Initial warmup per symbol (parallel)
         warmup_candles = 200
+        # Filters looking further back than the fetch window (e.g. a
+        # realized_vol gate with a large rank_period) would silently compute
+        # different values here than in the backtest that vetted them.
+        needed = getattr(self.strategy, "min_history", 0)
+        if needed > warmup_candles:
+            logger.warning(
+                "filter_history_truncated",
+                needed=needed,
+                fetched=warmup_candles,
+                hint="live fetch window < filter lookback; live signals will "
+                "drift from backtest — reduce filter periods",
+            )
         warmup_tasks = [
             self.exchange.fetch_ohlcv(sym, timeframe, limit=warmup_candles) for sym in symbols
         ]
