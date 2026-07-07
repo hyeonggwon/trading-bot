@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import typer
 from rich.table import Table
@@ -11,6 +12,9 @@ from tradingbot.cli._shared import app, console
 from tradingbot.cli.combine import _build_combined_strategy, _resolve_strategy
 from tradingbot.config import load_config
 from tradingbot.utils.logging import setup_logging
+
+if TYPE_CHECKING:
+    from tradingbot.strategy.base import Strategy
 
 
 @app.command()
@@ -38,6 +42,7 @@ def paper(
 
     setup_logging()
 
+    strategy: Strategy
     if entry is not None:
         # --entry/--exit: custom combined strategy
         if exit_ is None:
@@ -177,6 +182,7 @@ def live(
 
     setup_logging()
 
+    strategy: Strategy
     if entry is not None:
         # --entry/--exit: custom combined strategy
         if exit_ is None:
@@ -265,7 +271,7 @@ def balance(
         console.print("[red]API keys not configured.[/red]")
         raise typer.Exit(1)
 
-    async def _fetch():
+    async def _fetch() -> None:
         ex = CcxtExchange(ExchangeConfig(name=exchange_name), env)
         try:
             bal = await ex.get_balance()

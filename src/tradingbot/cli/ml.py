@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any, cast
 
 import typer
 from rich.table import Table
@@ -11,6 +12,11 @@ from tradingbot.cli._shared import _progress_context, app, console
 from tradingbot.config import load_config
 from tradingbot.data.storage import EXTERNAL_SUBDIR, list_available_data
 from tradingbot.utils.logging import setup_logging
+
+if TYPE_CHECKING:
+    import numpy as np
+
+    from tradingbot.ml.parallel import ThresholdTunePairResult, TunePairResult
 
 
 @app.command(name="ml-train")
@@ -483,7 +489,7 @@ def ml_train_all(
     console.print(f"  Walk-Forward: {train_months}m train / {test_months}m test")
     console.print(f"  Workers: {workers}  (threads/worker: {threads_per_worker})\n")
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
 
     if workers == 1:
         # Sequential — zero subprocess overhead
@@ -584,34 +590,34 @@ def ml_train_all(
                     for future in as_completed(futures):
                         sym, tf = futures[future]
                         try:
-                            r = future.result()
+                            res = future.result()
                         except Exception as exc:
                             progress.log(f"[red]{sym} {tf}: unexpected error: {exc}[/red]")
                             progress.advance(task)
                             continue
 
-                        if r.error:
-                            color = "yellow" if r.error == "no data" else "red"
-                            progress.log(f"[{color}]{sym} {tf}: {r.error}[/{color}]")
-                        elif r.n_windows == 0:
+                        if res.error:
+                            color = "yellow" if res.error == "no data" else "red"
+                            progress.log(f"[{color}]{sym} {tf}: {res.error}[/{color}]")
+                        elif res.n_windows == 0:
                             progress.log(f"[yellow]{sym} {tf}: insufficient data[/yellow]")
                         else:
                             progress.log(
-                                f"[green]{sym} {tf}: AUC={r.avg_auc:.4f} "
-                                f"precision={r.avg_precision:.4f} "
-                                f"holdout={r.holdout_auc:.4f} "
-                                f"windows={r.n_windows}[/green]"
+                                f"[green]{sym} {tf}: AUC={res.avg_auc:.4f} "
+                                f"precision={res.avg_precision:.4f} "
+                                f"holdout={res.holdout_auc:.4f} "
+                                f"windows={res.n_windows}[/green]"
                             )
                             results.append(
                                 {
                                     "symbol": sym,
                                     "timeframe": tf,
-                                    "avg_auc": r.avg_auc,
-                                    "avg_precision": r.avg_precision,
-                                    "holdout_auc": r.holdout_auc,
-                                    "holdout_precision": r.holdout_precision,
-                                    "n_windows": r.n_windows,
-                                    "model_path": r.model_path,
+                                    "avg_auc": res.avg_auc,
+                                    "avg_precision": res.avg_precision,
+                                    "holdout_auc": res.holdout_auc,
+                                    "holdout_precision": res.holdout_precision,
+                                    "n_windows": res.n_windows,
+                                    "model_path": res.model_path,
                                 }
                             )
 
@@ -759,7 +765,8 @@ def ml_diagnostics(
     calibration = (
         evaluate_calibration(
             y_true=model_report.holdout_y_true,
-            raw_proba=model_report.holdout_raw_proba,
+            # holdout arrays are set together — y_true not None ⇒ raw_proba not None
+            raw_proba=cast("np.ndarray", model_report.holdout_raw_proba),
             calibrated_proba=model_report.holdout_calibrated_proba,
         )
         if model_report.holdout_y_true is not None
@@ -768,12 +775,16 @@ def ml_diagnostics(
 
     distribution = (
         summarize_distribution(
-            model_report.holdout_calibrated_proba
-            if model_report.holdout_calibrated_proba is not None
-            else (
-                model_report.holdout_raw_proba
-                if model_report.holdout_raw_proba is not None
-                else None
+            # outer guard ensures at least one proba array is non-None
+            cast(
+                "np.ndarray",
+                model_report.holdout_calibrated_proba
+                if model_report.holdout_calibrated_proba is not None
+                else (
+                    model_report.holdout_raw_proba
+                    if model_report.holdout_raw_proba is not None
+                    else None
+                ),
             ),
             thresholds=(exit_threshold, entry_threshold, 0.50),
         )
@@ -865,7 +876,7 @@ def ml_diagnostics(
     json_path = out_dir / f"{base}.json"
     md_path = out_dir / f"{base}.md"
 
-    payload: dict = {
+    payload: dict[str, Any] = {
         "symbol": symbol,
         "timeframe": timeframe,
         "train_months": train_months,
@@ -1410,10 +1421,10 @@ def ml_tune_all(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     failed: list[tuple[str, str, str]] = []
 
-    def _record_result(sym: str, tf: str, r) -> None:
+    def _record_result(sym: str, tf: str, r: TunePairResult) -> None:
         # ``no_successful_trial``, ``no_data``, etc. surface as failures
         # because the per-model meta wasn't updated and there's no Sharpe
         # to compare. Anything with a usable best_value goes into rows.
@@ -2002,10 +2013,10 @@ def ml_tune_thresholds_all(
     out_dir = Path(output_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    rows: list[dict] = []
+    rows: list[dict[str, Any]] = []
     failed: list[tuple[str, str, str]] = []
 
-    def _record_result(sym: str, tf: str, r) -> None:
+    def _record_result(sym: str, tf: str, r: ThresholdTunePairResult) -> None:
         """Translate a worker result into a summary row or failure entry."""
         # Non-fatal sentinel: search returned no usable grid (e.g. missing
         # meta.holdout_start, all combos zero-trade). The full reason is in

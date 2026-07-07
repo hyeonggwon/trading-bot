@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.table import Table
@@ -19,6 +20,10 @@ from tradingbot.cli._shared import (
 )
 from tradingbot.config import load_config
 from tradingbot.utils.logging import setup_logging
+
+if TYPE_CHECKING:
+    from tradingbot.strategy.base import Strategy
+    from tradingbot.strategy.combined import CombinedStrategy
 
 # Predefined meaningful filter combination templates
 COMBINE_TEMPLATES = [
@@ -246,7 +251,7 @@ def _build_combined_strategy(
     exit_: str,
     symbol: str,
     timeframe: str,
-):
+) -> CombinedStrategy:
     """Build a CombinedStrategy from filter strings."""
     from tradingbot.strategy.combined import CombinedStrategy
     from tradingbot.strategy.filters.registry import parse_filter_string
@@ -266,7 +271,7 @@ def _build_combined_strategy(
     return strategy
 
 
-def _find_combine_template(label: str) -> dict | None:
+def _find_combine_template(label: str) -> dict[str, str] | None:
     """Find a COMBINE_TEMPLATES entry by label (case-insensitive)."""
     label_lower = label.lower()
     for tmpl in COMBINE_TEMPLATES:
@@ -280,7 +285,7 @@ def _resolve_strategy(
     symbol: str,
     timeframe: str,
     symbols: list[str] | None = None,
-):
+) -> tuple[Strategy, str, type[Strategy] | None]:
     """Resolve strategy by name — checks COMBINE_TEMPLATES, then STRATEGY_MAP.
 
     Returns (strategy_instance, strategy_name, strategy_cls_or_none).
@@ -486,7 +491,7 @@ def combine_scan(
         f"{len(batches)} batches){range_note}...[/bold]"
     )
 
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     failures: list[str] = []
 
     from tradingbot.backtest.parallel import _run_batch
@@ -522,23 +527,23 @@ def combine_scan(
                     failures.append(f"{sym}/{tf}: worker crashed: {exc}")
                     progress.advance(task, advance=len(batches[(sym, tf)]))
                     continue
-                for r in batch_results:
-                    if r.error:
-                        failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
+                for res in batch_results:
+                    if res.error:
+                        failures.append(f"{res.strategy}/{res.symbol}/{res.timeframe}: {res.error}")
                     else:
                         results.append(
                             {
-                                "template": r.strategy,
-                                "entry": r.entry,
-                                "exit": r.exit,
-                                "symbol": r.symbol,
-                                "timeframe": r.timeframe,
-                                "sharpe_ratio": r.sharpe_ratio,
-                                "total_return": r.total_return,
-                                "max_drawdown": r.max_drawdown,
-                                "win_rate": r.win_rate,
-                                "profit_factor": r.profit_factor,
-                                "total_trades": r.total_trades,
+                                "template": res.strategy,
+                                "entry": res.entry,
+                                "exit": res.exit,
+                                "symbol": res.symbol,
+                                "timeframe": res.timeframe,
+                                "sharpe_ratio": res.sharpe_ratio,
+                                "total_return": res.total_return,
+                                "max_drawdown": res.max_drawdown,
+                                "win_rate": res.win_rate,
+                                "profit_factor": res.profit_factor,
+                                "total_trades": res.total_trades,
                             }
                         )
                     progress.advance(task)
@@ -563,7 +568,7 @@ def combine_scan(
         to_verify = results[:n_verify]
 
         # ML templates already went through full engine — mark as verified, skip re-run
-        verify_jobs: list[dict] = []
+        verify_jobs: list[dict[str, Any]] = []
         for r in to_verify:
             if "lgbm_prob" in r["entry"]:
                 verified_set.add((r["template"], r["symbol"], r["timeframe"]))
@@ -574,15 +579,17 @@ def combine_scan(
             # Group by (symbol, timeframe)
             verify_batches: dict[tuple[str, str], list[tuple[str, str, str]]] = {}
             for r in verify_jobs:
-                key = (r["symbol"], r["timeframe"])
-                verify_batches.setdefault(key, []).append((r["template"], r["entry"], r["exit"]))
+                batch_key = (r["symbol"], r["timeframe"])
+                verify_batches.setdefault(batch_key, []).append(
+                    (r["template"], r["entry"], r["exit"])
+                )
 
             console.print(
                 f"\n[bold]Re-verifying top {len(verify_jobs)} results "
                 f"with full engine ({len(verify_batches)} batches)...[/bold]"
             )
 
-            verified_results: dict[tuple[str, str, str], dict] = {}
+            verified_results: dict[tuple[str, str, str], dict[str, Any]] = {}
             with _progress_context() as progress:
                 task = progress.add_task("Verifying", total=len(verify_jobs))
 
@@ -615,17 +622,17 @@ def combine_scan(
                             n_batch = len(verify_batches[(sym, tf)])
                             progress.advance(task, advance=n_batch)
                             continue
-                        for r in batch_results:
-                            if not r.error:
-                                verified_results[(r.strategy, r.symbol, r.timeframe)] = {
-                                    "sharpe_ratio": r.sharpe_ratio,
-                                    "total_return": r.total_return,
-                                    "max_drawdown": r.max_drawdown,
-                                    "win_rate": r.win_rate,
-                                    "profit_factor": r.profit_factor,
-                                    "total_trades": r.total_trades,
+                        for res in batch_results:
+                            if not res.error:
+                                verified_results[(res.strategy, res.symbol, res.timeframe)] = {
+                                    "sharpe_ratio": res.sharpe_ratio,
+                                    "total_return": res.total_return,
+                                    "max_drawdown": res.max_drawdown,
+                                    "win_rate": res.win_rate,
+                                    "profit_factor": res.profit_factor,
+                                    "total_trades": res.total_trades,
                                 }
-                                verified_set.add((r.strategy, r.symbol, r.timeframe))
+                                verified_set.add((res.strategy, res.symbol, res.timeframe))
                             progress.advance(task)
 
             # Replace results with verified metrics

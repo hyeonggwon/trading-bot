@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
@@ -57,7 +58,7 @@ def _app_root() -> None:
 
 
 @contextmanager
-def _progress_context():
+def _progress_context() -> Iterator[Progress]:
     """Create a Rich Progress bar and suppress structlog during display."""
     progress = Progress(
         SpinnerColumn(),

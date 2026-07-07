@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import typer
 from rich.table import Table
@@ -20,6 +21,12 @@ from tradingbot.cli._shared import (
 from tradingbot.cli.combine import _resolve_strategy
 from tradingbot.config import load_config
 from tradingbot.utils.logging import setup_logging
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from tradingbot.config import AppConfig
+    from tradingbot.strategy.base import Strategy
 
 
 @app.command()
@@ -71,7 +78,7 @@ def backtest(
     )
 
     # Load data for all symbols
-    data: dict = {}
+    data: dict[str, pd.DataFrame] = {}
     for sym in symbols:
         try:
             data[sym] = load_candles(sym, timeframe, Path(data_dir))
@@ -230,11 +237,11 @@ def walk_forward(
 
 
 def _walk_forward_combined(
-    strategy,
+    strategy: Strategy,
     strategy_name: str,
     symbol: str,
-    df,
-    config,
+    df: pd.DataFrame,
+    config: AppConfig,
     train_months: int,
     test_months: int,
 ) -> None:
@@ -433,7 +440,7 @@ def scan(
         symbol_timeframes.setdefault(item["symbol"], []).append(item["timeframe"])
 
     strategies = list(STRATEGY_MAP.keys())
-    results: list[dict] = []
+    results: list[dict[str, Any]] = []
     failures: list[str] = []
 
     # Build batched jobs: group by (symbol, timeframe) to load data once
@@ -494,21 +501,21 @@ def scan(
                     failures.append(f"{sym}/{tf}: worker crashed: {exc}")
                     progress.advance(task, advance=len(batches[(sym, tf)]))
                     continue
-                for r in batch_results:
-                    if r.error:
-                        failures.append(f"{r.strategy}/{r.symbol}/{r.timeframe}: {r.error}")
+                for res in batch_results:
+                    if res.error:
+                        failures.append(f"{res.strategy}/{res.symbol}/{res.timeframe}: {res.error}")
                     else:
                         results.append(
                             {
-                                "strategy": r.strategy,
-                                "symbol": r.symbol,
-                                "timeframe": r.timeframe,
-                                "sharpe_ratio": r.sharpe_ratio,
-                                "total_return": r.total_return,
-                                "max_drawdown": r.max_drawdown,
-                                "win_rate": r.win_rate,
-                                "profit_factor": r.profit_factor,
-                                "total_trades": r.total_trades,
+                                "strategy": res.strategy,
+                                "symbol": res.symbol,
+                                "timeframe": res.timeframe,
+                                "sharpe_ratio": res.sharpe_ratio,
+                                "total_return": res.total_return,
+                                "max_drawdown": res.max_drawdown,
+                                "win_rate": res.win_rate,
+                                "profit_factor": res.profit_factor,
+                                "total_trades": res.total_trades,
                             }
                         )
                     progress.advance(task)
