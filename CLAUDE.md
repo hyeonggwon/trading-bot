@@ -195,7 +195,7 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
 - `src/tradingbot/risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown)
 - `src/tradingbot/notifications/telegram.py` — Telegram Bot API notifications
-- `src/tradingbot/dashboard/app.py` — Streamlit web dashboard (Live Monitor + entry pause/resume control + Backtest Viewer + Model Catalog)
+- `src/tradingbot/dashboard/` — Streamlit GUI with full CLI parity: `app.py` (mode router) + `views/` pages (Live Monitor·Trading·Backtest·Combine·ML·Data·Models·Jobs). `forms.py` auto-generates command forms via click introspection (`PAGE_COMMANDS` parity ratchet enforced by tests/test_dashboard_forms.py); `jobs.py` runs long commands as detached CLI subprocesses tracked on disk (`personal/gui_jobs/`, SIGINT cancel, duplicate state-file guard for paper/live)
 - `src/tradingbot/config.py` — Pydantic settings from YAML + .env override
 - `src/tradingbot/utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
 

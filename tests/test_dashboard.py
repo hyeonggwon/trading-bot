@@ -19,7 +19,7 @@ APP = str(REPO_ROOT / "src" / "tradingbot" / "dashboard" / "app.py")
 
 class TestDashboardSmoke:
     def test_app_renders_all_modes(self, tmp_path, monkeypatch):
-        """세 모드 전부 빈 환경(state.json·models/ 없음)에서 예외 없이 렌더링."""
+        """전 모드가 빈 환경(state.json·models/·data/ 없음)에서 예외 없이 렌더링."""
         from streamlit.testing.v1 import AppTest
 
         monkeypatch.chdir(tmp_path)
@@ -27,11 +27,9 @@ class TestDashboardSmoke:
         at.run()
         assert not at.exception
 
-        at.sidebar.radio[0].set_value("Models").run()
-        assert not at.exception
-
-        at.sidebar.radio[0].set_value("Backtest Viewer").run()
-        assert not at.exception
+        for mode in at.sidebar.radio[0].options:
+            at.sidebar.radio[0].set_value(mode).run()
+            assert not at.exception, mode
 
     def test_pause_button_writes_control_file(self, tmp_path, monkeypatch):
         """일시정지 버튼 클릭이 control 파일에 pause 플래그를 기록해야 한다.
@@ -106,3 +104,21 @@ class TestDashboardSmoke:
         at.sidebar.radio[0].set_value("Models").run()
         assert not at.exception
         assert len(at.dataframe) == 1
+
+
+class TestLiveGate:
+    def test_live_requires_typed_confirmation(self, tmp_path, monkeypatch):
+        """확인 문구 없이 live 제출 → 에러 표시, 잡 스폰 없음 (실주문 게이트)."""
+        from streamlit.testing.v1 import AppTest
+
+        monkeypatch.chdir(tmp_path)
+        at = AppTest.from_file(APP, default_timeout=30)
+        at.run()
+        at.sidebar.radio[0].set_value("Trading").run()
+        assert not at.exception
+
+        submit = next(b for b in at.button if b.key == "FormSubmitter:form_live-Start live")
+        submit.click().run()
+        assert not at.exception
+        assert any("Confirmation failed" in str(e.value) for e in at.error)
+        assert not (tmp_path / "personal" / "gui_jobs").exists()

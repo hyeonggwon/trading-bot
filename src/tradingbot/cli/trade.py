@@ -304,7 +304,9 @@ def dashboard(
         console.print('  pip install -e ".[dashboard]"')
         raise typer.Exit(1)
 
-    dashboard_path = Path(__file__).parent / "dashboard" / "app.py"
+    from tradingbot import dashboard as dashboard_pkg
+
+    dashboard_path = Path(dashboard_pkg.__file__ or "").parent / "app.py"
     if not dashboard_path.exists():
         console.print("[red]Dashboard app not found.[/red]")
         raise typer.Exit(1)
@@ -320,6 +322,9 @@ def dashboard(
             "streamlit",
             "run",
             str(dashboard_path),
+            # Loopback only: the GUI can start real-money trades and has no
+            # auth of its own — never expose it on the network by default.
+            "--server.address=127.0.0.1",
             "--",
             f"--state-file={state_file}",
         ],
