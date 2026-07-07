@@ -55,8 +55,8 @@ class LGBMStrategy(Strategy):
         # Models, calibrators, and feature lists loaded lazily per symbol.
         # Feature lists must be per-symbol because different models can have
         # different feature counts (10 technical vs 16 technical+external).
-        self._models: dict = {}
-        self._calibrators: dict = {}
+        self._models: dict[str, Any] = {}
+        self._calibrators: dict[str, Any] = {}
         self._feature_cols: dict[str, list[str]] = {}
         self._win_loss_ratios: dict[str, float] = {}
         # Per-symbol threshold overrides written by the Phase 5 threshold
@@ -65,7 +65,7 @@ class LGBMStrategy(Strategy):
         self._entry_thresholds: dict[str, float] = {}
         self._exit_thresholds: dict[str, float] = {}
         # Raw external components loaded once, aligned per symbol/df
-        self._external_components: dict | None = None
+        self._external_components: dict[str, pd.DataFrame | None] | None = None
         self._external_load_tried: bool = False
         self._warned_missing: set[str] = set()
         # Cache for include_extra auto-detection so multi-symbol backtests
@@ -92,7 +92,7 @@ class LGBMStrategy(Strategy):
         self._feature_cols[symbol] = feature_cols
         self._win_loss_ratios[symbol] = win_loss_ratio
 
-    def _load_model(self, symbol: str):
+    def _load_model(self, symbol: str) -> Any:
         """Lazy-load model, calibrator, and feature names for a specific symbol."""
         if symbol not in self._models:
             model = LGBMTrainer.load(symbol, self.timeframe, self.model_dir)

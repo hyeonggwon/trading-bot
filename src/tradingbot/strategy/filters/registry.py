@@ -114,7 +114,7 @@ def parse_filter_spec(spec: str, base_timeframe: str = "1h") -> BaseFilter:
         raise ValueError(f"Unknown filter: {name}. Available: {', '.join(sorted(filter_map))}")
 
     filter_cls = filter_map[name]
-    kwargs: dict = {}
+    kwargs: dict[str, int | float | str] = {}
 
     # Filter empty parts from trailing colons
     parts = [p for p in parts if p]
@@ -130,7 +130,9 @@ def parse_filter_spec(spec: str, base_timeframe: str = "1h") -> BaseFilter:
     return filter_cls(**kwargs)
 
 
-def _parse_filter_params(name: str, parts: list[str], kwargs: dict, base_timeframe: str) -> None:
+def _parse_filter_params(
+    name: str, parts: list[str], kwargs: dict[str, int | float | str], base_timeframe: str
+) -> None:
     """Parse filter-specific parameters into kwargs dict."""
     if name in ("trend_up", "trend_down"):
         if len(parts) >= 2:

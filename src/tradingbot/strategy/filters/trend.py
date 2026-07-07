@@ -47,14 +47,14 @@ class TrendUpFilter(BaseFilter):
         sma = df[self._col_sma()].iloc[-1]
         if pd.isna(close) or pd.isna(sma):
             return False
-        return close > sma
+        return bool(close > sma)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         close = df[self._col_close()].iloc[-1]
         sma = df[self._col_sma()].iloc[-1]
         if pd.isna(close) or pd.isna(sma):
             return False
-        return close < sma
+        return bool(close < sma)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -106,14 +106,14 @@ class TrendDownFilter(BaseFilter):
         sma = df[self._col_sma()].iloc[-1]
         if pd.isna(close) or pd.isna(sma):
             return False
-        return close < sma
+        return bool(close < sma)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         close = df[self._col_close()].iloc[-1]
         sma = df[self._col_sma()].iloc[-1]
         if pd.isna(close) or pd.isna(sma):
             return False
-        return close > sma
+        return bool(close > sma)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -150,7 +150,7 @@ class AdxStrongFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val > self.threshold
+        return bool(val > self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"adx_{self.period}"
@@ -159,7 +159,7 @@ class AdxStrongFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val < self.threshold
+        return bool(val < self.threshold)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -200,7 +200,7 @@ class IchimokuAboveFilter(BaseFilter):
         span_b = df[f"ichi_b{s}"].iloc[-1]
         if pd.isna(span_a) or pd.isna(span_b):
             return False
-        return close > span_a and close > span_b
+        return bool(close > span_a and close > span_b)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         s = self._suffix()
@@ -209,7 +209,7 @@ class IchimokuAboveFilter(BaseFilter):
         span_b = df[f"ichi_b{s}"].iloc[-1]
         if pd.isna(span_a) or pd.isna(span_b):
             return False
-        return close < min(span_a, span_b)
+        return bool(close < min(span_a, span_b))
 
     @property
     def supports_vectorized(self) -> bool:
@@ -252,7 +252,7 @@ class AroonUpFilter(BaseFilter):
         dn = df[dn_col].iloc[-1]
         if pd.isna(up) or pd.isna(dn):
             return False
-        return up > self.threshold and up > dn
+        return bool(up > self.threshold and up > dn)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         up_col = f"aroon_up_{self.period}"
@@ -263,7 +263,7 @@ class AroonUpFilter(BaseFilter):
         dn = df[dn_col].iloc[-1]
         if pd.isna(up) or pd.isna(dn):
             return False
-        return dn > up
+        return bool(dn > up)
 
     @property
     def supports_vectorized(self) -> bool:

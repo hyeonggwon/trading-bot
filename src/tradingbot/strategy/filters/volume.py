@@ -39,7 +39,7 @@ class VolumeSpikeFilter(BaseFilter):
         ratio = df[col].iloc[-1]
         if pd.isna(ratio):
             return False
-        return ratio >= self.threshold
+        return bool(ratio >= self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
@@ -84,7 +84,7 @@ class ObvRisingFilter(BaseFilter):
         sma = df[col].iloc[-1]
         if pd.isna(obv) or pd.isna(sma):
             return False
-        return obv > sma
+        return bool(obv > sma)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = self._col_sma()
@@ -94,7 +94,7 @@ class ObvRisingFilter(BaseFilter):
         sma = df[col].iloc[-1]
         if pd.isna(obv) or pd.isna(sma):
             return False
-        return obv < sma
+        return bool(obv < sma)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -131,7 +131,7 @@ class MfiConfirmFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val > self.threshold
+        return bool(val > self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"mfi_{self.period}"
@@ -140,7 +140,7 @@ class MfiConfirmFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val < (100 - self.threshold)
+        return bool(val < (100 - self.threshold))
 
     @property
     def supports_vectorized(self) -> bool:

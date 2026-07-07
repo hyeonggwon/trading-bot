@@ -8,7 +8,7 @@ how well optimized parameters generalize to unseen data.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import structlog
@@ -18,6 +18,9 @@ from tradingbot.backtest.optimizer import GridSearchOptimizer
 from tradingbot.backtest.report import BacktestReport
 from tradingbot.config import AppConfig
 from tradingbot.strategy.base import Strategy, StrategyParams
+
+if TYPE_CHECKING:
+    from rich.progress import Progress
 
 logger = structlog.get_logger()
 
@@ -211,7 +214,7 @@ class WalkForwardValidator:
         self,
         data: dict[str, pd.DataFrame],
         param_space: dict[str, list[Any]] | None = None,
-        progress=None,
+        progress: Progress | None = None,
     ) -> WalkForwardReport:
         """Run walk-forward validation.
 

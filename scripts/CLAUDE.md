@@ -2,7 +2,7 @@
 
 ## What — 무엇을 하는가
 
-운영·진단 보조 스크립트 모음. Docker healthcheck, Phase 6 ML 파이프라인 실행, 모델별 calibrator 분포 확인, pre-push 단계의 문서 동기화 훅(정적 아키텍처 mermaid 재생성 + LLM 기반 CLAUDE.md 동기화) 소스를 둔다. `tradingbot` CLI 외부에서 도는 것만 여기에 둔다 — CLI로 흡수 가능한 로직은 `src/tradingbot/cli.py` 쪽으로.
+운영·진단 보조 스크립트 모음. Docker healthcheck, Phase 6 ML 파이프라인 실행, 모델별 calibrator 분포 확인, pre-push 단계의 문서 동기화 훅(정적 아키텍처 mermaid 재생성 + LLM 기반 CLAUDE.md 동기화) 소스를 둔다. `tradingbot` CLI 외부에서 도는 것만 여기에 둔다 — CLI로 흡수 가능한 로직은 `src/tradingbot/cli/` 쪽으로.
 
 ## How — 일반적인 수정
 

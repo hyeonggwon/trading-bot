@@ -4,6 +4,14 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import pandas as pd
+
+    from tradingbot.config import AppConfig
+    from tradingbot.strategy.base import Strategy
+    from tradingbot.strategy.filters.base import BaseFilter
 
 
 @dataclass
@@ -161,7 +169,7 @@ def _run_batch(
         # non-vectorizable entry filter is added, extend this check (or switch
         # to a parsed supports_vectorized test) so it doesn't get a silent zero.
         vectorizable_jobs = []
-        fallback_jobs = []
+        fallback_jobs: list[tuple[str, str, str]] = []
         for name, entry, exit_ in jobs:
             if not entry:
                 fallback_jobs.append((name, entry, exit_))  # registered strategy
@@ -202,14 +210,14 @@ def _run_batch(
 
 
 def _run_vectorized_batch(
-    df,
-    symbol,
-    timeframe,
-    jobs,
-    config,
-    balance,
-    start_ts=None,
-    end_ts=None,
+    df: pd.DataFrame,
+    symbol: str,
+    timeframe: str,
+    jobs: list[tuple[str, str, str]],
+    config: AppConfig,
+    balance: float,
+    start_ts: pd.Timestamp | None = None,
+    end_ts: pd.Timestamp | None = None,
 ) -> list[ScanResult]:
     """Run combined templates via vectorized engine.
 
@@ -223,14 +231,14 @@ def _run_vectorized_batch(
     from tradingbot.strategy.filters.registry import parse_filter_string
 
     # Parse filters once per job, reuse for both union and per-job backtest
-    def _set_symbol_tf(filters):
+    def _set_symbol_tf(filters: list[BaseFilter]) -> None:
         for f in filters:
             if hasattr(f, "symbol"):
                 f.symbol = symbol
             if hasattr(f, "timeframe"):
                 f.timeframe = timeframe
 
-    parsed_jobs: list[tuple[str, list, list, str, str]] = []
+    parsed_jobs: list[tuple[str, list[BaseFilter], list[BaseFilter], str, str]] = []
     all_filters = []
     for name, entry, exit_ in jobs:
         entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
@@ -301,12 +309,12 @@ def _run_vectorized_batch(
 
 
 def _run_engine_batch(
-    df,
-    symbol,
-    timeframe,
-    jobs,
-    config,
-    balance,
+    df: pd.DataFrame,
+    symbol: str,
+    timeframe: str,
+    jobs: list[tuple[str, str, str]],
+    config: AppConfig,
+    balance: float,
 ) -> list[ScanResult]:
     """Run jobs via the full BacktestEngine (registered strategies + ML)."""
     from tradingbot.backtest.engine import BacktestEngine
@@ -337,6 +345,7 @@ def _run_engine_batch(
     results: list[ScanResult] = []
     for strategy_name, entry, exit_ in jobs:
         try:
+            strategy: Strategy
             if entry:
                 entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
                 exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)

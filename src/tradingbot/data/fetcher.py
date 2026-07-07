@@ -66,7 +66,7 @@ class DataFetcher:
         until_ms = int(until.timestamp() * 1000) if until else None
         tf_ms = TIMEFRAME_MS.get(timeframe, 3_600_000)
 
-        all_rows: list[list] = []
+        all_rows: list[list[float]] = []
 
         while True:
             self._rate_limit()

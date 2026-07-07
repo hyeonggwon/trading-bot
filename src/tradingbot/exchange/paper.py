@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime
+from typing import Any
 
 import pandas as pd
 import structlog
@@ -63,7 +64,7 @@ class PaperExchange(BaseExchange):
         """Delegate to data feed."""
         return await self._feed.fetch_ohlcv(symbol, timeframe, since, limit)
 
-    async def fetch_ticker(self, symbol: str) -> dict:
+    async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
         """Delegate to data feed and cache last price."""
         ticker = await self._feed.fetch_ticker(symbol)
         self._last_prices[symbol] = ticker["last"]

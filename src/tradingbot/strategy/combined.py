@@ -15,6 +15,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 import pandas as pd
 
@@ -52,7 +53,7 @@ class CombinedStrategy(Strategy):
 
     def _deduplicate_filters(self) -> list[BaseFilter]:
         """Pre-compute unique filter list for indicators() (avoid per-call key sorting)."""
-        seen: set[tuple] = set()
+        seen: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()
         unique: list[BaseFilter] = []
         for f in self.entry_filters + self.exit_filters:
             key = (f.__class__.__name__, tuple(sorted(f.params.items())))

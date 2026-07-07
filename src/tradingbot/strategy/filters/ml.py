@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -44,18 +45,18 @@ class LgbmProbFilter(BaseFilter):
 
         self.external_data_dir = resolve_external_data_dir(external_data_dir)
 
-        self._model = None
-        self._calibrator = None
+        self._model: Any = None
+        self._calibrator: Any = None
         self._feature_names: list[str] | None = None
         self._win_loss_ratio: float = 1.5
         self._loaded = False
-        self._external_components: dict | None = None
+        self._external_components: dict[str, pd.DataFrame | None] | None = None
         self._external_load_tried: bool = False
         self._warned_missing = False
         self.last_prob: float | None = None
         self.last_strength: float | None = None
 
-    def _load_model(self):
+    def _load_model(self) -> Any:
         """Lazy-load LightGBM model and calibrator. Only attempts once."""
         if self._loaded:
             return self._model

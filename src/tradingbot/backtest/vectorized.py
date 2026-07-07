@@ -30,6 +30,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import sqrt
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -104,14 +105,15 @@ def vectorized_backtest(
         exit_mask = exit_mask | f.vectorized_exit(df)
 
     # Fill NaN with False
-    entry_signals = entry_mask.fillna(False).values.astype(bool)
-    exit_signals = exit_mask.fillna(False).values.astype(bool)
+    # cast: bool/float64 columns are numpy-backed, so .values.astype() is ndarray
+    entry_signals = cast(np.ndarray, entry_mask.fillna(False).values.astype(bool))
+    exit_signals = cast(np.ndarray, exit_mask.fillna(False).values.astype(bool))
 
     # Extract numpy arrays
-    opens = df["open"].values.astype(np.float64)
-    highs = df["high"].values.astype(np.float64)
-    lows = df["low"].values.astype(np.float64)
-    closes = df["close"].values.astype(np.float64)
+    opens = cast(np.ndarray, df["open"].values.astype(np.float64))
+    highs = cast(np.ndarray, df["high"].values.astype(np.float64))
+    lows = cast(np.ndarray, df["low"].values.astype(np.float64))
+    closes = cast(np.ndarray, df["close"].values.astype(np.float64))
 
     # ATR values for trailing stop
     atr_values: np.ndarray | None = None
@@ -119,7 +121,8 @@ def vectorized_backtest(
     if atr_filter is not None:
         atr_col = f"atr_{atr_filter.period}"
         if atr_col in df.columns:
-            atr_values = df[atr_col].values.astype(np.float64)
+            # cast: atr_* columns are float64, numpy-backed
+            atr_values = cast(np.ndarray, df[atr_col].values.astype(np.float64))
             atr_multiplier = atr_filter.multiplier
 
     max_holding_bars = time_stop_filter.max_bars if time_stop_filter is not None else None
@@ -148,7 +151,8 @@ def vectorized_backtest(
         initial_balance=initial_balance,
         final_balance=final_balance,
         closes=closes,
-        index=df.index,
+        # cast: candle frames carry a DatetimeIndex
+        index=cast(pd.DatetimeIndex, df.index),
         timeframe=timeframe,
         fee_rate=fee_rate,
     )

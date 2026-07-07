@@ -17,6 +17,7 @@ import json
 import uuid
 from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import structlog
 
@@ -211,7 +212,7 @@ class UpbitWebSocketClient:
                 except (json.JSONDecodeError, KeyError, TypeError) as e:
                     logger.debug("ws_parse_error", error=str(e))
 
-    async def _handle_message(self, data: dict) -> None:
+    async def _handle_message(self, data: dict[str, Any]) -> None:
         """Parse and dispatch a ticker message."""
         msg_type = data.get("type")
         if msg_type != "ticker":

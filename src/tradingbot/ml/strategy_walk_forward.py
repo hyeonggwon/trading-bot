@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -44,7 +44,7 @@ class _SkipWindowError(Exception):
 class MLStrategyWalkForwardReport:
     """Per-window backtest results for ML walk-forward evaluation."""
 
-    windows: list[dict] = field(default_factory=list)
+    windows: list[dict[str, Any]] = field(default_factory=list)
     avg_sharpe: float = 0.0
     cumulative_return_pct: float = 0.0
     total_trades: int = 0
@@ -79,7 +79,7 @@ class MLStrategyWalkForward:
         exit_threshold: float = 0.30,
         external_data_dir: str | Path | None = None,
         config: AppConfig | None = None,
-        lgbm_params: dict | None = None,
+        lgbm_params: dict[str, Any] | None = None,
     ) -> None:
         if target_kind not in VALID_TARGET_KINDS:
             raise ValueError(
@@ -150,7 +150,7 @@ class MLStrategyWalkForward:
             f"train_size={train_size}, test_size={test_size}, embargo={EMBARGO_CANDLES}"
         )
 
-        results: list[dict] = []
+        results: list[dict[str, Any]] = []
         equity_multiple = 1.0
         n_skipped = 0
 
@@ -368,8 +368,9 @@ class MLStrategyWalkForward:
         test_start_ts = df_valid.index[test_start_idx]
         test_end_ts = df_valid.index[test_end_idx - 1]
 
-        df_pos_start = df.index.get_loc(test_start_ts)
-        df_pos_end = df.index.get_loc(test_end_ts)
+        # cast: unique DatetimeIndex — get_loc returns a scalar position
+        df_pos_start = cast(int, df.index.get_loc(test_start_ts))
+        df_pos_end = cast(int, df.index.get_loc(test_end_ts))
 
         warmup_start = max(0, df_pos_start - WARMUP_CANDLES)
         return df.iloc[warmup_start : df_pos_end + 1]

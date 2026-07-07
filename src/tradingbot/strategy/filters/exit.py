@@ -43,7 +43,7 @@ class StochOverboughtFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val >= self.threshold
+        return bool(val >= self.threshold)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -83,7 +83,7 @@ class CciOverboughtFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val > self.threshold
+        return bool(val > self.threshold)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -123,7 +123,7 @@ class MfiOverboughtFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val >= self.threshold
+        return bool(val >= self.threshold)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -163,7 +163,7 @@ class ZscoreExtremeFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val > self.threshold
+        return bool(val > self.threshold)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -203,7 +203,7 @@ class PctFromMaExitFilter(BaseFilter):
         val = df[col].iloc[-1]
         if pd.isna(val):
             return False
-        return val > self.threshold
+        return bool(val > self.threshold)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -260,7 +260,7 @@ class AtrTrailingExitFilter(BaseFilter):
 
         if pd.isna(highest):
             return False
-        return close < highest - atr * self.multiplier
+        return bool(close < highest - atr * self.multiplier)
 
 
 class TimeStopExitFilter(BaseFilter):

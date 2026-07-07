@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
+from typing import Any, cast
 
 import pandas as pd
 
@@ -25,7 +26,7 @@ class Candle:
     close: float
     volume: float
 
-    def to_dict(self) -> dict:
+    def to_dict(self) -> dict[str, Any]:
         return {
             "timestamp": self.timestamp,
             "open": self.open,
@@ -52,7 +53,10 @@ def dataframe_to_candles(df: pd.DataFrame) -> list[Candle]:
     for ts, row in df.iterrows():
         candles.append(
             Candle(
-                timestamp=ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else ts,
+                # cast: candle frames are datetime-indexed, non-Timestamp values are datetime
+                timestamp=(
+                    ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else cast(datetime, ts)
+                ),
                 open=float(row["open"]),
                 high=float(row["high"]),
                 low=float(row["low"]),

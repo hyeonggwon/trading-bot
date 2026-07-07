@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 @dataclass
@@ -32,7 +33,7 @@ class TunePairResult:
     n_trials_pruned: int = 0
     elapsed_sec: float = 0.0
     objective: str = "holdout_sharpe"
-    best_params: dict = field(default_factory=dict)
+    best_params: dict[str, Any] = field(default_factory=dict)
     final_holdout_auc: float | None = None
     final_holdout_precision: float | None = None
     final_model_path: str = ""
@@ -176,7 +177,7 @@ def tune_pair(
     output_dir: str,
     label: str,
     num_threads: int,
-    config_dump: dict | None = None,
+    config_dump: dict[str, Any] | None = None,
 ) -> TunePairResult:
     """Run an Optuna LGBM search + final-model train for one (symbol, timeframe).
 
@@ -474,7 +475,7 @@ def tune_thresholds_pair(
     write_meta: bool,
     output_dir: str,
     label: str,
-    config_dump: dict | None = None,
+    config_dump: dict[str, Any] | None = None,
     min_trades: int | None = None,
 ) -> ThresholdTunePairResult:
     """Tune (entry, exit) thresholds for a single (symbol, timeframe) pair.

@@ -80,7 +80,7 @@ def load_yaml_config(path: Path) -> dict[str, Any]:
     return data or {}
 
 
-def deep_merge(base: dict, override: dict) -> dict:
+def deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
     """Deep merge override into base dict."""
     result = base.copy()
     for key, value in override.items():

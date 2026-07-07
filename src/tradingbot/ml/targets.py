@@ -36,7 +36,7 @@ def _atr_pct(df: pd.DataFrame, period: int) -> pd.Series:
     """
     import ta
 
-    atr = ta.volatility.AverageTrueRange(
+    atr: pd.Series = ta.volatility.AverageTrueRange(
         high=df["high"], low=df["low"], close=df["close"], window=period
     ).average_true_range()
     return atr / df["close"]

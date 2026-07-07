@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import numpy as np
 import pandas as pd
@@ -110,13 +111,13 @@ class MLWalkForwardReport:
     without re-deriving the holdout split.
     """
 
-    windows: list[dict] = field(default_factory=list)
+    windows: list[dict[str, Any]] = field(default_factory=list)
     avg_auc: float = 0.0
     avg_precision: float = 0.0
     holdout_auc: float = 0.0
     holdout_precision: float = 0.0
     model_path: Path | None = None
-    feature_importance: dict = field(default_factory=dict)
+    feature_importance: dict[str, float] = field(default_factory=dict)
     holdout_y_true: np.ndarray | None = None
     holdout_raw_proba: np.ndarray | None = None
     holdout_calibrated_proba: np.ndarray | None = None
@@ -137,7 +138,7 @@ class MLWalkForwardTrainer:
         atr_mult: float = 1.0,
         include_extra: bool = False,
         model_dir: Path = Path("models"),
-        lgbm_params: dict | None = None,
+        lgbm_params: dict[str, Any] | None = None,
     ):
         if target_kind not in VALID_TARGET_KINDS:
             raise ValueError(
