@@ -10,11 +10,13 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import streamlit as st
 
 if TYPE_CHECKING:
+    import numpy as np
+
     from tradingbot.backtest.report import BacktestReport
     from tradingbot.strategy.base import Strategy
 
@@ -393,7 +395,8 @@ def _render_backtest_equity(report: BacktestReport) -> None:
     fig.add_trace(
         go.Scatter(
             x=drawdown.index,
-            y=drawdown.values * -100,
+            # cast: float64 equity series — .values is numpy-backed
+            y=cast("np.ndarray", drawdown.values) * -100,
             mode="lines",
             name="Drawdown %",
             line=dict(color="#F44336", width=1),

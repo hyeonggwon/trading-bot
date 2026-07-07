@@ -37,6 +37,9 @@ dev = [
     # mypy 대상(src/tradingbot/dashboard)과 AppTest 테스트가 streamlit 을
     # import 하므로 dashboard 도 포함 — 없으면 CI mypy 오류 수가 로컬과 어긋난다.
     "trading-bot[dashboard]",
+    # pandas 는 실스텁으로 검사한다(오버라이드 목록에서 제외됨) — 스텁이
+    # 빠지면 import-untyped 로 CI 가 빨갛게 되는 것이 의도.
+    "pandas-stubs>=2.0",
 ]
 research = [
     "jupyter>=1.0",
@@ -95,8 +98,6 @@ strict = true
 # import-untyped 노이즈만 제거. pandas-stubs 등 실제 스텁 도입은 오류
 # 표면을 크게 바꾸므로 별도 유닛에서 검토한다.
 module = [
-    "pandas",
-    "pandas.*",
     "ccxt",
     "ccxt.*",
     "ta",

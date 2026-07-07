@@ -12,7 +12,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -368,8 +368,9 @@ class MLStrategyWalkForward:
         test_start_ts = df_valid.index[test_start_idx]
         test_end_ts = df_valid.index[test_end_idx - 1]
 
-        df_pos_start = df.index.get_loc(test_start_ts)
-        df_pos_end = df.index.get_loc(test_end_ts)
+        # cast: unique DatetimeIndex — get_loc returns a scalar position
+        df_pos_start = cast(int, df.index.get_loc(test_start_ts))
+        df_pos_end = cast(int, df.index.get_loc(test_end_ts))
 
         warmup_start = max(0, df_pos_start - WARMUP_CANDLES)
         return df.iloc[warmup_start : df_pos_end + 1]

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from typing import cast
 
 import pandas as pd
 import structlog
@@ -53,7 +54,8 @@ def load_candles(
     if not path.exists():
         raise FileNotFoundError(f"No data file found: {path}")
 
-    df = pd.read_parquet(path, engine="pyarrow")
+    # to_pandas_kwargs={} is pandas' None-default; the stubs' pyarrow overload requires it
+    df = pd.read_parquet(path, engine="pyarrow", to_pandas_kwargs={})
     df = df.sort_index()
     logger.debug("loaded_candles", symbol=symbol, timeframe=timeframe, rows=len(df))
     return df
@@ -86,7 +88,8 @@ def detect_gaps(
 
     freq = TIMEFRAME_FREQ.get(timeframe, "1h")
     expected_index = pd.date_range(start=df.index[0], end=df.index[-1], freq=freq)
-    missing = expected_index.difference(df.index)
+    # cast: OHLCV frames are datetime-indexed
+    missing = expected_index.difference(cast(pd.DatetimeIndex, df.index))
 
     if missing.empty:
         return []
@@ -97,7 +100,8 @@ def detect_gaps(
     prev = missing[0]
 
     for ts in missing[1:]:
-        expected_delta = pd.tseries.frequencies.to_offset(freq)
+        # cast: TIMEFRAME_FREQ offsets are fixed-width, Timedelta-comparable at runtime
+        expected_delta = cast("pd.Timedelta", pd.tseries.frequencies.to_offset(freq))
         if ts - prev > expected_delta:
             gaps.append((gap_start, prev))
             gap_start = ts

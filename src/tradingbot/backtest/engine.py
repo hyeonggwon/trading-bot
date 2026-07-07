@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import uuid
 from datetime import datetime
+from typing import cast
 
 import numpy as np
 import pandas as pd
@@ -173,13 +174,14 @@ class BacktestEngine:
             sym: {ts: i for i, ts in enumerate(df.index)} for sym, df in symbol_data.items()
         }
         # Extract OHLCV as numpy arrays — avoids pandas iloc overhead in hot loop
+        # (cast: float64 OHLCV columns are numpy-backed, so .values is ndarray)
         ohlcv_arrays: dict[str, dict[str, np.ndarray]] = {
             sym: {
-                "open": df["open"].values,
-                "high": df["high"].values,
-                "low": df["low"].values,
-                "close": df["close"].values,
-                "volume": df["volume"].values,
+                "open": cast(np.ndarray, df["open"].values),
+                "high": cast(np.ndarray, df["high"].values),
+                "low": cast(np.ndarray, df["low"].values),
+                "close": cast(np.ndarray, df["close"].values),
+                "volume": cast(np.ndarray, df["volume"].values),
             }
             for sym, df in symbol_data.items()
         }
@@ -270,12 +272,12 @@ class BacktestEngine:
 
         # Force close remaining positions
         for sym in list(self.positions.keys()):
-            df = symbol_data.get(sym)
-            if df is None or df.empty:
+            sym_df = symbol_data.get(sym)
+            if sym_df is None or sym_df.empty:
                 continue
-            last_row = df.iloc[-1]
+            last_row = sym_df.iloc[-1]
             last_candle = Candle(
-                timestamp=df.index[-1].to_pydatetime(),
+                timestamp=sym_df.index[-1].to_pydatetime(),
                 open=float(last_row["open"]),
                 high=float(last_row["high"]),
                 low=float(last_row["low"]),

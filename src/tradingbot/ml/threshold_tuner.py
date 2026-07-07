@@ -24,7 +24,7 @@ import os
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 
@@ -354,7 +354,8 @@ class ThresholdTuner:
                 return df.iloc[0:0]
             start_ts = after[0]
 
-        start_pos = df.index.get_loc(start_ts)
+        # cast: unique DatetimeIndex — get_loc returns a scalar position
+        start_pos = cast(int, df.index.get_loc(start_ts))
         warmup_pos = max(0, start_pos - WARMUP_CANDLES)
 
         if end_ts is not None:

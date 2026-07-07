@@ -15,7 +15,7 @@ from __future__ import annotations
 import asyncio
 import signal as signal_module
 from datetime import UTC, date, datetime
-from typing import Any
+from typing import Any, cast
 
 import pandas as pd
 import structlog
@@ -242,7 +242,9 @@ class LiveEngine:
             # of the batch nor skip the _persist_state below (which would drop
             # equity history and any state already mutated this tick).
             try:
-                await self._tick_symbol(sym, result, tickers.get(sym))
+                # cast: fetch_ohlcv raises Exception subclasses only, so anything
+                # surviving the isinstance guard above is a DataFrame
+                await self._tick_symbol(sym, cast(pd.DataFrame, result), tickers.get(sym))
             except Exception as e:
                 logger.error(
                     "symbol_tick_error",

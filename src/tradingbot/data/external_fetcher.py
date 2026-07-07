@@ -360,7 +360,8 @@ def save_external(
     path = data_dir / f"{name}.parquet"
 
     if path.exists():
-        existing = pd.read_parquet(path, engine="pyarrow")
+        # to_pandas_kwargs={} is pandas' None-default; the stubs' pyarrow overload requires it
+        existing = pd.read_parquet(path, engine="pyarrow", to_pandas_kwargs={})
         df = pd.concat([existing, df])
         df = df[~df.index.duplicated(keep="last")].sort_index()
 
@@ -382,7 +383,7 @@ def load_external(
     path = data_dir / f"{name}.parquet"
     if not path.exists():
         return None
-    return pd.read_parquet(path, engine="pyarrow").sort_index()
+    return pd.read_parquet(path, engine="pyarrow", to_pandas_kwargs={}).sort_index()
 
 
 # ---------------------------------------------------------------------------
