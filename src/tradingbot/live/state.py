@@ -11,6 +11,7 @@ import os
 import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -29,7 +30,7 @@ class StateManager:
         self.state_path = state_path
         self.positions: dict[str, Position] = {}
         self.entry_fees: dict[str, float] = {}
-        self.equity_history: list[dict] = []
+        self.equity_history: list[dict[str, Any]] = []
         self.last_save: datetime | None = None
         # Real-money safety state that must survive restarts:
         # peak_equity drives the drawdown circuit breaker; daily_pnl /
@@ -143,7 +144,7 @@ class StateManager:
             self.state_path.unlink()
 
 
-def _position_to_dict(pos: Position) -> dict:
+def _position_to_dict(pos: Position) -> dict[str, Any]:
     return {
         "symbol": pos.symbol,
         "side": pos.side.value,
@@ -155,7 +156,7 @@ def _position_to_dict(pos: Position) -> dict:
     }
 
 
-def _dict_to_position(data: dict) -> Position:
+def _dict_to_position(data: dict[str, Any]) -> Position:
     return Position(
         symbol=data["symbol"],
         side=PositionSide(data["side"]),

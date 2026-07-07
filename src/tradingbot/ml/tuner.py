@@ -16,11 +16,15 @@ import logging
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 
 from tradingbot.config import AppConfig
 from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+
+if TYPE_CHECKING:
+    import optuna
 
 log = logging.getLogger(__name__)
 
@@ -50,13 +54,13 @@ def reserve_tuning_window(df: pd.DataFrame) -> pd.DataFrame:
 class LGBMTunerResult:
     """Outcome of an LGBMTuner.search run."""
 
-    best_params: dict = field(default_factory=dict)
+    best_params: dict[str, Any] = field(default_factory=dict)
     best_value: float = float("-inf")
     n_trials_completed: int = 0
     n_trials_pruned: int = 0
     elapsed_sec: float = 0.0
     objective: str = "holdout_sharpe"
-    trials: list[dict] = field(default_factory=list)
+    trials: list[dict[str, Any]] = field(default_factory=list)
 
 
 class LGBMTuner:
@@ -108,7 +112,7 @@ class LGBMTuner:
         self.objective = objective
         self.seed = seed
 
-    def _suggest_params(self, trial) -> dict:
+    def _suggest_params(self, trial: optuna.trial.Trial) -> dict[str, Any]:
         """Sample one set of LightGBM hyperparams from the Phase 3 search space."""
         return {
             "num_leaves": trial.suggest_int("num_leaves", 8, 64, log=True),
@@ -122,7 +126,7 @@ class LGBMTuner:
             "n_estimators": trial.suggest_int("n_estimators", 100, 500, log=True),
         }
 
-    def _score(self, lgbm_params: dict, df: pd.DataFrame) -> tuple[float, dict]:
+    def _score(self, lgbm_params: dict[str, Any], df: pd.DataFrame) -> tuple[float, dict[str, Any]]:
         """Run one strategy walk-forward and extract the objective score.
 
         Returns ``(score, summary_dict)``. On any exception we log it and
@@ -207,10 +211,10 @@ class LGBMTuner:
         sampler = optuna.samplers.TPESampler(seed=self.seed)
         study = optuna.create_study(direction="maximize", sampler=sampler)
 
-        trial_log: list[dict] = []
+        trial_log: list[dict[str, Any]] = []
         start = time.time()
 
-        def _objective(trial) -> float:
+        def _objective(trial: optuna.trial.Trial) -> float:
             params = self._suggest_params(trial)
             score, summary = self._score(params, df)
             trial_log.append(

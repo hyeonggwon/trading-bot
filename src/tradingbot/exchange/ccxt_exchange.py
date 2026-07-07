@@ -8,7 +8,9 @@ Phase 5: full order management.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
+from typing import Any
 
 import ccxt.async_support as ccxt_async
 import pandas as pd
@@ -37,7 +39,7 @@ class CcxtExchange(BaseExchange):
         env = env or EnvSettings()
 
         exchange_class = getattr(ccxt_async, config.name)
-        options: dict = {"enableRateLimit": True}
+        options: dict[str, Any] = {"enableRateLimit": True}
 
         if env.upbit_access_key and env.upbit_secret_key:
             options["apiKey"] = env.upbit_access_key
@@ -46,7 +48,9 @@ class CcxtExchange(BaseExchange):
         self._exchange: ccxt_async.Exchange = exchange_class(options)
         self._rate_limit_per_sec = config.rate_limit_per_sec
 
-    async def _retry(self, coro_func, *args, **kwargs):
+    async def _retry(
+        self, coro_func: Callable[..., Awaitable[Any]], *args: Any, **kwargs: Any
+    ) -> Any:
         """Execute with exponential backoff retry."""
         for attempt in range(MAX_RETRIES):
             try:
@@ -91,7 +95,7 @@ class CcxtExchange(BaseExchange):
         df = df.astype(float)
         return df
 
-    async def fetch_ticker(self, symbol: str) -> dict:
+    async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
         ticker = await self._retry(self._exchange.fetch_ticker, symbol)
         return {
             "last": ticker.get("last", 0),
@@ -120,7 +124,7 @@ class CcxtExchange(BaseExchange):
         # so this holds regardless of ccxt's createMarketBuyOrderRequiresPrice
         # default. Market SELL (base volume) and limit orders (explicit price)
         # are unaffected.
-        params: dict = {}
+        params: dict[str, Any] = {}
         if ccxt_type == "market" and ccxt_side == "buy":
             if price is None or price <= 0:
                 raise ValueError(

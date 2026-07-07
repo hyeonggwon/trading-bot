@@ -4,6 +4,7 @@ import logging
 import os
 from logging.handlers import TimedRotatingFileHandler
 from pathlib import Path
+from typing import Any
 
 import structlog
 
@@ -21,7 +22,7 @@ def setup_logging(level: str | None = None, log_dir: str | None = None) -> None:
     log_dir = log_dir or os.environ.get("LOG_DIR")
 
     # Shared processors (run before final rendering)
-    shared_processors: list = [
+    shared_processors: list[Any] = [
         structlog.contextvars.merge_contextvars,
         structlog.processors.add_log_level,
         structlog.processors.TimeStamper(fmt="iso"),

@@ -40,7 +40,7 @@ class AtrBreakoutFilter(BaseFilter):
         ema = df[ema_col].iloc[-1]
         if pd.isna(atr) or pd.isna(ema):
             return False
-        return close > ema + atr * self.multiplier
+        return bool(close > ema + atr * self.multiplier)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         atr_col = f"atr_{self.period}"
@@ -50,7 +50,7 @@ class AtrBreakoutFilter(BaseFilter):
         ema = df[ema_col].iloc[-1]
         if pd.isna(atr) or pd.isna(ema):
             return False
-        return close < ema - atr * self.multiplier
+        return bool(close < ema - atr * self.multiplier)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -92,7 +92,7 @@ class KeltnerBreakFilter(BaseFilter):
         upper = df[col].iloc[-1]
         if pd.isna(upper):
             return False
-        return close > upper
+        return bool(close > upper)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         mid_col = f"kc_middle_{self.period}"
@@ -102,7 +102,7 @@ class KeltnerBreakFilter(BaseFilter):
         mid = df[mid_col].iloc[-1]
         if pd.isna(mid):
             return False
-        return close < mid
+        return bool(close < mid)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -148,7 +148,7 @@ class BbSqueezeFilter(BaseFilter):
         if pd.isna(prev_bb) or pd.isna(prev_kc) or pd.isna(curr_bb) or pd.isna(curr_kc):
             return False
         # Transition: BB was inside KC → BB now outside KC
-        return prev_bb < prev_kc and curr_bb >= curr_kc
+        return bool(prev_bb < prev_kc and curr_bb >= curr_kc)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False  # Confirmation filter only
@@ -193,7 +193,7 @@ class BbBandwidthLowFilter(BaseFilter):
         if pd.isna(upper) or pd.isna(lower) or pd.isna(mid) or mid == 0:
             return False
         bandwidth = (upper - lower) / mid
-        return bandwidth < self.threshold
+        return bool(bandwidth < self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False  # Confirmation filter only

@@ -9,7 +9,7 @@ from __future__ import annotations
 import itertools
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import pandas as pd
 import structlog
@@ -17,6 +17,9 @@ import structlog
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig
 from tradingbot.strategy.base import Strategy, StrategyParams
+
+if TYPE_CHECKING:
+    from rich.progress import Progress
 
 logger = structlog.get_logger()
 
@@ -93,7 +96,7 @@ class GridSearchOptimizer:
         data: dict[str, pd.DataFrame],
         param_space: dict[str, list[Any]] | None = None,
         sort_by: str = "sharpe_ratio",
-        progress=None,
+        progress: Progress | None = None,
     ) -> list[OptimizationResult]:
         """Run grid search optimization.
 

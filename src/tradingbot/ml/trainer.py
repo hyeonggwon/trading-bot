@@ -4,12 +4,17 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import numpy as np
 import pandas as pd
+
+if TYPE_CHECKING:
+    import lightgbm as lgb
+    from sklearn.isotonic import IsotonicRegression
 
 log = logging.getLogger(__name__)
 
@@ -43,7 +48,7 @@ DEFAULT_LGBM_PARAMS = {
 class LGBMTrainer:
     """Train and manage LightGBM models for trading."""
 
-    def __init__(self, params: dict | None = None):
+    def __init__(self, params: dict[str, Any] | None = None):
         self.params = {**DEFAULT_LGBM_PARAMS, **(params or {})}
 
     def train(
@@ -54,7 +59,7 @@ class LGBMTrainer:
         y_val: pd.Series | None = None,
         early_stopping_rounds: int = 100,
         fixed_rounds: int | None = None,
-    ):
+    ) -> lgb.Booster:
         """Train a LightGBM model.
 
         Args:
@@ -71,7 +76,9 @@ class LGBMTrainer:
 
         train_set = lgb.Dataset(X_train, label=y_train)
 
-        callbacks = [lgb.log_evaluation(period=0)]  # suppress per-iteration logs
+        callbacks: list[Callable[..., Any]] = [
+            lgb.log_evaluation(period=0)
+        ]  # suppress per-iteration logs
         valid_sets = [train_set]
         valid_names = ["train"]
 
@@ -97,7 +104,9 @@ class LGBMTrainer:
         )
         return model
 
-    def evaluate(self, model, X_test: pd.DataFrame, y_test: pd.Series) -> dict:
+    def evaluate(
+        self, model: lgb.Booster, X_test: pd.DataFrame, y_test: pd.Series
+    ) -> dict[str, Any]:
         """Evaluate model on test data.
 
         Returns dict with auc, precision, recall, f1, n_test, positive_rate,
@@ -110,7 +119,7 @@ class LGBMTrainer:
             roc_auc_score,
         )
 
-        proba = model.predict(X_test)
+        proba = cast(np.ndarray, model.predict(X_test))
         y_pred = (proba > 0.5).astype(int)
 
         auc = float(roc_auc_score(y_test, proba)) if len(np.unique(y_test)) > 1 else 0.5
@@ -146,7 +155,9 @@ class LGBMTrainer:
             "auc_significant": p_value < 0.05,
         }
 
-    def calibrate(self, model, X_cal: pd.DataFrame, y_cal: pd.Series):
+    def calibrate(
+        self, model: lgb.Booster, X_cal: pd.DataFrame, y_cal: pd.Series
+    ) -> IsotonicRegression | None:
         """Fit isotonic calibrator on calibration data.
 
         Args:
@@ -175,13 +186,13 @@ class LGBMTrainer:
 
     def save(
         self,
-        model,
+        model: lgb.Booster,
         symbol: str,
         timeframe: str,
-        meta: dict,
+        meta: dict[str, Any],
         feature_cols: list[str],
         model_dir: Path = Path("models"),
-        calibrator=None,
+        calibrator: IsotonicRegression | None = None,
     ) -> Path:
         """Save model (.lgb), metadata (_meta.json), and optional calibrator (_cal.json).
 
@@ -221,7 +232,7 @@ class LGBMTrainer:
         return model_path
 
     @staticmethod
-    def load(symbol: str, timeframe: str, model_dir: Path = Path("models")):
+    def load(symbol: str, timeframe: str, model_dir: Path = Path("models")) -> lgb.Booster | None:
         """Load a saved model. Returns lgb.Booster or None if not found."""
         import lightgbm as lgb
 
@@ -235,7 +246,9 @@ class LGBMTrainer:
         return lgb.Booster(model_file=str(model_path))
 
     @staticmethod
-    def load_calibrator(symbol: str, timeframe: str, model_dir: Path = Path("models")):
+    def load_calibrator(
+        symbol: str, timeframe: str, model_dir: Path = Path("models")
+    ) -> IsotonicRegression | None:
         """Load a saved calibrator. Returns IsotonicRegression or None if not found."""
         from scipy.interpolate import interp1d
         from sklearn.isotonic import IsotonicRegression
@@ -277,7 +290,9 @@ class LGBMTrainer:
         return calibrator
 
     @staticmethod
-    def load_meta(symbol: str, timeframe: str, model_dir: Path = Path("models")) -> dict | None:
+    def load_meta(
+        symbol: str, timeframe: str, model_dir: Path = Path("models")
+    ) -> dict[str, Any] | None:
         """Load model metadata. Returns dict or None if not found."""
         symbol_key = symbol.replace("/", "_")
         meta_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_meta.json"
@@ -285,7 +300,8 @@ class LGBMTrainer:
         if not meta_path.exists():
             return None
 
-        return json.loads(meta_path.read_text())
+        meta: dict[str, Any] = json.loads(meta_path.read_text())
+        return meta
 
     @staticmethod
     def load_catalog(model_dir: Path = Path("models")) -> list[dict[str, Any]]:

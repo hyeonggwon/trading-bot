@@ -11,6 +11,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime
 
+import numpy as np
 import pandas as pd
 import structlog
 
@@ -163,16 +164,16 @@ class BacktestEngine:
         symbol_indices: dict[str, int] = {sym: 0 for sym in symbol_data}
         # Original columns for anti-lookahead assertion (per-iteration path only)
         if not use_precompute:
-            original_columns: dict[str, set] = {
+            original_columns: dict[str, set[str]] = {
                 sym: set(df.columns) for sym, df in symbol_data.items()
             }
 
         # Pre-build timestamp→index dicts and numpy arrays for fast lookup
-        symbol_ts_to_idx: dict[str, dict] = {
+        symbol_ts_to_idx: dict[str, dict[pd.Timestamp, int]] = {
             sym: {ts: i for i, ts in enumerate(df.index)} for sym, df in symbol_data.items()
         }
         # Extract OHLCV as numpy arrays — avoids pandas iloc overhead in hot loop
-        ohlcv_arrays: dict[str, dict] = {
+        ohlcv_arrays: dict[str, dict[str, np.ndarray]] = {
             sym: {
                 "open": df["open"].values,
                 "high": df["high"].values,

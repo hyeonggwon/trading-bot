@@ -37,7 +37,7 @@ class PriceBreakoutFilter(BaseFilter):
         prev_high = df[col].iloc[-2]
         if pd.isna(prev_high):
             return False
-        return curr_close > prev_high
+        return bool(curr_close > prev_high)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
@@ -77,7 +77,7 @@ class EmaAboveFilter(BaseFilter):
         curr_ema = df[col].iloc[-1]
         if pd.isna(curr_ema):
             return False
-        return curr_close > curr_ema
+        return bool(curr_close > curr_ema)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"ema_{self.period}"
@@ -87,7 +87,7 @@ class EmaAboveFilter(BaseFilter):
         curr_ema = df[col].iloc[-1]
         if pd.isna(curr_ema):
             return False
-        return curr_close < curr_ema
+        return bool(curr_close < curr_ema)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -129,7 +129,7 @@ class BbUpperBreakFilter(BaseFilter):
         prev_bb = df[col].iloc[-2]
         if pd.isna(curr_bb) or pd.isna(prev_bb):
             return False
-        return prev_close <= prev_bb and curr_close > curr_bb
+        return bool(prev_close <= prev_bb and curr_close > curr_bb)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         mid_col = f"bb_middle_{self.period}_{self.std}"
@@ -139,7 +139,7 @@ class BbUpperBreakFilter(BaseFilter):
         curr_mid = df[mid_col].iloc[-1]
         if pd.isna(curr_mid):
             return False
-        return curr_close < curr_mid
+        return bool(curr_close < curr_mid)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -181,7 +181,7 @@ class EmaCrossUpFilter(BaseFilter):
         curr_slow, prev_slow = df[slow_col].iloc[-1], df[slow_col].iloc[-2]
         if pd.isna(curr_fast) or pd.isna(prev_fast) or pd.isna(curr_slow) or pd.isna(prev_slow):
             return False
-        return prev_fast <= prev_slow and curr_fast > curr_slow
+        return bool(prev_fast <= prev_slow and curr_fast > curr_slow)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
@@ -225,7 +225,7 @@ class DonchianBreakFilter(BaseFilter):
         prev_upper = df[col].iloc[-2]
         if pd.isna(prev_upper):
             return False
-        return curr_close > prev_upper
+        return bool(curr_close > prev_upper)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         mid_col = f"dc_middle_{self.period}"
@@ -235,7 +235,7 @@ class DonchianBreakFilter(BaseFilter):
         curr_mid = df[mid_col].iloc[-1]
         if pd.isna(curr_mid):
             return False
-        return curr_close < curr_mid
+        return bool(curr_close < curr_mid)
 
     @property
     def supports_vectorized(self) -> bool:

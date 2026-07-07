@@ -39,7 +39,7 @@ class BacktestReport:
 
     @property
     def _annualization_factor(self) -> float:
-        return np.sqrt(PERIODS_PER_YEAR.get(self.timeframe, 8766))
+        return float(np.sqrt(PERIODS_PER_YEAR.get(self.timeframe, 8766)))
 
     @property
     def total_trades(self) -> int:
@@ -72,12 +72,12 @@ class BacktestReport:
     @property
     def avg_win(self) -> float:
         wins = [t.pnl for t in self.trades if t.is_win]
-        return np.mean(wins) if wins else 0.0
+        return float(np.mean(wins)) if wins else 0.0
 
     @property
     def avg_loss(self) -> float:
         losses = [t.pnl for t in self.trades if not t.is_win]
-        return np.mean(losses) if losses else 0.0
+        return float(np.mean(losses)) if losses else 0.0
 
     @property
     def profit_factor(self) -> float:
@@ -127,7 +127,7 @@ class BacktestReport:
     @property
     def avg_trade_duration_hours(self) -> float:
         durations = [t.duration for t in self.trades if t.duration is not None]
-        return np.mean(durations) if durations else 0.0
+        return float(np.mean(durations)) if durations else 0.0
 
     def summary(self) -> dict[str, str]:
         """Generate a summary dictionary for display."""

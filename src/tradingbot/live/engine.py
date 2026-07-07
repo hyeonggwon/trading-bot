@@ -15,6 +15,7 @@ from __future__ import annotations
 import asyncio
 import signal as signal_module
 from datetime import UTC, date, datetime
+from typing import Any
 
 import pandas as pd
 import structlog
@@ -23,9 +24,12 @@ from tradingbot.config import AppConfig
 from tradingbot.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.exchange.base import BaseExchange
+from tradingbot.exchange.ws_client import UpbitWebSocketClient
 from tradingbot.live.control import control_path_for, read_pause
+from tradingbot.live.order_manager import OrderManager
 from tradingbot.live.state import StateManager
 from tradingbot.risk.manager import RiskManager
+from tradingbot.risk.validators import TradeValidator
 from tradingbot.strategy.base import Strategy
 
 logger = structlog.get_logger()
@@ -64,9 +68,9 @@ class LiveEngine:
         config: AppConfig,
         state_manager: StateManager | None = None,
         notifier: object | None = None,
-        order_manager: object | None = None,
-        trade_validator: object | None = None,
-        ws_client: object | None = None,
+        order_manager: OrderManager | None = None,
+        trade_validator: TradeValidator | None = None,
+        ws_client: UpbitWebSocketClient | None = None,
     ):
         self.strategy = strategy
         self.exchange = exchange
@@ -140,7 +144,7 @@ class LiveEngine:
         ]
         warmup_results = await asyncio.gather(*warmup_tasks, return_exceptions=True)
         for sym, result in zip(symbols, warmup_results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("warmup_failed", symbol=sym, error=str(result))
                 continue
             if len(result) >= 2:
@@ -171,7 +175,7 @@ class LiveEngine:
 
             # Between candle polls, monitor prices + stop losses at a faster
             # cadence (also keeps shutdown responsive — checks _running each tick).
-            remaining = poll_seconds
+            remaining: float = poll_seconds
             while remaining > 0 and self._running:
                 wait = min(remaining, monitor_interval)
                 await asyncio.sleep(wait)
@@ -250,7 +254,7 @@ class LiveEngine:
         # Persist state after processing all symbols
         self._persist_state()
 
-    async def _resolve_tickers(self, symbols: list[str]) -> dict[str, dict]:
+    async def _resolve_tickers(self, symbols: list[str]) -> dict[str, dict[str, Any]]:
         """Resolve current prices for all symbols.
 
         Prefers WebSocket prices received within ``WS_PRICE_MAX_AGE_SECONDS``;
@@ -271,7 +275,7 @@ class LiveEngine:
         # symbol that simply hasn't ticked within the staleness window still
         # gets a price, so its stop loss is never silently dropped from
         # monitoring just because another symbol ticked.
-        tickers: dict[str, dict] = {
+        tickers: dict[str, dict[str, Any]] = {
             sym: {"last": ws_prices[sym]} for sym in symbols if sym in ws_prices
         }
         missing = [sym for sym in symbols if sym not in tickers]
@@ -378,7 +382,9 @@ class LiveEngine:
             self.state.ledger_baseline = raw_equity - unrealized
         return self.state.ledger_baseline + self.state.cum_realized_pnl + unrealized
 
-    async def _enforce_safety_rails(self, equity: float, tickers: dict[str, dict]) -> bool:
+    async def _enforce_safety_rails(
+        self, equity: float, tickers: dict[str, dict[str, Any]]
+    ) -> bool:
         """Continuously enforce the drawdown breaker and daily-loss limit.
 
         Both rails are evaluated every tick — the breaker on the bot's ledger
@@ -563,7 +569,9 @@ class LiveEngine:
                 )
                 await self._notify_alert(f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}")
 
-    async def _tick_symbol(self, symbol: str, df: pd.DataFrame, ticker: dict | None = None) -> None:
+    async def _tick_symbol(
+        self, symbol: str, df: pd.DataFrame, ticker: dict[str, Any] | None = None
+    ) -> None:
         """Process a single symbol's candle data."""
         if df.empty or len(df) < 2:
             return
@@ -929,8 +937,8 @@ class LiveEngine:
 
     async def _calculate_equity(
         self,
-        cached_tickers: dict | None = None,
-        balance: dict | None = None,
+        cached_tickers: dict[str, dict[str, Any]] | None = None,
+        balance: dict[str, float] | None = None,
         out_prices: dict[str, float] | None = None,
     ) -> float:
         """Calculate total equity from managed holdings.
@@ -975,7 +983,7 @@ class LiveEngine:
         return equity
 
     @staticmethod
-    def _on_ws_task_done(task: asyncio.Task) -> None:
+    def _on_ws_task_done(task: asyncio.Task[None]) -> None:
         """Log unexpected WebSocket task failures."""
         if task.cancelled():
             return

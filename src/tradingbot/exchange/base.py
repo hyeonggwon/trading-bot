@@ -7,6 +7,7 @@ interface, ensuring the live engine can swap between them seamlessly.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from typing import Any
 
 import pandas as pd
 
@@ -32,7 +33,7 @@ class BaseExchange(ABC):
         ...
 
     @abstractmethod
-    async def fetch_ticker(self, symbol: str) -> dict:
+    async def fetch_ticker(self, symbol: str) -> dict[str, Any]:
         """Fetch current ticker (last price, bid, ask, volume).
 
         Returns dict with keys: last, bid, ask, volume, timestamp.

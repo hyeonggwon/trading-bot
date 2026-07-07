@@ -10,8 +10,13 @@ import json
 import sys
 from datetime import UTC, datetime, timedelta, timezone
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import streamlit as st
+
+if TYPE_CHECKING:
+    from tradingbot.backtest.report import BacktestReport
+    from tradingbot.strategy.base import Strategy
 
 # KST timezone for Korean users
 KST = timezone(timedelta(hours=9))
@@ -116,7 +121,7 @@ def _render_entry_controls(state_file: Path) -> None:
     )
 
 
-def _render_header_metrics(data: dict) -> None:
+def _render_header_metrics(data: dict[str, Any]) -> None:
     """Show key metrics as big numbers."""
     equity_history = data.get("equity_history", [])
     positions = data.get("positions", {})
@@ -154,7 +159,7 @@ def _render_header_metrics(data: dict) -> None:
     )
 
 
-def _render_positions(data: dict) -> None:
+def _render_positions(data: dict[str, Any]) -> None:
     """Show open positions table."""
     st.subheader("Open Positions")
     positions = data.get("positions", {})
@@ -186,7 +191,7 @@ def _render_positions(data: dict) -> None:
     st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
-def _render_equity_chart(data: dict) -> None:
+def _render_equity_chart(data: dict[str, Any]) -> None:
     """Show equity curve chart."""
     st.subheader("Equity Curve")
     equity_history = data.get("equity_history", [])
@@ -312,7 +317,7 @@ def _run_and_display_backtest(
     _render_trade_list(report)
 
 
-def _render_backtest_equity(report) -> None:
+def _render_backtest_equity(report: BacktestReport) -> None:
     """Render equity curve with drawdown overlay and trade markers."""
     import plotly.graph_objects as go
     from plotly.subplots import make_subplots
@@ -411,7 +416,7 @@ def _render_backtest_equity(report) -> None:
     st.plotly_chart(fig, use_container_width=True)
 
 
-def _render_trade_list(report) -> None:
+def _render_trade_list(report: BacktestReport) -> None:
     """Render trade history table."""
     if not report.trades:
         return
@@ -487,7 +492,7 @@ def _render_models() -> None:
 # ── Helpers ──────────────────────────────────────────────────────────
 
 
-def _get_strategy_map() -> dict:
+def _get_strategy_map() -> dict[str, type[Strategy]]:
     from tradingbot.strategy.registry import get_strategy_map
 
     return get_strategy_map()

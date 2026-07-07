@@ -112,7 +112,7 @@ def detect_gaps(
 
 def list_available_data(data_dir: Path = DEFAULT_DATA_DIR) -> list[dict[str, str]]:
     """List all available symbol/timeframe pairs in the data directory."""
-    results = []
+    results: list[dict[str, str]] = []
     if not data_dir.exists():
         return results
 

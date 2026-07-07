@@ -37,7 +37,7 @@ class RsiOversoldFilter(BaseFilter):
         prev = df[col].iloc[-2]
         if pd.isna(curr) or pd.isna(prev):
             return False
-        return prev <= self.threshold and curr > self.threshold
+        return bool(prev <= self.threshold and curr > self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False  # Not an exit filter
@@ -81,7 +81,7 @@ class RsiOverboughtFilter(BaseFilter):
         curr = df[col].iloc[-1]
         if pd.isna(curr):
             return False
-        return curr >= self.threshold
+        return bool(curr >= self.threshold)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -127,7 +127,7 @@ class MacdCrossUpFilter(BaseFilter):
         prev = df[col].iloc[-2]
         if pd.isna(curr) or pd.isna(prev):
             return False
-        return prev <= 0 and curr > 0
+        return bool(prev <= 0 and curr > 0)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         if len(df) < 2:
@@ -139,7 +139,7 @@ class MacdCrossUpFilter(BaseFilter):
         prev = df[col].iloc[-2]
         if pd.isna(curr) or pd.isna(prev):
             return False
-        return prev >= 0 and curr < 0
+        return bool(prev >= 0 and curr < 0)
 
     @property
     def supports_vectorized(self) -> bool:
@@ -180,7 +180,7 @@ class StochOversoldFilter(BaseFilter):
         prev = df[col].iloc[-2]
         if pd.isna(curr) or pd.isna(prev):
             return False
-        return prev <= self.threshold and curr > self.threshold
+        return bool(prev <= self.threshold and curr > self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
@@ -222,7 +222,7 @@ class CciOversoldFilter(BaseFilter):
         prev = df[col].iloc[-2]
         if pd.isna(curr) or pd.isna(prev):
             return False
-        return prev <= -self.threshold and curr > -self.threshold
+        return bool(prev <= -self.threshold and curr > -self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
@@ -263,7 +263,7 @@ class RocPositiveFilter(BaseFilter):
         prev = df[col].iloc[-2]
         if pd.isna(curr) or pd.isna(prev):
             return False
-        return prev <= 0 and curr > 0
+        return bool(prev <= 0 and curr > 0)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False
@@ -305,7 +305,7 @@ class MfiOversoldFilter(BaseFilter):
         prev = df[col].iloc[-2]
         if pd.isna(curr) or pd.isna(prev):
             return False
-        return prev <= self.threshold and curr > self.threshold
+        return bool(prev <= self.threshold and curr > self.threshold)
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         return False

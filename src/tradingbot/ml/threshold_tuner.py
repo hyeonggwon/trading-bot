@@ -24,6 +24,7 @@ import os
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
+from typing import Any
 
 import pandas as pd
 
@@ -72,11 +73,11 @@ class ThresholdTunerResult:
     validation_start: str = ""
     validation_end: str = ""
     min_trades_applied: int = 1
-    grid: list[dict] = field(default_factory=list)
+    grid: list[dict[str, Any]] = field(default_factory=list)
     error: str | None = None
 
 
-def _select_best(grid: list[dict], min_trades: int = 1) -> dict | None:
+def _select_best(grid: list[dict[str, Any]], min_trades: int = 1) -> dict[str, Any] | None:
     """Pick the best (entry, exit) by lexicographic (sharpe, trades).
 
     A tie on Sharpe should break in favour of the combo with more trades —
@@ -367,7 +368,7 @@ class ThresholdTuner:
         eval_indicators: pd.DataFrame,
         entry_threshold: float,
         exit_threshold: float,
-    ) -> dict | None:
+    ) -> dict[str, Any] | None:
         """Run one backtest at the given thresholds, return metrics or None on failure."""
         # Per-trial config clone — initial_balance & symbol must reflect this
         # tuner instance, but we shouldn't mutate the caller's AppConfig. We

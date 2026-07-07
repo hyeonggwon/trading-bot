@@ -14,6 +14,7 @@ import time
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import ccxt
 import pandas as pd
@@ -87,7 +88,7 @@ def fetch_binance_ohlcv(
     }
     tf_ms = tf_ms_map.get(timeframe, 3_600_000)
 
-    all_rows: list[list] = []
+    all_rows: list[list[float]] = []
     max_pages = 5000
     for _ in range(max_pages):
         try:
@@ -148,7 +149,7 @@ def fetch_funding_rate(
         since = since.replace(tzinfo=UTC)
     since_ms = int(since.timestamp() * 1000)
 
-    all_rows: list[dict] = []
+    all_rows: list[dict[str, Any]] = []
     max_pages = 5000
     for _ in range(max_pages):
         try:
