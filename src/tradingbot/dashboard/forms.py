@@ -37,6 +37,7 @@ PAGE_COMMANDS: dict[str, list[str]] = {
     "Trading": ["paper", "live", "status", "balance"],
     "Backtest": ["backtest", "optimize", "walk-forward", "scan"],
     "Combine": ["combine", "combine-scan"],
+    "Pipeline": ["pipeline"],
     "ML": [
         "ml-train",
         "ml-train-all",

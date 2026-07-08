@@ -214,6 +214,12 @@ tradingbot combine-scan --top 10
 
 # 상위 N개 결과를 풀 엔진으로 재검증 (벡터화 스크리닝의 근사 오차 제거)
 tradingbot combine-scan --top 10 --verify-top 5
+
+# 선별 파이프라인: scan → 상위 후보 선별 → walk-forward → OOS 랭킹 → 배포 아티팩트 생성
+tradingbot pipeline
+tradingbot pipeline --top 3 --rank-by walk_forward_efficiency
+# 결과: results/pipeline/<run_id>/ — 단계별 JSON·summary.md·deploy/(paper.sh, live.sh,
+# docker-compose.override.yml). 아티팩트는 생성만 하며, 실행은 검토 후 직접.
 ```
 
 **사용 가능한 필터 (31종, 역할별 분류):**

@@ -18,7 +18,17 @@ st.set_page_config(
     layout="wide",
 )
 
-MODES = ["Live Monitor", "Trading", "Backtest", "Combine", "ML", "Data", "Models", "Jobs"]
+MODES = [
+    "Live Monitor",
+    "Trading",
+    "Backtest",
+    "Combine",
+    "ML",
+    "Pipeline",
+    "Data",
+    "Models",
+    "Jobs",
+]
 
 
 def main() -> None:
@@ -34,6 +44,7 @@ def main() -> None:
         live_monitor,
         ml,
         models,
+        pipeline,
         trading,
     )
 
@@ -43,6 +54,7 @@ def main() -> None:
         "Backtest": backtest.render,
         "Combine": combine.render,
         "ML": ml.render,
+        "Pipeline": pipeline.render,
         "Data": data.render,
         "Models": models.render,
         "Jobs": jobs_page.render,

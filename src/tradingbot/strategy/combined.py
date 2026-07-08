@@ -51,6 +51,36 @@ class CombinedStrategy(Strategy):
         """Candles needed so every filter's last-candle value matches full history."""
         return max((f.min_history for f in self._unique_filters), default=0)
 
+    @classmethod
+    def from_filter_strings(
+        cls,
+        entry: str,
+        exit_: str,
+        symbol: str,
+        timeframe: str,
+    ) -> CombinedStrategy:
+        """Build from filter spec strings (e.g. ``'trend_up:4 + rsi_oversold:30'``).
+
+        Shared by the CLI (combine/paper/live), the dashboard, and the
+        selection pipeline so filter parsing + symbol/timeframe binding
+        stay in one place.
+        """
+        from tradingbot.strategy.filters.registry import parse_filter_string
+
+        entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
+        exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
+
+        for f in entry_filters + exit_filters:
+            if hasattr(f, "symbol"):
+                f.symbol = symbol
+            if hasattr(f, "timeframe"):
+                f.timeframe = timeframe
+
+        strategy = cls(entry_filters=entry_filters, exit_filters=exit_filters)
+        strategy.symbols = [symbol]
+        strategy.timeframe = timeframe
+        return strategy
+
     def _deduplicate_filters(self) -> list[BaseFilter]:
         """Pre-compute unique filter list for indicators() (avoid per-call key sorting)."""
         seen: set[tuple[str, tuple[tuple[str, Any], ...]]] = set()

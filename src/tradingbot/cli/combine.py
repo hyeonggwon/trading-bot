@@ -254,21 +254,8 @@ def _build_combined_strategy(
 ) -> CombinedStrategy:
     """Build a CombinedStrategy from filter strings."""
     from tradingbot.strategy.combined import CombinedStrategy
-    from tradingbot.strategy.filters.registry import parse_filter_string
 
-    entry_filters = parse_filter_string(entry, base_timeframe=timeframe)
-    exit_filters = parse_filter_string(exit_, base_timeframe=timeframe)
-
-    for f in entry_filters + exit_filters:
-        if hasattr(f, "symbol"):
-            f.symbol = symbol
-        if hasattr(f, "timeframe"):
-            f.timeframe = timeframe
-
-    strategy = CombinedStrategy(entry_filters=entry_filters, exit_filters=exit_filters)
-    strategy.symbols = [symbol]
-    strategy.timeframe = timeframe
-    return strategy
+    return CombinedStrategy.from_filter_strings(entry, exit_, symbol, timeframe)
 
 
 def _find_combine_template(label: str) -> dict[str, str] | None:
