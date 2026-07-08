@@ -760,6 +760,35 @@ class TestLGBMStrategy:
         assert prob is not None
         assert 0.0 <= prob <= 1.0
 
+    def test_lgbm_prob_filter_set_model_bypasses_file_io(self, tmp_path):
+        """LgbmProbFilter.set_model(): 디스크 접근 없이 주입 모델로 check_entry 동작."""
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        df = _make_data(500)
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        model = LGBMTrainer().train(X, y)
+        # Note: NOT saving — tmp_path stays empty.
+
+        f = LgbmProbFilter(threshold=0.0, model_dir=str(tmp_path))
+        f.set_model(model=model, calibrator=None, feature_cols=feature_cols, win_loss_ratio=2.0)
+
+        assert f._loaded is True  # 주입이 디스크 로드 경로를 확정적으로 차단
+        assert f._load_model() is model
+        assert list(tmp_path.iterdir()) == []
+        assert f.check_entry(df_feat.dropna(subset=feature_cols)) is True  # threshold 0
+        assert f.last_prob is not None and 0.0 <= f.last_prob <= 1.0
+        assert f.last_strength is not None
+
+        # Without injection the same empty model_dir yields no model → False
+        bare = LgbmProbFilter(threshold=0.0, model_dir=str(tmp_path))
+        assert bare.check_entry(df_feat.dropna(subset=feature_cols)) is False
+
     def test_no_model_no_trades(self, tmp_path):
         """Without a model file, strategy should generate no trades."""
         from tradingbot.backtest.engine import BacktestEngine

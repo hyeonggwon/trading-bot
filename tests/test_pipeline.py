@@ -81,14 +81,16 @@ class TestSelectCandidates:
     ]
 
     def test_ml_candidate_competes_when_included(self):
-        """include_ml=True: lgbm은 kind='ml'로 top-N 경쟁, lgbm_prob 템플릿은 scan-only."""
+        """include_ml=True: lgbm은 kind='ml', lgbm_prob 템플릿은 kind='combined'로 경쟁."""
         selected, excluded = pl.select_candidates(
             self._RESULTS, top=2, min_trades=10, sort_by="sharpe_ratio"
         )
-        assert [c.name for c in selected] == ["lgbm", "a"]
+        assert [c.name for c in selected] == ["lgbm", "MLT"]
         assert selected[0].kind == "ml"
+        assert selected[1].kind == "combined"
+        assert selected[1].entry == "lgbm_prob:0.45 + trend_up:4"
         reasons = {e["name"]: e["reason"] for e in excluded}
-        assert "scan-only" in reasons["MLT"]
+        assert "MLT" not in reasons  # 더는 scan-only 제외 아님
         assert "min_trades" in reasons["few"]
 
     def test_no_ml_excludes_all_ml_candidates(self):
@@ -452,6 +454,63 @@ class TestMlMetaInheritance:
         assert result["summary"]["num_windows"] == 0
 
 
+class TestMlCombinedWfWiring:
+    def test_factory_injects_fresh_model_and_extras_forced_off(self, tmp_path, monkeypatch):
+        """lgbm_prob 템플릿 검증: 팩토리가 윈도우 모델을 필터에 주입, include_extra는
+        meta가 True여도 False 고정(필터가 extra 피처를 못 만들므로)."""
+        from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForwardReport
+        from tradingbot.ml.trainer import LGBMTrainer
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        captured: dict[str, Any] = {}
+
+        class FakeRunner:
+            def __init__(self, symbol: str, timeframe: str, **kwargs: Any) -> None:
+                captured.update({"symbol": symbol, "timeframe": timeframe, **kwargs})
+
+            def run(self, df: Any) -> MLStrategyWalkForwardReport:
+                return MLStrategyWalkForwardReport()
+
+        monkeypatch.setattr("tradingbot.ml.strategy_walk_forward.MLStrategyWalkForward", FakeRunner)
+        meta = {"forward_candles": 8, "target_kind": "atr", "include_extra": True}
+        monkeypatch.setattr(LGBMTrainer, "load_meta", lambda *a, **k: dict(meta))
+        monkeypatch.chdir(tmp_path)  # no external data dir
+
+        cand = pl.Candidate(
+            name="MLT",
+            symbol="BTC/KRW",
+            timeframe="4h",
+            kind="combined",
+            entry="lgbm_prob:0.45 + trend_up:4",
+            exit="rsi_overbought:70",
+        )
+        options = pl.PipelineOptions(ml_wf_train_months=4, ml_wf_test_months=2)
+        result = pl._run_ml_walk_forward_combined(cand, df=None, config=None, options=options)
+
+        assert captured["forward_candles"] == 8
+        assert captured["target_kind"] == "atr"
+        assert captured["include_extra"] is False  # meta True여도 강제 False
+        assert captured["train_months"] == 4
+        assert captured["test_months"] == 2
+        assert captured["warmup_candles"] >= 300  # 콤바인 룰 필터 워밍업
+
+        factory = captured["strategy_factory"]
+        stub_model = object()
+        strategy = factory(stub_model, None, ["close"], 1.7)
+        assert strategy.symbols == ["BTC/KRW"]
+        ml_filters = [f for f in strategy.entry_filters if isinstance(f, LgbmProbFilter)]
+        assert len(ml_filters) == 1
+        f = ml_filters[0]
+        assert f._loaded and f._model is stub_model
+        assert f._feature_names == ["close"]
+        assert f._win_loss_ratio == 1.7
+        assert f.threshold == 0.45  # 임계값은 템플릿 스펙에서
+
+        # 윈도우마다 새 인스턴스 (상태 오염 없음)
+        assert factory(stub_model, None, ["close"], 1.7) is not strategy
+        assert result["summary"]["num_windows"] == 0
+
+
 class TestMlWfAdapter:
     def _report(self):
         from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForwardReport
@@ -543,12 +602,31 @@ class TestMlDeployArtifacts:
         assert '"--strategy", "lgbm"' in compose
         assert "models/lgbm_BTC_KRW_4h.lgb" in compose
 
+    def test_lgbm_prob_winner_keeps_entry_argv_with_model_note(self, tmp_path):
+        """lgbm_prob 템플릿 승자: --entry argv 유지 + 모델 의존성 주석."""
+        winner = {
+            "name": "MLT",
+            "symbol": "BTC/KRW",
+            "timeframe": "4h",
+            "kind": "combined",
+            "entry": "lgbm_prob:0.45 + trend_up:4",
+            "exit": "rsi_overbought:70",
+            "rank_value": 1.2,
+            "low_trades": False,
+        }
+        pl.write_deploy_artifacts(tmp_path, winner, pl.PipelineOptions())
+        paper = (tmp_path / "deploy" / "paper.sh").read_text()
+        assert "--entry" in paper and "lgbm_prob:0.45" in paper
+        assert "--strategy" not in paper
+        assert "models/lgbm_BTC_KRW_4h.lgb" in paper
+
 
 class TestPipelineMlEndToEnd:
     def test_ml_only_run_trains_validates_and_deploys(self, tmp_path, monkeypatch):
-        """ML 전체 흐름 e2e: stage0 실학습 → lgbm 후보 → ml_walk_forward → 배포 아티팩트.
+        """ML 전체 흐름 e2e: stage0 실학습 → lgbm + lgbm_prob 템플릿 후보 →
+        ml_walk_forward / ml_walk_forward_combined → 배포 아티팩트.
 
-        4h 캔들(월 180개)로 축소 — 단독 실측 ~10초 (tests/CLAUDE.md 2분 예산 내).
+        4h 캔들(월 180개)로 축소 — 단독 실측 ~12초 (tests/CLAUDE.md 2분 예산 내).
         """
         pytest.importorskip("lightgbm")
         from tradingbot.data.storage import save_candles
@@ -572,18 +650,20 @@ class TestPipelineMlEndToEnd:
         save_candles(df, "BTC/KRW", "4h", Path("data"))
 
         options = pl.PipelineOptions(
-            top=1,
+            top=2,
             min_trades=0,
             workers=1,
             skip_rules=True,
-            skip_combine=True,  # ML-only: allowed because ml=True
             ml=True,
             ml_train_months=2,
             ml_test_months=1,
             ml_wf_train_months=2,
             ml_wf_test_months=1,
         )
-        result = pl.run_pipeline(options, templates=[], log=lambda m: None)
+        templates = [
+            {"label": "MLT", "entry": "lgbm_prob:0.35 + trend_up:4", "exit": "rsi_overbought:70"}
+        ]
+        result = pl.run_pipeline(options, templates=templates, log=lambda m: None)
 
         run_dir = Path(result["run_dir"])
         stage0 = json.loads((run_dir / "stage0_ml_train.json").read_text())
@@ -595,12 +675,15 @@ class TestPipelineMlEndToEnd:
         assert "ml_train" in manifest["stages"]
 
         ranking = json.loads((run_dir / "ranking.json").read_text())["ranking"]
-        assert ranking[0]["name"] == "lgbm"
-        assert ranking[0]["validation"] == "ml_walk_forward"
-        assert ranking[0]["wf_efficiency"] is None
+        by_name = {r["name"]: r for r in ranking}
+        assert by_name["lgbm"]["validation"] == "ml_walk_forward"
+        assert by_name["lgbm"]["wf_efficiency"] is None
+        # lgbm_prob 템플릿이 시간정직 콤바인 경로로 검증되어 랭킹에 나타남
+        assert by_name["MLT"]["validation"] == "ml_walk_forward_combined"
+        assert by_name["MLT"]["wf_efficiency"] is None
 
         wf_doc = json.loads((run_dir / "stage2_walkforward.json").read_text())
-        assert wf_doc["results"][0]["summary"]["num_windows"] >= 1
+        assert all(r["summary"]["num_windows"] >= 1 for r in wf_doc["results"])
 
         paper = (run_dir / "deploy" / "paper.sh").read_text()
-        assert "--strategy lgbm" in paper
+        assert "models/lgbm_BTC_KRW_4h.lgb" in paper  # 어느 승자든 모델 의존 주석

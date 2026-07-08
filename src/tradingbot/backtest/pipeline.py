@@ -7,13 +7,15 @@ Automates the operator's recurring workflow as one run:
 1. **Scan** registry strategies + combine templates + lgbm (reuses
    ``parallel._run_batch``); lgbm_prob templates compare here too
 2. **Select** top-N candidates (min-trades gate). lgbm rows compete as
-   kind="ml"; lgbm_prob templates stay scan-only — LgbmProbFilter has no
-   per-window model-injection path yet, so a walk-forward would leak
+   kind="ml"; lgbm_prob templates compete as kind="combined"
 3. **Validate** each candidate: registry → per-window param optimization,
    combined → fixed filters, ml → ``MLStrategyWalkForward`` (fresh model per
-   window — same time-honest path as ``ml-walk-forward``)
+   window — same time-honest path as ``ml-walk-forward``); combined templates
+   containing lgbm_prob use the same fresh-model-per-window runner with the
+   model injected into the filter (``LgbmProbFilter.set_model``)
 4. **Rank** by an out-of-sample metric; every row carries a ``validation``
-   provenance column (walk_forward / walk_forward_combined / ml_walk_forward)
+   provenance column (walk_forward / walk_forward_combined / ml_walk_forward
+   / ml_walk_forward_combined)
 5. **Deploy artifacts**: paper/live commands + docker-compose override for
    the winner — generated, NEVER executed (operator reviews and runs them)
 
@@ -47,10 +49,6 @@ DOCKER_STATE_FILE = "/app/state/state.json"
 
 _ML_DISABLED_REASON = (
     "ml-candidate: excluded by --no-ml (time-honest path: `tradingbot ml-walk-forward`)"
-)
-_ML_TEMPLATE_REASON = (
-    "ml-filter template: scan-only — LgbmProbFilter has no per-window model "
-    "injection yet, so a walk-forward here would leak future data"
 )
 
 
@@ -93,7 +91,7 @@ class Candidate:
     name: str
     symbol: str
     timeframe: str
-    kind: str  # "strategy" | "combined"
+    kind: str  # "strategy" | "combined" | "ml"
     entry: str = ""
     exit: str = ""
 
@@ -491,8 +489,8 @@ def select_candidates(
 ) -> tuple[list[Candidate], list[dict[str, Any]]]:
     """Top-N candidates by ``sort_by`` after the min-trades / ML gates.
 
-    lgbm rows compete as kind="ml" when ``include_ml``; lgbm_prob templates
-    are always scan-only (no time-honest walk-forward path for the filter).
+    When ``include_ml``: lgbm rows compete as kind="ml", lgbm_prob templates
+    as kind="combined" (both validated via the fresh-model-per-window path).
     Returns (selected, excluded-with-reason). Results below top-N are
     simply not selected — only gate failures land in ``excluded``.
     """
@@ -500,11 +498,7 @@ def select_candidates(
     eligible = []
     for r in scan_results:
         ident = {"name": r.strategy, "symbol": r.symbol, "timeframe": r.timeframe}
-        if "lgbm_prob" in r.entry:
-            excluded.append(
-                {**ident, "reason": _ML_TEMPLATE_REASON if include_ml else _ML_DISABLED_REASON}
-            )
-        elif r.strategy == "lgbm" and not include_ml:
+        if (r.strategy == "lgbm" or "lgbm_prob" in r.entry) and not include_ml:
             excluded.append({**ident, "reason": _ML_DISABLED_REASON})
         elif r.total_trades < min_trades:
             excluded.append(
@@ -578,6 +572,15 @@ def _walk_forward_stage(
                 }
             )
             continue
+        if cand.kind == "combined" and "lgbm_prob" in cand.entry:
+            out.append(
+                {
+                    "candidate": asdict(cand),
+                    "validation": "ml_walk_forward_combined",
+                    **_run_ml_walk_forward_combined(cand, df, config, options),
+                }
+            )
+            continue
         if cand.kind == "strategy":
             from tradingbot.strategy.registry import get_strategy_map
 
@@ -648,6 +651,75 @@ def _run_ml_walk_forward(
         exit_threshold=float(meta.get("exit_threshold", 0.30)),
         external_data_dir=ext_dir if has_external else None,
         config=config,
+    )
+    report = runner.run(df)
+    return serialize_ml_wf_report(report)
+
+
+def _run_ml_walk_forward_combined(
+    cand: Candidate,
+    df: Any,
+    config: Any,
+    options: PipelineOptions,
+) -> dict[str, Any]:
+    """Time-honest validation for lgbm_prob templates.
+
+    Same fresh-model-per-window runner as the pure-ml path, but each window's
+    model is injected into the template's ``LgbmProbFilter`` — never the saved
+    disk model, which would infer every window with future-fitted weights.
+    Target settings inherit from the saved model's meta (like ``_run_ml_walk_
+    forward``); ``include_extra`` is forced False because
+    ``LgbmProbFilter.compute()`` only builds the base (+external) feature set,
+    so training must match what the filter can compute at inference time.
+    Deploy still loads the tuned disk model — the same accepted gap as the
+    pure-ml winner (validated methodology, deployed weights).
+    """
+    from tradingbot.data.storage import EXTERNAL_SUBDIR
+    from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+    from tradingbot.ml.trainer import LGBMTrainer
+    from tradingbot.strategy.combined import CombinedStrategy
+    from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+    meta = LGBMTrainer.load_meta(cand.symbol, cand.timeframe, Path("models")) or {}
+    ext_dir = Path(options.data_dir) / EXTERNAL_SUBDIR
+    has_external = ext_dir.exists() and any(ext_dir.iterdir())
+    external_dir = ext_dir if has_external else None
+
+    def _factory(
+        model: Any, calibrator: Any, feature_cols: list[str], win_loss_ratio: float
+    ) -> CombinedStrategy:
+        strategy = CombinedStrategy.from_filter_strings(
+            cand.entry, cand.exit, cand.symbol, cand.timeframe
+        )
+        for f in strategy.entry_filters:
+            if isinstance(f, LgbmProbFilter):
+                # Align the filter's feature columns with the runner's
+                # training frame (same external source, or none).
+                f.external_data_dir = external_dir
+                f.set_model(
+                    model=model,
+                    calibrator=calibrator,
+                    feature_cols=feature_cols,
+                    win_loss_ratio=win_loss_ratio,
+                )
+        return strategy
+
+    proto = CombinedStrategy.from_filter_strings(cand.entry, cand.exit, cand.symbol, cand.timeframe)
+    runner = MLStrategyWalkForward(
+        cand.symbol,
+        cand.timeframe,
+        train_months=options.ml_wf_train_months,
+        test_months=options.ml_wf_test_months,
+        forward_candles=int(meta.get("forward_candles", 4)),
+        threshold=float(meta.get("threshold", 0.006)),
+        target_kind=str(meta.get("target_kind", "binary")),
+        atr_mult=float(meta.get("atr_mult", 1.0)),
+        include_extra=False,
+        external_data_dir=external_dir,
+        config=config,
+        strategy_factory=_factory,
+        # 300 mirrors walk_forward_combined's warmup buffer for rule filters.
+        warmup_candles=max(300, proto.min_history),
     )
     report = runner.run(df)
     return serialize_ml_wf_report(report)
@@ -829,11 +901,19 @@ def write_deploy_artifacts(
     rank_value = winner["rank_value"]
     rank_note = f"rank_value={rank_value:.3f}" if rank_value is not None else "rank_value=-"
     model_note = ""
-    if winner["kind"] == "ml":
+    if winner["kind"] == "ml" or "lgbm_prob" in (winner.get("entry") or ""):
         sym_key = _comment_safe(winner["symbol"]).replace("/", "_")
+        # ml winner: tuned entry/exit thresholds load from meta; lgbm_prob
+        # winner: threshold rides in the --entry spec, meta supplies
+        # feature names + win/loss ratio.
+        meta_note = (
+            "thresholds load from meta."
+            if winner["kind"] == "ml"
+            else "threshold from --entry spec, features/kelly ratio from meta."
+        )
         model_note = (
             f"# Requires models/lgbm_{sym_key}_{_comment_safe(winner['timeframe'])}.lgb "
-            "(+_meta.json) — thresholds load from meta.\n"
+            f"(+_meta.json) — {meta_note}\n"
         )
 
     paper_argv = _winner_argv("paper", winner) + ["--balance", str(int(options.balance))]

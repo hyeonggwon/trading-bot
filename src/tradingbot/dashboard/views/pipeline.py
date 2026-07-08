@@ -217,7 +217,8 @@ def _render_ranking_tab(run_dir: Path) -> None:
     st.caption(
         f"Ranked by {ranking_doc.get('rank_by')} — a large negative Holdout→OOS Δ "
         "means the scan number didn't hold up across walk-forward windows "
-        "(regime/parameter sensitivity)."
+        "(regime/parameter sensitivity). ML-WF rows compare a tuned disk model (scan) "
+        "against fresh default-param per-window models (OOS), so some gap is expected."
     )
     st.dataframe(pd.DataFrame(rows).round(3), use_container_width=True, hide_index=True)
 

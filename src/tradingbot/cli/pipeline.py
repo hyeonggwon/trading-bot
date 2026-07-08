@@ -136,6 +136,7 @@ def pipeline(
         "walk_forward": "WF",
         "walk_forward_combined": "WF-C",
         "ml_walk_forward": "ML-WF",
+        "ml_walk_forward_combined": "ML-WF-C",
     }
     for r in ranking:
         style = "green" if r["oos_sharpe"] > 0 else "red"
@@ -153,6 +154,11 @@ def pipeline(
             str(r["oos_trades"]),
         )
     console.print(table)
+    if any(str(r.get("validation", "")).startswith("ml_walk_forward") for r in ranking):
+        console.print(
+            "[dim]ML-WF rows: scan infers with the tuned disk model, OOS trains fresh "
+            "default-param models per window — some scan→OOS gap is expected there.[/dim]"
+        )
 
     winner = result["winner"]
     if winner is not None:
