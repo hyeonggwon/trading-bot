@@ -81,8 +81,10 @@ tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.45" --exi
 tradingbot combine-scan --top 15
 tradingbot combine-scan --verify-top 5                        # Re-verify top N with full engine
 
-# Selection pipeline (scan → select top-N → walk-forward → rank → deploy artifacts)
-tradingbot pipeline                                           # defaults: top 5, rank by OOS avg_test_sharpe
+# Selection pipeline (ML smart-train → scan(+lgbm) → validate → rank → deploy artifacts)
+tradingbot pipeline                                           # defaults: top 5, rank by OOS avg_test_sharpe, ML on
+tradingbot pipeline --no-ml                                   # rules/combine only (pre-ML behavior)
+tradingbot pipeline --retrain-all --ml-stale-days 3           # force retrain / tighter freshness
 tradingbot pipeline --skip-rules --top 3 --rank-by walk_forward_efficiency
 # → results/pipeline/<run_id>/ (stage JSONs + summary.md + deploy/{paper.sh,live.sh,docker-compose.override.yml})
 
@@ -175,7 +177,7 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/backtest/report.py` — Performance metrics: Sharpe, Sortino, max drawdown, win rate, profit factor
 - `src/tradingbot/backtest/optimizer.py` — Grid search parameter optimization with parallel execution, optional `progress` parameter
 - `src/tradingbot/backtest/walk_forward.py` — Walk-forward validation (train/test window rolling), optional `progress` parameter. `WalkForwardValidator` (registry strategies, per-window grid optimization) + `walk_forward_combined` (fixed-filter combined strategies)
-- `src/tradingbot/backtest/pipeline.py` — Selection pipeline orchestrator (`tradingbot pipeline`): scan → select top-N (min-trades gate, ML candidates excluded → `ml-walk-forward` 전용) → walk-forward → OOS rank → deploy artifacts (paper/live commands + docker-compose override — generated only, never executed). Run outputs: `results/pipeline/<run_id>/` stage JSONs read by the dashboard Pipeline page
+- `src/tradingbot/backtest/pipeline.py` — Selection pipeline orchestrator (`tradingbot pipeline`), 6 stages: ML smart-train (missing/stale models via `_needs_training`, `--retrain-all`/`--no-ml-train`) → scan (rules + combine templates + lgbm) → select top-N (min-trades gate; lgbm competes as kind="ml", lgbm_prob templates scan-only — no time-honest filter injection yet) → validate (rules: walk-forward, ml: `MLStrategyWalkForward` fresh-model-per-window; `serialize_ml_wf_report`가 %→fraction 정규화) → OOS rank (`validation` provenance column, None-metric demotion) → deploy artifacts (generated only, never executed; ml winner = `--strategy lgbm` + model dependency note). Run outputs: `results/pipeline/<run_id>/` stage JSONs read by the dashboard Pipeline page
 - `src/tradingbot/ml/features.py` — 10 technical features + 6 optional external features (kimchi premium, funding rate, FNG, USD/KRW) + 12 optional extras (regime/lag/session, opt-in via `include_extra`).
 - `src/tradingbot/ml/targets.py` — 4h forward-return labelling: `binary` (default), `atr` (volatility-scaled threshold), `triple-barrier` (TP/SL/timeout). CLI default is `binary`; `--target-kind` selects.
 - `src/tradingbot/ml/trainer.py` — LGBMTrainer: train, evaluate, calibrate (isotonic), save/load (.lgb + _meta.json + _cal.json)

@@ -142,6 +142,7 @@ class TestPipelinePage:
                 "kind": "combined",
                 "entry": "trend_up:4",
                 "exit": "rsi_overbought:70",
+                "validation": "walk_forward_combined",
                 "scan_sharpe": scan_sharpe,
                 "scan_return": 0.1,
                 "oos_sharpe": oos_sharpe,
@@ -213,6 +214,7 @@ class TestPipelinePage:
                                 "entry": "",
                                 "exit": "",
                             },
+                            "validation": "walk_forward",
                             "summary": {
                                 "num_windows": 2,
                                 "avg_train_sharpe": 1.2,
@@ -254,15 +256,25 @@ class TestPipelinePage:
         )
         (deploy / "paper.sh").write_text("#!/usr/bin/env bash\ntradingbot paper --strategy A\n")
         (deploy / "docker-compose.override.yml").write_text("services:\n  bot:\n    command: []\n")
+        (run_dir / "stage0_ml_train.json").write_text(
+            json.dumps(
+                {
+                    "trained": [{"symbol": "BTC/KRW", "timeframe": "1h", "holdout_auc": 0.55}],
+                    "fresh": [{"symbol": "ETH/KRW", "timeframe": "1h"}],
+                    "failed": [],
+                }
+            )
+        )
 
         monkeypatch.chdir(tmp_path)
         at = AppTest.from_file(APP, default_timeout=30)
         at.run()
         at.sidebar.radio[0].set_value("Pipeline").run()
         assert not at.exception
-        # Scan table + excluded, WF summary + windows, ranking — at least 4 dataframes
-        assert len(at.dataframe) >= 4
+        # Stage0 trained/fresh + scan + excluded + WF summary + windows + ranking
+        assert len(at.dataframe) >= 5
         assert any("Winner" in str(m.value) for m in at.markdown)
+        assert any("ML Train" in str(e.label) for e in at.expander)
 
     def test_running_partial_run_renders_banners(self, tmp_path, monkeypatch):
         """진행 중 런(1단계만 기록)에서 running 배너 + 미기록 단계 경고 렌더."""

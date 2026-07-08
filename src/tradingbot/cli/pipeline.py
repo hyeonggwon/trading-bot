@@ -41,11 +41,45 @@ def pipeline(
     ),
     skip_rules: bool = typer.Option(False, "--skip-rules", help="Skip registry-strategy scan"),
     skip_combine: bool = typer.Option(False, "--skip-combine", help="Skip combine-template scan"),
+    ml: bool = typer.Option(
+        True, "--ml/--no-ml", help="Include ML: stage-0 training + lgbm candidates"
+    ),
+    ml_train: bool = typer.Option(
+        True,
+        "--ml-train/--no-ml-train",
+        help="Stage-0 smart model refresh (skip = use existing models only)",
+    ),
+    retrain_all: bool = typer.Option(
+        False, "--retrain-all", help="Force retraining every (symbol, timeframe) model"
+    ),
+    ml_stale_days: int = typer.Option(
+        7,
+        "--ml-stale-days",
+        help="Retrain when this many days of new candles accumulated since the model's data_end",
+    ),
+    ml_train_months: int = typer.Option(
+        3, "--ml-train-months", help="Stage-0 training window (months, mirrors ml-train-all)"
+    ),
+    ml_test_months: int = typer.Option(
+        1, "--ml-test-months", help="Stage-0 test window (months, mirrors ml-train-all)"
+    ),
+    ml_wf_train_months: int = typer.Option(
+        6,
+        "--ml-wf-train-months",
+        help="ML validation training window (months, mirrors ml-walk-forward)",
+    ),
+    ml_wf_test_months: int = typer.Option(
+        2,
+        "--ml-wf-test-months",
+        help="ML validation test window (months, mirrors ml-walk-forward)",
+    ),
 ) -> None:
-    """Run the selection pipeline: scan → select top-N → walk-forward → rank → deploy artifacts.
+    """Run the full selection pipeline: ML train → scan → validate → rank → deploy artifacts.
 
-    Deploy artifacts (paper/live commands, docker-compose override) are
-    GENERATED ONLY — nothing is executed. Review them under the run
+    lgbm candidates are validated via the time-honest ml-walk-forward path
+    (fresh model per window); lgbm_prob templates compare in the scan stage
+    only. Deploy artifacts (paper/live commands, docker-compose override)
+    are GENERATED ONLY — nothing is executed. Review them under the run
     directory and start engines yourself.
     """
     setup_logging()
@@ -67,6 +101,14 @@ def pipeline(
         output_dir=output_dir,
         skip_rules=skip_rules,
         skip_combine=skip_combine,
+        ml=ml,
+        ml_train=ml_train,
+        retrain_all=retrain_all,
+        ml_stale_days=ml_stale_days,
+        ml_train_months=ml_train_months,
+        ml_test_months=ml_test_months,
+        ml_wf_train_months=ml_wf_train_months,
+        ml_wf_test_months=ml_wf_test_months,
     )
     try:
         result = run_pipeline(
@@ -84,11 +126,17 @@ def pipeline(
     table.add_column("Candidate")
     table.add_column("Symbol")
     table.add_column("TF")
+    table.add_column("Val")
     table.add_column("Scan Sharpe (holdout)", justify="right")
     table.add_column("OOS Sharpe", justify="right")
     table.add_column("WF Eff", justify="right")
     table.add_column("OOS CumRet", justify="right")
     table.add_column("OOS Trades", justify="right")
+    val_short = {
+        "walk_forward": "WF",
+        "walk_forward_combined": "WF-C",
+        "ml_walk_forward": "ML-WF",
+    }
     for r in ranking:
         style = "green" if r["oos_sharpe"] > 0 else "red"
         name = f"{r['name']} ⚠" if r["low_trades"] else r["name"]
@@ -97,9 +145,10 @@ def pipeline(
             name,
             r["symbol"],
             r["timeframe"],
+            val_short.get(r.get("validation", ""), "-"),
             f"{r['scan_sharpe']:.2f}" if r["scan_sharpe"] is not None else "-",
             f"[{style}]{r['oos_sharpe']:.2f}[/{style}]",
-            f"{r['wf_efficiency']:.2f}",
+            f"{r['wf_efficiency']:.2f}" if r["wf_efficiency"] is not None else "-",
             f"{r['oos_cum_return']:.2%}",
             str(r["oos_trades"]),
         )

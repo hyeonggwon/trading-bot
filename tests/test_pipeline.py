@@ -71,27 +71,38 @@ def _wf(
 
 
 class TestSelectCandidates:
-    def test_top_n_with_gates(self):
-        """min-trades·ML 게이트 통과 후 sort_by 상위 N — 제외는 사유와 함께."""
-        results = [
-            _res("a", sharpe=2.0),
-            _res("b", sharpe=1.0),
-            _res("few", sharpe=3.0, trades=2),
-            _res("lgbm", sharpe=9.9),
-            _res("MLT", sharpe=2.5, entry="lgbm_prob:0.45 + trend_up:4", exit_="rsi_overbought:70"),
-            _res("T2", sharpe=1.5, entry="trend_up:4", exit_="rsi_overbought:70"),
-        ]
+    _RESULTS = [
+        _res("a", sharpe=2.0),
+        _res("b", sharpe=1.0),
+        _res("few", sharpe=3.0, trades=2),
+        _res("lgbm", sharpe=9.9),
+        _res("MLT", sharpe=2.5, entry="lgbm_prob:0.45 + trend_up:4", exit_="rsi_overbought:70"),
+        _res("T2", sharpe=1.5, entry="trend_up:4", exit_="rsi_overbought:70"),
+    ]
+
+    def test_ml_candidate_competes_when_included(self):
+        """include_ml=True: lgbm은 kind='ml'로 top-N 경쟁, lgbm_prob 템플릿은 scan-only."""
         selected, excluded = pl.select_candidates(
-            results, top=2, min_trades=10, sort_by="sharpe_ratio"
+            self._RESULTS, top=2, min_trades=10, sort_by="sharpe_ratio"
+        )
+        assert [c.name for c in selected] == ["lgbm", "a"]
+        assert selected[0].kind == "ml"
+        reasons = {e["name"]: e["reason"] for e in excluded}
+        assert "scan-only" in reasons["MLT"]
+        assert "min_trades" in reasons["few"]
+
+    def test_no_ml_excludes_all_ml_candidates(self):
+        """include_ml=False: lgbm·lgbm_prob 전부 제외 (현행 --no-ml 동작)."""
+        selected, excluded = pl.select_candidates(
+            self._RESULTS, top=2, min_trades=10, sort_by="sharpe_ratio", include_ml=False
         )
         assert [c.name for c in selected] == ["a", "T2"]
         assert selected[0].kind == "strategy"
         assert selected[1].kind == "combined"
-        assert selected[1].entry == "trend_up:4"
         reasons = {e["name"]: e["reason"] for e in excluded}
         assert "min_trades" in reasons["few"]
-        assert "ml-candidate" in reasons["lgbm"]
-        assert "ml-candidate" in reasons["MLT"]
+        assert "no-ml" in reasons["lgbm"]
+        assert "no-ml" in reasons["MLT"]
 
     def test_max_drawdown_sorts_ascending(self):
         results = [_res("hi_dd", max_dd=0.5), _res("lo_dd", max_dd=0.1)]
@@ -205,7 +216,7 @@ class TestCrashSemantics:
         monkeypatch.setattr(pl, "_scan_stage", _boom)
         templates = [{"label": "T", "entry": "ema_above:20", "exit": "rsi_overbought:60"}]
         with pytest.raises(RuntimeError, match="boom"):
-            pl.run_pipeline(pl.PipelineOptions(), templates=templates, log=lambda m: None)
+            pl.run_pipeline(pl.PipelineOptions(ml=False), templates=templates, log=lambda m: None)
 
         run_dirs = list((tmp_path / "results" / "pipeline").iterdir())
         assert len(run_dirs) == 1
@@ -221,7 +232,9 @@ class TestPipelineOptionsValidation:
         with pytest.raises(pl.PipelineError, match="rank-by"):
             pl.run_pipeline(pl.PipelineOptions(rank_by="nope"), templates=[])
         with pytest.raises(pl.PipelineError, match="nothing to scan"):
-            pl.run_pipeline(pl.PipelineOptions(skip_rules=True, skip_combine=True), templates=[])
+            pl.run_pipeline(
+                pl.PipelineOptions(skip_rules=True, skip_combine=True, ml=False), templates=[]
+            )
 
     def test_top_below_one_raises_clear_error(self, tmp_path):
         """--top 0은 min-trades 탓으로 오인되는 빈 선별 대신 명확한 에러."""
@@ -297,6 +310,7 @@ class TestPipelineEndToEnd:
             test_months=1,
             workers=1,
             skip_rules=True,  # registry grid-optimization is too slow for a unit test
+            ml=False,  # ML flow has its own e2e (TestPipelineMlEndToEnd)
         )
         result = pl.run_pipeline(options, templates=templates, log=lambda m: None)
 
@@ -330,3 +344,263 @@ class TestPipelineEndToEnd:
         assert "ema_above:20" in paper
         compose = (run_dir / "deploy" / "docker-compose.override.yml").read_text()
         assert "ema_above:20" in compose
+
+
+class TestNeedsTraining:
+    LAST = pd.Timestamp("2026-07-08", tz="UTC")
+
+    def test_missing_model_or_meta_fields_retrain(self):
+        assert pl._needs_training(None, last_candle=self.LAST, stale_days=7, retrain_all=False)
+        assert pl._needs_training({}, last_candle=self.LAST, stale_days=7, retrain_all=False)
+        assert pl._needs_training(
+            {"data_end": "not-a-date"}, last_candle=self.LAST, stale_days=7, retrain_all=False
+        )
+
+    def test_fresh_model_skipped_and_stale_retrained(self):
+        fresh = {"data_end": "2026-07-05T00:00:00+00:00"}
+        stale = {"data_end": "2026-06-01T00:00:00+00:00"}
+        assert (
+            pl._needs_training(fresh, last_candle=self.LAST, stale_days=7, retrain_all=False)
+            is None
+        )
+        reason = pl._needs_training(stale, last_candle=self.LAST, stale_days=7, retrain_all=False)
+        assert reason is not None and "stale" in reason
+
+    def test_retrain_all_overrides_freshness(self):
+        fresh = {"data_end": "2026-07-08T00:00:00+00:00"}
+        assert (
+            pl._needs_training(fresh, last_candle=self.LAST, stale_days=7, retrain_all=True)
+            == "retrain-all"
+        )
+
+    def test_corrupt_meta_counts_as_missing_and_retrains(self, tmp_path):
+        """손상된 meta.json은 런 중단 대신 '모델 없음'으로 취급 → 재학습 방향."""
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        (tmp_path / "lgbm_BTC_KRW_4h_meta.json").write_text("{corrupt json!!")
+        meta = LGBMTrainer.load_meta("BTC/KRW", "4h", tmp_path)
+        assert meta is None
+        assert pl._needs_training(meta, last_candle=self.LAST, stale_days=7, retrain_all=False)
+
+    def test_empty_parquet_recorded_as_failed_not_crash(self, tmp_path, monkeypatch):
+        """0행 parquet는 IndexError 크래시 대신 failed 항목으로 기록."""
+        monkeypatch.chdir(tmp_path)
+        pair_dir = Path("data/BTC_KRW")
+        pair_dir.mkdir(parents=True)
+        pd.DataFrame({"open": [], "high": [], "low": [], "close": [], "volume": []}).to_parquet(
+            pair_dir / "1h.parquet"
+        )
+        summary = pl._ml_train_stage(pl.PipelineOptions(), log=lambda m: None)
+        assert summary["trained"] == []
+        assert summary["fresh"] == []
+        assert summary["failed"] == [
+            {"symbol": "BTC/KRW", "timeframe": "1h", "reason": "empty data file"}
+        ]
+
+
+class TestMlMetaInheritance:
+    def test_meta_values_reach_ml_walk_forward(self, tmp_path, monkeypatch):
+        """저장 모델 meta의 비기본값이 검증 러너에 실제로 전달된다 (검증=배포 설정)."""
+        from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForwardReport
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        captured: dict[str, Any] = {}
+
+        class FakeRunner:
+            def __init__(self, symbol: str, timeframe: str, **kwargs: Any) -> None:
+                captured.update({"symbol": symbol, "timeframe": timeframe, **kwargs})
+
+            def run(self, df: Any) -> MLStrategyWalkForwardReport:
+                return MLStrategyWalkForwardReport(
+                    windows=[],
+                    avg_sharpe=0.0,
+                    cumulative_return_pct=0.0,
+                    total_trades=0,
+                    avg_win_rate=0.0,
+                    final_equity_multiple=1.0,
+                    n_windows=0,
+                    n_skipped=0,
+                )
+
+        monkeypatch.setattr("tradingbot.ml.strategy_walk_forward.MLStrategyWalkForward", FakeRunner)
+        meta = {
+            "forward_candles": 8,
+            "threshold": 0.01,
+            "target_kind": "atr",
+            "atr_mult": 1.5,
+            "include_extra": True,
+            "entry_threshold": 0.5,
+            "exit_threshold": 0.25,
+        }
+        monkeypatch.setattr(LGBMTrainer, "load_meta", lambda *a, **k: dict(meta))
+        monkeypatch.chdir(tmp_path)  # no external data dir
+
+        cand = pl.Candidate(name="lgbm", symbol="BTC/KRW", timeframe="4h", kind="ml")
+        options = pl.PipelineOptions(ml_wf_train_months=4, ml_wf_test_months=2)
+        result = pl._run_ml_walk_forward(cand, df=None, config=None, options=options)
+
+        assert captured["forward_candles"] == 8
+        assert captured["threshold"] == 0.01
+        assert captured["target_kind"] == "atr"
+        assert captured["atr_mult"] == 1.5
+        assert captured["include_extra"] is True
+        assert captured["entry_threshold"] == 0.5
+        assert captured["exit_threshold"] == 0.25
+        assert captured["train_months"] == 4
+        assert captured["test_months"] == 2
+        assert captured["external_data_dir"] is None
+        assert result["summary"]["num_windows"] == 0
+
+
+class TestMlWfAdapter:
+    def _report(self):
+        from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForwardReport
+
+        return MLStrategyWalkForwardReport(
+            windows=[
+                {
+                    "window": 1,
+                    "train_start": "2024-01-01",
+                    "train_end": "2024-03-01",
+                    "test_start": "2024-03-01",
+                    "test_end": "2024-04-01",
+                    "n_train": 900,
+                    "n_test": 300,
+                    "sharpe": 1.1,
+                    "return_pct": 5.0,
+                    "trades": 9,
+                    "win_rate": 0.5,
+                    "max_dd_pct": 3.0,
+                    "final_balance": 1_050_000.0,
+                    "win_loss_ratio_used": 1.2,
+                }
+            ],
+            avg_sharpe=1.1,
+            cumulative_return_pct=5.0,
+            total_trades=9,
+            avg_win_rate=0.5,
+            final_equity_multiple=1.05,
+            n_windows=1,
+            n_skipped=0,
+        )
+
+    def test_percent_fields_normalized_to_fractions(self):
+        """% 단위(ML 보고서) → fraction(룰 WF와 동일 척도) 정규화가 랭킹 오염을 막는다."""
+        s = pl.serialize_ml_wf_report(self._report())
+        assert s["summary"]["cumulative_test_return"] == pytest.approx(0.05)
+        assert s["windows"][0]["test_return"] == pytest.approx(0.05)
+        assert s["windows"][0]["test_max_drawdown"] == pytest.approx(0.03)
+
+    def test_no_train_side_metrics(self):
+        s = pl.serialize_ml_wf_report(self._report())
+        assert s["summary"]["walk_forward_efficiency"] is None
+        assert s["summary"]["avg_train_sharpe"] is None
+        assert json.dumps(s)  # JSON-safe
+
+
+class TestRankWithMlCandidates:
+    def _ml_wf(self, name, oos_sharpe, trades=30):
+        wf = _wf(name, oos_sharpe=oos_sharpe, trades=trades, kind="ml")
+        wf["validation"] = "ml_walk_forward"
+        wf["summary"]["walk_forward_efficiency"] = None
+        wf["summary"]["avg_train_sharpe"] = None
+        wf["summary"]["overfitting_ratio"] = None
+        return wf
+
+    def test_mixed_ranking_carries_validation(self):
+        wf = [self._ml_wf("ml", 1.2), {**_wf("rule", oos_sharpe=0.9), "validation": "walk_forward"}]
+        ranking = pl.rank_candidates(wf, [], rank_by="avg_test_sharpe", min_trades=10)
+        assert [(r["name"], r["validation"]) for r in ranking] == [
+            ("ml", "ml_walk_forward"),
+            ("rule", "walk_forward"),
+        ]
+
+    def test_rank_by_wf_efficiency_demotes_ml_without_crash(self):
+        """ML은 train측 지표가 없어 eff=None — efficiency 랭킹에서 뒤로, 예외 없음."""
+        wf = [self._ml_wf("ml", 9.0), {**_wf("rule", oos_sharpe=0.5), "validation": "walk_forward"}]
+        ranking = pl.rank_candidates(wf, [], rank_by="walk_forward_efficiency", min_trades=10)
+        assert [r["name"] for r in ranking] == ["rule", "ml"]
+
+
+class TestMlDeployArtifacts:
+    def test_ml_winner_uses_strategy_lgbm_with_model_note(self, tmp_path):
+        winner = {
+            "name": "lgbm",
+            "symbol": "BTC/KRW",
+            "timeframe": "4h",
+            "kind": "ml",
+            "entry": "",
+            "exit": "",
+            "rank_value": 1.5,
+            "low_trades": False,
+        }
+        pl.write_deploy_artifacts(tmp_path, winner, pl.PipelineOptions())
+        paper = (tmp_path / "deploy" / "paper.sh").read_text()
+        assert "--strategy lgbm" in paper
+        assert "models/lgbm_BTC_KRW_4h.lgb" in paper
+        assert "--entry" not in paper
+        compose = (tmp_path / "deploy" / "docker-compose.override.yml").read_text()
+        assert '"--strategy", "lgbm"' in compose
+        assert "models/lgbm_BTC_KRW_4h.lgb" in compose
+
+
+class TestPipelineMlEndToEnd:
+    def test_ml_only_run_trains_validates_and_deploys(self, tmp_path, monkeypatch):
+        """ML 전체 흐름 e2e: stage0 실학습 → lgbm 후보 → ml_walk_forward → 배포 아티팩트.
+
+        4h 캔들(월 180개)로 축소 — 단독 실측 ~10초 (tests/CLAUDE.md 2분 예산 내).
+        """
+        pytest.importorskip("lightgbm")
+        from tradingbot.data.storage import save_candles
+
+        monkeypatch.chdir(tmp_path)
+
+        rng = np.random.default_rng(7)
+        n = 1400  # ~233 days of 4h candles
+        idx = pd.date_range("2024-01-01", periods=n, freq="4h", tz="UTC")
+        close = 100 * np.exp(np.linspace(0, 0.4, n) + rng.normal(0, 0.012, n).cumsum())
+        df = pd.DataFrame(
+            {
+                "open": close,
+                "high": close * 1.006,
+                "low": close * 0.994,
+                "close": close,
+                "volume": rng.uniform(1, 10, n),
+            },
+            index=idx,
+        )
+        save_candles(df, "BTC/KRW", "4h", Path("data"))
+
+        options = pl.PipelineOptions(
+            top=1,
+            min_trades=0,
+            workers=1,
+            skip_rules=True,
+            skip_combine=True,  # ML-only: allowed because ml=True
+            ml=True,
+            ml_train_months=2,
+            ml_test_months=1,
+            ml_wf_train_months=2,
+            ml_wf_test_months=1,
+        )
+        result = pl.run_pipeline(options, templates=[], log=lambda m: None)
+
+        run_dir = Path(result["run_dir"])
+        stage0 = json.loads((run_dir / "stage0_ml_train.json").read_text())
+        assert len(stage0["trained"]) == 1  # smart refresh trained the missing model
+        assert (Path("models") / "lgbm_BTC_KRW_4h.lgb").exists()
+
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        assert manifest["status"] == "complete"
+        assert "ml_train" in manifest["stages"]
+
+        ranking = json.loads((run_dir / "ranking.json").read_text())["ranking"]
+        assert ranking[0]["name"] == "lgbm"
+        assert ranking[0]["validation"] == "ml_walk_forward"
+        assert ranking[0]["wf_efficiency"] is None
+
+        wf_doc = json.loads((run_dir / "stage2_walkforward.json").read_text())
+        assert wf_doc["results"][0]["summary"]["num_windows"] >= 1
+
+        paper = (run_dir / "deploy" / "paper.sh").read_text()
+        assert "--strategy lgbm" in paper

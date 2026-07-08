@@ -58,3 +58,10 @@ CLAUDE.md 의 "How not" 섹션은 이 파일을 1줄로만 가리킨다.
 **원인:** typer ≥0.16 은 click 을 `typer._click` 으로 벤더링 — 반환 객체가 PyPI click 클래스의 인스턴스가 아님. venv 에 click 이 별도로 깔려 있으면 import 는 성공해서 더 비명백해짐.
 **처방:** duck-typing 으로만 introspection: `param.param_type_name == "option"`, `param.type.name`("integer"/"float"/"boolean"/"text"), `is_flag`/`secondary_opts` 속성 사용. 진입점: `dashboard/forms.py` `get_cli_commands()`/`command_param_specs()`.
 **참고:** GUI 파리티 작업 (2026-07-07).
+
+## ML 워크포워드 수익률을 fraction으로 가정 · 2026-07-08
+
+**증상:** 파이프라인 통합 랭킹에서 ML 후보의 누적 수익률이 룰 후보의 100배로 계산돼 lgbm이 항상 압승 — 조용한 랭킹 오염 (예외 없음).
+**원인:** `MLStrategyWalkForwardReport`는 `return_pct`/`cumulative_return_pct`/`max_dd_pct`가 **% 단위**(`total_return * 100`, `ml/strategy_walk_forward.py`)인데 `WalkForwardReport`는 fraction 단위. 이름의 `_pct` 접미사를 지나치면 두 보고서를 그대로 섞게 됨.
+**처방:** 두 보고서를 한 척도로 비교할 땐 반드시 `backtest/pipeline.py`의 `serialize_ml_wf_report()` 경유(/100 정규화 + 단위 고정 테스트 `tests/test_pipeline.py::TestMlWfAdapter`). 새 지표 추가 시 `_pct` 접미사면 fraction 변환 후 공통 스키마에 편입.
+**참고:** 파이프라인 ML 통합 (2026-07-08).

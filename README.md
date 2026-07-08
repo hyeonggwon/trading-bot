@@ -215,11 +215,15 @@ tradingbot combine-scan --top 10
 # 상위 N개 결과를 풀 엔진으로 재검증 (벡터화 스크리닝의 근사 오차 제거)
 tradingbot combine-scan --top 10 --verify-top 5
 
-# 선별 파이프라인: scan → 상위 후보 선별 → walk-forward → OOS 랭킹 → 배포 아티팩트 생성
-tradingbot pipeline
+# 선별 파이프라인: ML 스마트 학습 → scan(lgbm 포함) → 검증(룰=walk-forward,
+# ML=ml-walk-forward 시간정직 경로) → 통합 OOS 랭킹 → 배포 아티팩트 생성
+tradingbot pipeline                      # ML 포함 기본. 모델 없거나 오래된 것만 재학습
+tradingbot pipeline --no-ml              # 룰/콤바인만
+tradingbot pipeline --retrain-all        # 전체 모델 강제 재학습
 tradingbot pipeline --top 3 --rank-by walk_forward_efficiency
 # 결과: results/pipeline/<run_id>/ — 단계별 JSON·summary.md·deploy/(paper.sh, live.sh,
 # docker-compose.override.yml). 아티팩트는 생성만 하며, 실행은 검토 후 직접.
+# lgbm_prob 혼합 템플릿은 scan 비교까지만 참여(시간정직 WF 주입 경로 부재 — 사유 기록).
 ```
 
 **사용 가능한 필터 (31종, 역할별 분류):**

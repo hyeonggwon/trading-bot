@@ -54,13 +54,31 @@ def _render_run_browser() -> None:
     elif status == "failed":
         st.error(f"Run failed: {manifest.get('error', 'see Jobs page log')}")
 
-    tab_scan, tab_wf, tab_rank = st.tabs(["1 · Scan", "2 · Walk-forward", "3 · Ranking & Deploy"])
+    stage0 = _load_json(run_dir / "stage0_ml_train.json")
+    if stage0 is not None:
+        _render_stage0(stage0)
+
+    tab_scan, tab_wf, tab_rank = st.tabs(["1 · Scan", "2 · Validation", "3 · Ranking & Deploy"])
     with tab_scan:
         _render_scan_tab(run_dir, opts)
     with tab_wf:
         _render_wf_tab(run_dir)
     with tab_rank:
         _render_ranking_tab(run_dir)
+
+
+def _render_stage0(stage0: dict[str, Any]) -> None:
+    import pandas as pd
+
+    trained = stage0.get("trained", [])
+    fresh = stage0.get("fresh", [])
+    failed = stage0.get("failed", [])
+    label = f"0 · ML Train — trained {len(trained)} · fresh {len(fresh)} · failed {len(failed)}"
+    with st.expander(label):
+        for title, rows in (("Trained", trained), ("Failed", failed), ("Fresh (skipped)", fresh)):
+            if rows:
+                st.markdown(f"**{title}**")
+                st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
 
 
 def _render_scan_tab(run_dir: Path, opts: dict[str, Any]) -> None:
@@ -130,6 +148,7 @@ def _render_wf_tab(run_dir: Path) -> None:
             "Candidate": r["candidate"]["name"],
             "Symbol": r["candidate"]["symbol"],
             "TF": r["candidate"]["timeframe"],
+            "Validation": r.get("validation", "walk_forward"),
             "Windows": r["summary"]["num_windows"],
             "Train Sharpe (IS)": r["summary"]["avg_train_sharpe"],
             "Test Sharpe (OOS)": r["summary"]["avg_test_sharpe"],
@@ -183,6 +202,7 @@ def _render_ranking_tab(run_dir: Path) -> None:
             "Candidate": r["name"] + (" ⚠low-trades" if r["low_trades"] else ""),
             "Symbol": r["symbol"],
             "TF": r["timeframe"],
+            "Validation": r.get("validation", "-"),
             "Scan Sharpe (holdout)": r["scan_sharpe"],
             "OOS Sharpe": r["oos_sharpe"],
             "Holdout→OOS Δ": (
