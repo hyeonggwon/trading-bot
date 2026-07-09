@@ -46,8 +46,8 @@ def _render_run_browser() -> None:
     status = manifest.get("status", "?")
     st.caption(
         f"status: **{status}** · select top {opts.get('top')} by {opts.get('sort_by')} "
-        f"(min {opts.get('min_trades')} trades) · WF {opts.get('train_months')}m/"
-        f"{opts.get('test_months')}m · rank by {opts.get('rank_by')}"
+        f"(min {opts.get('min_trades')} trades) · WF {opts.get('wf_train_months')}m/"
+        f"{opts.get('wf_test_months')}m · rank by {opts.get('rank_by')}"
     )
     if status == "running":
         st.info("Run in progress — tables appear as stages finish (log on the Jobs page).")
@@ -215,7 +215,8 @@ def _render_ranking_tab(run_dir: Path) -> None:
         for r in ranking
     ]
     st.caption(
-        f"Ranked by {ranking_doc.get('rank_by')} — a large negative Holdout→OOS Δ "
+        f"Ranked by {ranking_doc.get('rank_by')} — one validation frame for all rows "
+        "(expanding windows + 150-candle embargo). A large negative Holdout→OOS Δ "
         "means the scan number didn't hold up across walk-forward windows "
         "(regime/parameter sensitivity). ML-WF rows compare a tuned disk model (scan) "
         "against fresh default-param per-window models (OOS), so some gap is expected."

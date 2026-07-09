@@ -255,8 +255,8 @@ class TestSummaryMd:
                 "top": 1,
                 "sort_by": "sharpe_ratio",
                 "min_trades": 10,
-                "train_months": 3,
-                "test_months": 1,
+                "wf_train_months": 6,
+                "wf_test_months": 2,
                 "rank_by": "avg_test_sharpe",
             },
         }
@@ -308,8 +308,8 @@ class TestPipelineEndToEnd:
         options = pl.PipelineOptions(
             top=1,
             min_trades=0,
-            train_months=1,
-            test_months=1,
+            wf_train_months=1,
+            wf_test_months=1,
             workers=1,
             skip_rules=True,  # registry grid-optimization is too slow for a unit test
             ml=False,  # ML flow has its own e2e (TestPipelineMlEndToEnd)
@@ -392,12 +392,150 @@ class TestNeedsTraining:
         pd.DataFrame({"open": [], "high": [], "low": [], "close": [], "volume": []}).to_parquet(
             pair_dir / "1h.parquet"
         )
-        summary = pl._ml_train_stage(pl.PipelineOptions(), log=lambda m: None)
+        summary = pl._ml_train_stage(pl.PipelineOptions(), log=lambda m: None, run_dir=Path("run"))
         assert summary["trained"] == []
         assert summary["fresh"] == []
         assert summary["failed"] == [
             {"symbol": "BTC/KRW", "timeframe": "1h", "reason": "empty data file"}
         ]
+
+
+class TestMlTuneRouting:
+    """Stage 0 tune/threshold 라우팅 — spawn 풀을 인라인 실행으로 치환해 캡처."""
+
+    class _InlineFuture:
+        def __init__(self, fn, args):
+            self._fn, self._args = fn, args
+
+        def result(self, timeout=None):
+            return self._fn(*self._args)
+
+    class _InlinePool:
+        def __init__(self, *a, **k):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+        def submit(self, fn, *args):
+            return TestMlTuneRouting._InlineFuture(fn, args)
+
+    def _setup(self, tmp_path, monkeypatch, meta):
+        from tradingbot.data.storage import save_candles
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        monkeypatch.chdir(tmp_path)
+        idx = pd.date_range("2026-01-01", periods=48, freq="1h", tz="UTC")
+        df = pd.DataFrame(
+            {"open": 1.0, "high": 1.0, "low": 1.0, "close": 1.0, "volume": 1.0}, index=idx
+        )
+        save_candles(df, "BTC/KRW", "1h", Path("data"))
+        monkeypatch.setattr(LGBMTrainer, "load_meta", lambda *a, **k: meta)
+        monkeypatch.setattr("concurrent.futures.ProcessPoolExecutor", self._InlinePool)
+        monkeypatch.setattr("concurrent.futures.as_completed", lambda fs: list(fs))
+
+    def test_ml_tune_routes_to_tune_pair_with_meta_targets(self, tmp_path, monkeypatch):
+        """--ml-tune: 재학습 대상이 tune_pair로 가고 타깃 설정은 meta에서 상속."""
+        from tradingbot.ml.parallel import TunePairResult
+
+        # data_end가 오래됨 → stale → 재학습 대상
+        meta = {"data_end": "2020-01-01T00:00:00+00:00", "target_kind": "atr", "atr_mult": 1.5}
+        self._setup(tmp_path, monkeypatch, meta)
+
+        captured = {}
+
+        def fake_tune_pair(*args):
+            captured["args"] = args
+            return TunePairResult(
+                symbol=args[0], timeframe=args[1], best_value=1.23, objective=args[17]
+            )
+
+        monkeypatch.setattr("tradingbot.ml.parallel.tune_pair", fake_tune_pair)
+        options = pl.PipelineOptions(
+            ml_tune=True, ml_tune_trials=7, ml_tune_budget_sec=99.0, workers=1
+        )
+        summary = pl._ml_train_stage(options, log=lambda m: None, run_dir=tmp_path)
+
+        args = captured["args"]
+        # tune_pair(sym, tf, data, model, ext, train_m, test_m, fwd, thr, target_kind,
+        #           atr_mult, extra, entry, exit, balance, trials, budget, objective, ...)
+        assert args[9] == "atr" and args[10] == 1.5  # meta 상속
+        assert args[15] == 7 and args[16] == 99.0
+        assert args[17] == "holdout_sharpe"
+        row = summary["trained"][0]
+        assert row["tuned"] is True and row["best_value"] == 1.23
+
+    def test_smart_refresh_preserves_tuned_params(self, tmp_path, monkeypatch):
+        """--ml-tune 없이도 stale 재학습이 meta의 best_params를 잃지 않는다."""
+        from tradingbot.ml.parallel import PairTrainResult
+
+        best = {"num_leaves": 31, "learning_rate": 0.02}
+        meta = {"data_end": "2020-01-01T00:00:00+00:00", "tuning": {"best_params": best}}
+        self._setup(tmp_path, monkeypatch, meta)
+
+        captured = {}
+
+        def fake_train_pair(*args):
+            captured["args"] = args
+            return PairTrainResult(
+                symbol=args[0],
+                timeframe=args[1],
+                avg_auc=0.5,
+                avg_precision=0.5,
+                holdout_auc=0.6,
+                holdout_precision=0.5,
+                n_windows=1,
+                model_path="m.lgb",
+            )
+
+        monkeypatch.setattr("tradingbot.ml.parallel.train_pair", fake_train_pair)
+        summary = pl._ml_train_stage(
+            pl.PipelineOptions(workers=1), log=lambda m: None, run_dir=tmp_path
+        )
+
+        assert captured["args"][-1] == best  # lgbm_params로 전달됨
+        assert summary["trained"][0]["tuned"] is False
+
+    def test_threshold_sweep_runs_for_trained_pairs(self, tmp_path, monkeypatch):
+        """--ml-tune-thresholds: 이번 런 학습 pair에 스윕이 돌고 승자가 기록된다."""
+        from tradingbot.ml.parallel import PairTrainResult, ThresholdTunePairResult
+
+        self._setup(tmp_path, monkeypatch, None)  # meta 없음 → no model → 학습 대상
+
+        def fake_train_pair(*args):
+            return PairTrainResult(
+                symbol=args[0],
+                timeframe=args[1],
+                avg_auc=0.5,
+                avg_precision=0.5,
+                holdout_auc=0.6,
+                holdout_precision=0.5,
+                n_windows=1,
+                model_path="m.lgb",
+            )
+
+        captured = {}
+
+        def fake_thresholds_pair(*args):
+            captured["args"] = args
+            return ThresholdTunePairResult(
+                symbol=args[0], timeframe=args[1], best_entry=0.5, best_exit=0.25
+            )
+
+        monkeypatch.setattr("tradingbot.ml.parallel.train_pair", fake_train_pair)
+        monkeypatch.setattr("tradingbot.ml.parallel.tune_thresholds_pair", fake_thresholds_pair)
+        summary = pl._ml_train_stage(
+            pl.PipelineOptions(ml_tune_thresholds=True, workers=1),
+            log=lambda m: None,
+            run_dir=tmp_path,
+        )
+
+        assert captured["args"][10] is True  # write_meta — 검증·배포로 자동 상속
+        row = summary["trained"][0]
+        assert row["best_entry"] == 0.5 and row["best_exit"] == 0.25
 
 
 class TestMlMetaInheritance:
@@ -438,7 +576,7 @@ class TestMlMetaInheritance:
         monkeypatch.chdir(tmp_path)  # no external data dir
 
         cand = pl.Candidate(name="lgbm", symbol="BTC/KRW", timeframe="4h", kind="ml")
-        options = pl.PipelineOptions(ml_wf_train_months=4, ml_wf_test_months=2)
+        options = pl.PipelineOptions(wf_train_months=4, wf_test_months=2)
         result = pl._run_ml_walk_forward(cand, df=None, config=None, options=options)
 
         assert captured["forward_candles"] == 8
@@ -484,7 +622,7 @@ class TestMlCombinedWfWiring:
             entry="lgbm_prob:0.45 + trend_up:4",
             exit="rsi_overbought:70",
         )
-        options = pl.PipelineOptions(ml_wf_train_months=4, ml_wf_test_months=2)
+        options = pl.PipelineOptions(wf_train_months=4, wf_test_months=2)
         result = pl._run_ml_walk_forward_combined(cand, df=None, config=None, options=options)
 
         assert captured["forward_candles"] == 8
@@ -657,8 +795,9 @@ class TestPipelineMlEndToEnd:
             ml=True,
             ml_train_months=2,
             ml_test_months=1,
-            ml_wf_train_months=2,
-            ml_wf_test_months=1,
+            wf_train_months=2,
+            wf_test_months=1,
+            ml_tune_thresholds=True,  # 실 스윕 경로 — 재학습 없어 저렴
         )
         templates = [
             {"label": "MLT", "entry": "lgbm_prob:0.35 + trend_up:4", "exit": "rsi_overbought:70"}
@@ -668,7 +807,12 @@ class TestPipelineMlEndToEnd:
         run_dir = Path(result["run_dir"])
         stage0 = json.loads((run_dir / "stage0_ml_train.json").read_text())
         assert len(stage0["trained"]) == 1  # smart refresh trained the missing model
+        assert stage0["trained"][0]["tuned"] is False
+        # threshold sweep: 승자 임계값이 stage0에 기록되고 meta로 영속
+        assert "best_entry" in stage0["trained"][0]
         assert (Path("models") / "lgbm_BTC_KRW_4h.lgb").exists()
+        meta = json.loads((Path("models") / "lgbm_BTC_KRW_4h_meta.json").read_text())
+        assert "entry_threshold" in meta and "exit_threshold" in meta
 
         manifest = json.loads((run_dir / "manifest.json").read_text())
         assert manifest["status"] == "complete"

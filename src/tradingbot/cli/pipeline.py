@@ -24,10 +24,14 @@ def pipeline(
             "walk_forward_efficiency"
         ),
     ),
-    train_months: int = typer.Option(
-        3, "--train-months", help="Walk-forward training window (months)"
+    wf_train_months: int = typer.Option(
+        6,
+        "--wf-train-months",
+        help="Validation training window (months) — one expanding+embargo frame for all kinds",
     ),
-    test_months: int = typer.Option(1, "--test-months", help="Walk-forward test window (months)"),
+    wf_test_months: int = typer.Option(
+        2, "--wf-test-months", help="Validation test window (months)"
+    ),
     workers: int = typer.Option(0, "--workers", "-w", help="Scan workers (0=auto)"),
     balance: float = typer.Option(1_000_000, "--balance", "-b", help="Initial balance (KRW)"),
     data_dir: str = typer.Option("data", "--data-dir", help="Data directory"),
@@ -63,24 +67,43 @@ def pipeline(
     ml_test_months: int = typer.Option(
         1, "--ml-test-months", help="Stage-0 test window (months, mirrors ml-train-all)"
     ),
-    ml_wf_train_months: int = typer.Option(
-        6,
-        "--ml-wf-train-months",
-        help="ML validation training window (months, mirrors ml-walk-forward)",
+    ml_tune: bool = typer.Option(
+        False,
+        "--ml-tune",
+        help=(
+            "Upgrade stage-0 training to an Optuna search for pairs needing "
+            "(re)training — expensive (budget-bounded per pair). Tuned params "
+            "affect the deployed model and scan; validation keeps defaults."
+        ),
     ),
-    ml_wf_test_months: int = typer.Option(
-        2,
-        "--ml-wf-test-months",
-        help="ML validation test window (months, mirrors ml-walk-forward)",
+    ml_tune_trials: int = typer.Option(
+        50, "--ml-tune-trials", help="Optuna trials per pair (mirrors ml-tune-all)"
+    ),
+    ml_tune_budget_sec: float = typer.Option(
+        3600.0, "--ml-tune-budget-sec", help="Optuna time budget per pair (seconds)"
+    ),
+    ml_tune_objective: str = typer.Option(
+        "holdout_sharpe",
+        "--ml-tune-objective",
+        help="Optuna objective: holdout_sharpe | holdout_cum_return | holdout_auc",
+    ),
+    ml_tune_thresholds: bool = typer.Option(
+        False,
+        "--ml-tune-thresholds",
+        help=(
+            "Sweep entry/exit thresholds for pairs (re)trained this run "
+            "(cheap, no retraining) — winners persist to meta and flow into "
+            "validation and deploy automatically"
+        ),
     ),
 ) -> None:
     """Run the full selection pipeline: ML train → scan → validate → rank → deploy artifacts.
 
-    lgbm candidates are validated via the time-honest ml-walk-forward path
-    (fresh model per window); lgbm_prob templates compare in the scan stage
-    only. Deploy artifacts (paper/live commands, docker-compose override)
-    are GENERATED ONLY — nothing is executed. Review them under the run
-    directory and start engines yourself.
+    All candidates share one validation frame (expanding windows + 150-candle
+    embargo). lgbm candidates and lgbm_prob templates are validated via the
+    time-honest fresh-model-per-window path. Deploy artifacts (paper/live
+    commands, docker-compose override) are GENERATED ONLY — nothing is
+    executed. Review them under the run directory and start engines yourself.
     """
     setup_logging()
 
@@ -92,8 +115,8 @@ def pipeline(
         min_trades=min_trades,
         sort_by=sort_by,
         rank_by=rank_by,
-        train_months=train_months,
-        test_months=test_months,
+        wf_train_months=wf_train_months,
+        wf_test_months=wf_test_months,
         workers=workers,
         balance=balance,
         data_dir=data_dir,
@@ -107,8 +130,11 @@ def pipeline(
         ml_stale_days=ml_stale_days,
         ml_train_months=ml_train_months,
         ml_test_months=ml_test_months,
-        ml_wf_train_months=ml_wf_train_months,
-        ml_wf_test_months=ml_wf_test_months,
+        ml_tune=ml_tune,
+        ml_tune_trials=ml_tune_trials,
+        ml_tune_budget_sec=ml_tune_budget_sec,
+        ml_tune_objective=ml_tune_objective,
+        ml_tune_thresholds=ml_tune_thresholds,
     )
     try:
         result = run_pipeline(
@@ -154,6 +180,9 @@ def pipeline(
             str(r["oos_trades"]),
         )
     console.print(table)
+    console.print(
+        "[dim]All rows share one validation frame: expanding windows + 150-candle embargo.[/dim]"
+    )
     if any(str(r.get("validation", "")).startswith("ml_walk_forward") for r in ranking):
         console.print(
             "[dim]ML-WF rows: scan infers with the tuned disk model, OOS trains fresh "

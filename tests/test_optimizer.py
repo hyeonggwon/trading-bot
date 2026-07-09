@@ -133,20 +133,35 @@ class TestGridSearchOptimizer:
 
 
 class TestWalkForwardWindows:
-    def test_window_creation(self):
-        """Should create correct number of windows."""
+    def test_window_creation_expanding_with_embargo(self):
+        """Expanding train + 150-candle embargo gap (ML 프레임과 동일 구조)."""
+        from tradingbot.backtest.walk_forward import EMBARGO_CANDLES
+
         dates = pd.date_range("2024-01-01", periods=365 * 24, freq="h", tz="UTC")
         df = pd.DataFrame({"close": range(len(dates))}, index=dates)
 
         windows = create_walk_forward_windows(df, train_months=3, test_months=1)
-        # 12 months of data, 3m train + 1m test sliding by 1m
-        # Windows: Jan-Mar→Apr, Apr-Jun→Jul, Jul-Sep→Oct, Oct-Dec→Jan (but Jan is past end)
         assert len(windows) >= 3
 
         for train_start, train_end, test_start, test_end in windows:
-            assert train_end == test_start  # No gap between train and test
-            assert train_start < train_end
-            assert test_start < test_end
+            # Expanding: train always pinned at the first candle
+            assert train_start == df.index[0]
+            # Embargo: exactly EMBARGO_CANDLES rows between train_end and test_start
+            pos = int(df.index.searchsorted(train_end))
+            assert df.index[pos + EMBARGO_CANDLES] == test_start
+            assert train_start < train_end < test_start < test_end
+            assert test_end <= df.index.max()
+
+        # Train grows by one test span per window
+        train_ends = [w[1] for w in windows]
+        assert train_ends[1] == train_ends[0] + pd.DateOffset(months=1)
+
+    def test_embargo_single_source(self):
+        """룰/ML 윈도우가 같은 embargo 정본을 공유한다 (드리프트 방지)."""
+        from tradingbot.backtest import walk_forward as rule_wf
+        from tradingbot.ml import walk_forward as ml_wf
+
+        assert rule_wf.EMBARGO_CANDLES == ml_wf.EMBARGO_CANDLES == 150
 
     def test_insufficient_data(self):
         """Too little data should produce no windows."""
@@ -155,6 +170,18 @@ class TestWalkForwardWindows:
 
         windows = create_walk_forward_windows(df, train_months=3, test_months=1)
         assert len(windows) == 0
+
+    def test_data_gap_never_scores_same_test_window_twice(self):
+        """test span보다 큰 데이터 공백에서도 같은 test 창을 중복 채점하지 않는다."""
+        first = pd.date_range("2024-01-01", periods=120 * 24, freq="h", tz="UTC")
+        second = pd.date_range("2024-07-15", periods=120 * 24, freq="h", tz="UTC")
+        idx = first.append(second)  # ~2.5개월 공백
+        df = pd.DataFrame({"close": range(len(idx))}, index=idx)
+
+        windows = create_walk_forward_windows(df, train_months=3, test_months=1)
+        test_starts = [w[2] for w in windows]
+        assert len(test_starts) == len(set(test_starts))
+        assert test_starts == sorted(test_starts)
 
 
 class TestWalkForwardValidator:

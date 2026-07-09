@@ -64,8 +64,10 @@ class PipelineOptions:
     min_trades: int = 10
     sort_by: str = "sharpe_ratio"
     rank_by: str = "avg_test_sharpe"
-    train_months: int = 3
-    test_months: int = 1
+    # One window frame for ALL validation kinds (rules/combined/ml):
+    # expanding + embargo, mirrors ml-walk-forward defaults.
+    wf_train_months: int = 6
+    wf_test_months: int = 2
     workers: int = 0
     balance: float = 1_000_000
     data_dir: str = "data"
@@ -80,8 +82,15 @@ class PipelineOptions:
     ml_stale_days: int = 7
     ml_train_months: int = 3  # stage-0 training (mirrors ml-train-all defaults)
     ml_test_months: int = 1
-    ml_wf_train_months: int = 6  # stage-3 validation (mirrors ml-walk-forward defaults)
-    ml_wf_test_months: int = 2
+    # Stage-0 tuning (opt-in — expensive). Validation deliberately ignores
+    # tuned hyperparameters (user-confirmed 2026-07-08): Optuna picked them
+    # by performance on overlapping data, so reusing them in the ranking
+    # would inflate OOS via selection bias. Tuning benefits scan + deploy.
+    ml_tune: bool = False
+    ml_tune_trials: int = 50  # mirrors ml-tune-all defaults
+    ml_tune_budget_sec: float = 3600.0
+    ml_tune_objective: str = "holdout_sharpe"
+    ml_tune_thresholds: bool = False
 
 
 @dataclass(frozen=True)
@@ -158,7 +167,7 @@ def _run_stages(
     if options.ml and options.ml_train:
         t0 = time.monotonic()
         log("[0/6] ml-train: smart refresh (missing/stale models)")
-        train_summary = _ml_train_stage(options, log)
+        train_summary = _ml_train_stage(options, log, run_dir)
         atomic_write_json(run_dir / "stage0_ml_train.json", train_summary)
         _stage_done(
             "ml_train",
@@ -296,18 +305,27 @@ def _needs_training(
 def _ml_train_stage(
     options: PipelineOptions,
     log: Callable[[str], None],
+    run_dir: Path,
 ) -> dict[str, list[dict[str, Any]]]:
-    """Retrain models that are missing or stale (smart refresh).
+    """Retrain (or tune) models that are missing or stale (smart refresh).
 
-    Reuses the ``ml-train-all`` worker (``ml/parallel.py:train_pair``) and
-    its spawn-pool pattern; fresh models are skipped so a routine run only
-    pays for pairs with meaningful new data.
+    Reuses the ``ml-train-all`` / ``ml-tune-all`` workers and their spawn-pool
+    pattern; fresh models are skipped so a routine run only pays for pairs
+    with meaningful new data. ``--ml-tune`` upgrades the training step to an
+    Optuna search (``tune_pair`` retrains the final model with best_params).
+    Without it, a stale pair whose meta carries ``tuning.best_params``
+    retrains WITH those params — smart refresh must never silently discard a
+    tuned booster. Target settings (target_kind/atr_mult/include_extra) also
+    inherit from the existing meta so a refresh keeps the configuration the
+    operator trained. ``--ml-tune-thresholds`` then sweeps entry/exit
+    thresholds for the pairs (re)trained this run; winners persist to meta
+    and flow into validation and deploy automatically.
     """
     import multiprocessing
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    from concurrent.futures import Future, ProcessPoolExecutor, as_completed
 
     from tradingbot.data.storage import EXTERNAL_SUBDIR, list_available_data
-    from tradingbot.ml.parallel import train_pair
+    from tradingbot.ml.parallel import train_pair, tune_pair
     from tradingbot.ml.trainer import LGBMTrainer
 
     available = list_available_data(Path(options.data_dir))
@@ -316,6 +334,7 @@ def _ml_train_stage(
 
     summary: dict[str, list[dict[str, Any]]] = {"trained": [], "fresh": [], "failed": []}
     to_train: list[tuple[str, str]] = []
+    pair_meta: dict[tuple[str, str], dict[str, Any]] = {}
     for item in available:
         symbol, tf = item["symbol"], item["timeframe"]
         # list_available_data already read each parquet — reuse its "end"
@@ -336,7 +355,8 @@ def _ml_train_stage(
             summary["fresh"].append({"symbol": symbol, "timeframe": tf})
         else:
             to_train.append((symbol, tf))
-            log(f"      train {symbol} {tf} ({reason})")
+            pair_meta[(symbol, tf)] = meta or {}
+            log(f"      {'tune' if options.ml_tune else 'train'} {symbol} {tf} ({reason})")
     if not to_train:
         log("      all models fresh — nothing to train")
         return summary
@@ -347,38 +367,192 @@ def _ml_train_stage(
     n_workers = options.workers if options.workers > 0 else max(1, cpu // 2)
     n_workers = max(1, min(n_workers, len(to_train)))  # never more workers than pairs
     num_threads = max(1, cpu // n_workers)
+    data_dir = str(Path(options.data_dir).resolve())
+    model_dir = str(Path("models").resolve())
+
+    config_dump: dict[str, Any] | None = None
+    tune_out = ""
+    if options.ml_tune or options.ml_tune_thresholds:
+        from tradingbot.config import load_config
+
+        config_dump = load_config(
+            overrides={"trading": {"initial_balance": options.balance}}
+        ).model_dump()
+        tune_out = str((run_dir / "stage0_tuning").resolve())
+
+    train_timeout = options.ml_tune_budget_sec + 3600 if options.ml_tune else 3600
+    with ProcessPoolExecutor(
+        max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")
+    ) as pool:
+        # train_pair / tune_pair return different result dataclasses — the
+        # consumer below branches on options.ml_tune, so Any is accurate here.
+        futures: dict[Future[Any], tuple[str, str]] = {}
+        for sym, tf in to_train:
+            meta = pair_meta[(sym, tf)]
+            fut: Future[Any]
+            if options.ml_tune:
+                fut = pool.submit(
+                    tune_pair,
+                    sym,
+                    tf,
+                    data_dir,
+                    model_dir,
+                    external,
+                    options.ml_train_months,
+                    options.ml_test_months,
+                    int(meta.get("forward_candles", 4)),
+                    float(meta.get("threshold", 0.006)),
+                    str(meta.get("target_kind", "binary")),
+                    float(meta.get("atr_mult", 1.0)),
+                    bool(meta.get("include_extra", False)),
+                    float(meta.get("entry_threshold", 0.45)),
+                    float(meta.get("exit_threshold", 0.30)),
+                    options.balance,
+                    options.ml_tune_trials,
+                    options.ml_tune_budget_sec,
+                    options.ml_tune_objective,
+                    42,  # seed: mirrors ml-tune-all default
+                    tune_out,
+                    "pipeline",
+                    num_threads,
+                    config_dump,
+                )
+            else:
+                tuned_params = (meta.get("tuning") or {}).get("best_params") or None
+                fut = pool.submit(
+                    train_pair,
+                    sym,
+                    tf,
+                    data_dir,
+                    model_dir,
+                    options.ml_train_months,
+                    options.ml_test_months,
+                    num_threads,
+                    external,
+                    str(meta.get("target_kind", "binary")),
+                    float(meta.get("atr_mult", 1.0)),
+                    bool(meta.get("include_extra", False)),
+                    tuned_params,
+                )
+            futures[fut] = (sym, tf)
+        for future in as_completed(futures):
+            sym, tf = futures[future]
+            try:
+                result = future.result(timeout=train_timeout)
+            except Exception as exc:
+                summary["failed"].append({"symbol": sym, "timeframe": tf, "reason": str(exc)})
+                continue
+            if result.error:
+                summary["failed"].append({"symbol": sym, "timeframe": tf, "reason": result.error})
+            elif options.ml_tune:
+                summary["trained"].append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "tuned": True,
+                        "objective": result.objective,
+                        "best_value": round(float(result.best_value), 4),
+                        "holdout_auc": result.final_holdout_auc,
+                    }
+                )
+            else:
+                summary["trained"].append(
+                    {
+                        "symbol": sym,
+                        "timeframe": tf,
+                        "tuned": False,
+                        "holdout_auc": result.holdout_auc,
+                    }
+                )
+            log(f"      {'tuned' if options.ml_tune else 'trained'} {sym} {tf}")
+
+    if options.ml_tune_thresholds and summary["trained"]:
+        _threshold_tune_pass(
+            summary,
+            options,
+            log,
+            pair_meta=pair_meta,
+            data_dir=data_dir,
+            model_dir=model_dir,
+            external=external,
+            config_dump=config_dump,
+            tune_out=tune_out,
+            n_workers=n_workers,
+        )
+    return summary
+
+
+def _threshold_tune_pass(
+    summary: dict[str, list[dict[str, Any]]],
+    options: PipelineOptions,
+    log: Callable[[str], None],
+    *,
+    pair_meta: dict[tuple[str, str], dict[str, Any]],
+    data_dir: str,
+    model_dir: str,
+    external: str | None,
+    config_dump: dict[str, Any] | None,
+    tune_out: str,
+    n_workers: int,
+) -> None:
+    """Sweep entry/exit thresholds for the pairs (re)trained this run.
+
+    Cheap (no retraining — grid backtests on the saved booster's holdout).
+    Winners are patched into meta (``write_meta=True``) which the validation
+    runners and ``LGBMStrategy`` already consume. Failures are recorded in
+    ``summary["failed"]`` but never abort the run.
+    """
+    import multiprocessing
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
+    from tradingbot.ml.parallel import tune_thresholds_pair
+    from tradingbot.ml.threshold_tuner import DEFAULT_ENTRY_GRID, DEFAULT_EXIT_GRID
+
+    pairs = [(e["symbol"], e["timeframe"]) for e in summary["trained"]]
+    log(f"      threshold sweep for {len(pairs)} trained pair(s)")
+    n_workers = max(1, min(n_workers, len(pairs)))
     with ProcessPoolExecutor(
         max_workers=n_workers, mp_context=multiprocessing.get_context("spawn")
     ) as pool:
         futures = {
             pool.submit(
-                train_pair,
+                tune_thresholds_pair,
                 sym,
                 tf,
-                str(Path(options.data_dir).resolve()),
-                str(Path("models").resolve()),
-                options.ml_train_months,
-                options.ml_test_months,
-                num_threads,
+                data_dir,
+                model_dir,
                 external,
+                DEFAULT_ENTRY_GRID,
+                DEFAULT_EXIT_GRID,
+                float(pair_meta.get((sym, tf), {}).get("entry_threshold", 0.45)),
+                float(pair_meta.get((sym, tf), {}).get("exit_threshold", 0.30)),
+                options.balance,
+                True,  # write_meta — winners flow to validation/deploy via meta
+                tune_out,
+                "pipeline",
+                config_dump,
             ): (sym, tf)
-            for sym, tf in to_train
+            for sym, tf in pairs
         }
         for future in as_completed(futures):
             sym, tf = futures[future]
             try:
                 result = future.result(timeout=3600)
             except Exception as exc:
-                summary["failed"].append({"symbol": sym, "timeframe": tf, "reason": str(exc)})
+                summary["failed"].append(
+                    {"symbol": sym, "timeframe": tf, "reason": f"threshold-tune: {exc}"}
+                )
                 continue
             if result.error:
-                summary["failed"].append({"symbol": sym, "timeframe": tf, "reason": result.error})
-            else:
-                summary["trained"].append(
-                    {"symbol": sym, "timeframe": tf, "holdout_auc": result.holdout_auc}
+                summary["failed"].append(
+                    {"symbol": sym, "timeframe": tf, "reason": f"threshold-tune: {result.error}"}
                 )
-            log(f"      trained {sym} {tf}")
-    return summary
+                continue
+            for entry in summary["trained"]:
+                if entry["symbol"] == sym and entry["timeframe"] == tf:
+                    entry["best_entry"] = result.best_entry
+                    entry["best_exit"] = result.best_exit
+            log(f"      thresholds {sym} {tf} → {result.best_entry}/{result.best_exit}")
 
 
 # ── Stage 1: scan ────────────────────────────────────────────────────
@@ -587,8 +761,8 @@ def _walk_forward_stage(
             validator = WalkForwardValidator(
                 strategy_cls=get_strategy_map()[cand.name],
                 config=config,
-                train_months=options.train_months,
-                test_months=options.test_months,
+                train_months=options.wf_train_months,
+                test_months=options.wf_test_months,
             )
             report = validator.validate({cand.symbol: df})
             validation = "walk_forward"
@@ -604,8 +778,8 @@ def _walk_forward_stage(
                 cand.symbol,
                 df,
                 config,
-                train_months=options.train_months,
-                test_months=options.test_months,
+                train_months=options.wf_train_months,
+                test_months=options.wf_test_months,
             )
             validation = "walk_forward_combined"
         out.append(
@@ -631,17 +805,20 @@ def _run_ml_walk_forward(
     from tradingbot.ml.trainer import LGBMTrainer
 
     # Hyperparameters (meta["tuning"]["best_params"]) are intentionally NOT
-    # inherited: the WF validates the methodology with default params, not
-    # tuned weights — reusing tuned params per window is its own honesty
-    # question (deferred with the ml-tune pipeline integration).
+    # inherited (user-confirmed 2026-07-08): Optuna picked them by performance
+    # on data that overlaps these validation windows, so reusing them here
+    # would inflate OOS via selection bias. Tuning affects scan + deploy only.
+    # entry/exit thresholds ARE inherited despite the same (much smaller,
+    # 20-combo grid) bias channel: they define the deployed configuration, and
+    # validating a config the deploy won't use would be the bigger dishonesty.
     meta = LGBMTrainer.load_meta(cand.symbol, cand.timeframe, Path("models")) or {}
     ext_dir = Path(options.data_dir) / EXTERNAL_SUBDIR
     has_external = ext_dir.exists() and any(ext_dir.iterdir())
     runner = MLStrategyWalkForward(
         cand.symbol,
         cand.timeframe,
-        train_months=options.ml_wf_train_months,
-        test_months=options.ml_wf_test_months,
+        train_months=options.wf_train_months,
+        test_months=options.wf_test_months,
         forward_candles=int(meta.get("forward_candles", 4)),
         threshold=float(meta.get("threshold", 0.006)),
         target_kind=str(meta.get("target_kind", "binary")),
@@ -708,8 +885,8 @@ def _run_ml_walk_forward_combined(
     runner = MLStrategyWalkForward(
         cand.symbol,
         cand.timeframe,
-        train_months=options.ml_wf_train_months,
-        test_months=options.ml_wf_test_months,
+        train_months=options.wf_train_months,
+        test_months=options.wf_test_months,
         forward_candles=int(meta.get("forward_candles", 4)),
         threshold=float(meta.get("threshold", 0.006)),
         target_kind=str(meta.get("target_kind", "binary")),
@@ -972,7 +1149,7 @@ def _write_summary_md(
         f"- created: {manifest['created_at']}",
         f"- stage-1 window: {'full range' if opts['include_train'] else 'auto holdout (last 20%)'}",
         f"- selection: top {opts['top']} by {opts['sort_by']} (min_trades {opts['min_trades']})",
-        f"- walk-forward: train {opts['train_months']}m / test {opts['test_months']}m",
+        f"- walk-forward: train {opts['wf_train_months']}m / test {opts['wf_test_months']}m",
         f"- ranking: {opts['rank_by']}",
         "",
         "## Final Ranking (out-of-sample)",

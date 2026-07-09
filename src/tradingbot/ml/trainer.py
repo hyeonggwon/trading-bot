@@ -226,6 +226,15 @@ class LGBMTrainer:
             "has_calibrator": has_calibrator,
             **meta,
         }
+        # Preserve tuner-produced keys across retrains: the trainers never put
+        # these in ``meta``, so a plain refresh would otherwise silently revert
+        # a tuned model to defaults on its NEXT retrain (the booster keeps the
+        # params for one cycle, the meta record must survive indefinitely).
+        # An explicit key in the new ``meta`` still wins.
+        prior = self.load_meta(symbol, timeframe, model_dir) or {}
+        for key in ("tuning", "entry_threshold", "exit_threshold"):
+            if key not in full_meta and key in prior:
+                full_meta[key] = prior[key]
         meta_path.write_text(json.dumps(full_meta, indent=2, default=str))
 
         log.info(f"LightGBM model saved: {model_path}")

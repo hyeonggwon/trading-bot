@@ -1,8 +1,10 @@
 """Walk-forward validation.
 
-Splits data into rolling train/test windows, optimizes parameters on each
-training window, then evaluates on the subsequent test window. This measures
-how well optimized parameters generalize to unseen data.
+Splits data into expanding train/test windows with an embargo gap — the same
+frame as the ML walk-forward (``ml.walk_forward.make_expanding_windows``), so
+rule and ML validation numbers are directly comparable. Parameters are
+optimized on each training window, then evaluated on the subsequent test
+window. This measures how well optimized parameters generalize to unseen data.
 """
 
 from __future__ import annotations
@@ -23,6 +25,10 @@ if TYPE_CHECKING:
     from rich.progress import Progress
 
 logger = structlog.get_logger()
+
+# Canonical embargo for BOTH rule and ML walk-forward windows (~3x max
+# indicator lookback (52) for safer purging). ml.walk_forward re-exports this.
+EMBARGO_CANDLES = 150
 
 
 @dataclass
@@ -160,37 +166,47 @@ def create_walk_forward_windows(
     df: pd.DataFrame,
     train_months: int = 3,
     test_months: int = 1,
+    embargo_candles: int = EMBARGO_CANDLES,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
-    """Create rolling train/test window boundaries.
+    """Create expanding train/test window boundaries with an embargo gap.
+
+    Mirrors ``ml.walk_forward.make_expanding_windows``: train always starts at
+    the first candle and ``train_end`` advances by ``test_months`` per window;
+    ``embargo_candles`` rows are skipped between train_end and test_start so
+    the spans used for fitting and scoring never touch.
 
     Returns list of (train_start, train_end, test_start, test_end) tuples.
     """
+    if test_months < 1:
+        return []  # train_end would never advance — no valid frame exists
+
     start = df.index.min()
     end = df.index.max()
 
-    windows = []
-    current = start
+    windows: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
+    train_start = pd.Timestamp(start)
+    train_end = train_start + pd.DateOffset(months=train_months)
 
     while True:
-        train_start = current
-        train_end = train_start + pd.DateOffset(months=train_months)
-        test_start = train_end
+        # Embargo applied in candle counts (index positions), matching the
+        # ML frame's integer gap regardless of timeframe.
+        pos = int(df.index.searchsorted(train_end)) + embargo_candles
+        if pos >= len(df.index):
+            break
+        test_start = pd.Timestamp(df.index[pos])
         test_end = test_start + pd.DateOffset(months=test_months)
 
         if test_end > end:
             break
 
-        windows.append(
-            (
-                pd.Timestamp(train_start),
-                pd.Timestamp(train_end),
-                pd.Timestamp(test_start),
-                pd.Timestamp(test_end),
-            )
-        )
+        # A data gap larger than the test span can pin test_start in place
+        # while train_end advances — the same candles would be scored twice.
+        # Skip forward until the frame actually moves.
+        if not windows or test_start > windows[-1][2]:
+            windows.append((train_start, pd.Timestamp(train_end), test_start, test_end))
 
-        # Slide forward by test_months
-        current = test_start
+        # Expand: train grows by one test span per window
+        train_end = train_end + pd.DateOffset(months=test_months)
 
     return windows
 
@@ -352,7 +368,7 @@ def walk_forward_combined(
 ) -> WalkForwardReport:
     """Walk-forward for fixed-filter (combined) strategies — no optimization.
 
-    Same rolling windows as :class:`WalkForwardValidator`, but the strategy
+    Same expanding+embargo windows as :class:`WalkForwardValidator`, but the strategy
     is fixed: each window backtests the train and test spans with a warmup
     buffer so indicator values at the window edge match full-history
     computation. Returns an empty-windows report when the data cannot fit

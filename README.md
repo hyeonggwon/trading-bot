@@ -168,7 +168,7 @@ tradingbot optimize --strategy sma_cross --symbol BTC/KRW --top 10
 tradingbot optimize --strategy sma_cross --symbol BTC/KRW \
   --param-grid '{"fast_period": [5, 10, 15, 20], "slow_period": [30, 40, 50, 60]}'
 
-# Walk-Forward 검증 (3개월 훈련 → 1개월 테스트 롤링)
+# Walk-Forward 검증 (확장 훈련 창 + 엠바고 150캔들 — ML walk-forward와 동일 프레임)
 tradingbot walk-forward --strategy sma_cross --symbol BTC/KRW \
   --train-months 3 --test-months 1
 ```
@@ -221,6 +221,10 @@ tradingbot pipeline                      # ML 포함 기본. 모델 없거나 �
 tradingbot pipeline --no-ml              # 룰/콤바인만
 tradingbot pipeline --retrain-all        # 전체 모델 강제 재학습
 tradingbot pipeline --top 3 --rank-by walk_forward_efficiency
+tradingbot pipeline --wf-train-months 6 --wf-test-months 2   # 전 후보 공통 검증 창
+tradingbot pipeline --ml-tune --ml-tune-thresholds           # 재학습 대상을 Optuna 튜닝 + 임계값 스윕
+# 검증은 전 종류가 동일 프레임(확장 윈도우 + 엠바고 150캔들). 튜닝 파라미터는
+# 배포 모델·scan에만 반영되고 검증(랭킹)은 기본 파라미터 유지(선택 편향 차단).
 # 결과: results/pipeline/<run_id>/ — 단계별 JSON·summary.md·deploy/(paper.sh, live.sh,
 # docker-compose.override.yml). 아티팩트는 생성만 하며, 실행은 검토 후 직접.
 ```

@@ -319,6 +319,41 @@ class TestBuildTargetTripleBarrier:
 
 
 class TestTrainer:
+    def test_save_preserves_tuning_keys_across_retrain(self, tmp_path):
+        """재학습 save가 기존 meta의 tuning/임계값을 잃지 않는다 (무한 사이클 보존)."""
+        import json as _json
+
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        df = _make_data(500)
+        df_feat, feature_cols = build_feature_matrix(df)
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+
+        # 튜너 산출물 주입 (ml-tune / threshold-tune이 meta를 패치한 상태)
+        meta_path = tmp_path / "lgbm_BTC_KRW_1h_meta.json"
+        meta = _json.loads(meta_path.read_text())
+        meta["tuning"] = {"best_params": {"num_leaves": 31}}
+        meta["entry_threshold"] = 0.5
+        meta_path.write_text(_json.dumps(meta))
+
+        # 평시 재학습 (trainers는 이 키들을 meta 인자로 넣지 않음)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+        kept = _json.loads(meta_path.read_text())
+        assert kept["tuning"]["best_params"] == {"num_leaves": 31}
+        assert kept["entry_threshold"] == 0.5
+
+        # 새 meta에 명시된 키는 새 값이 이긴다
+        trainer.save(
+            model, "BTC/KRW", "1h", {"entry_threshold": 0.4}, feature_cols, model_dir=tmp_path
+        )
+        assert _json.loads(meta_path.read_text())["entry_threshold"] == 0.4
+
     def test_train_and_predict(self):
         from tradingbot.ml.trainer import LGBMTrainer
 
