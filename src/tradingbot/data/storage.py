@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import cast
@@ -36,7 +37,14 @@ def get_parquet_path(symbol: str, timeframe: str, data_dir: Path = DEFAULT_DATA_
         raise ValueError(f"invalid symbol for data path: {symbol!r}")
     if not _TIMEFRAME_RE.fullmatch(timeframe):
         raise ValueError(f"invalid timeframe for data path: {timeframe!r}")
-    return data_dir / dirname / f"{timeframe}.parquet"
+    # Normalize + containment check on the final path (canonical
+    # py/path-injection barrier) — the shape checks above are the domain
+    # guard, this closes the mechanical escape hatch.
+    base = os.path.abspath(str(data_dir))
+    full = os.path.normpath(os.path.join(base, dirname, f"{timeframe}.parquet"))
+    if not full.startswith(base + os.sep):
+        raise ValueError(f"data path escapes {data_dir!r}: {symbol!r}/{timeframe!r}")
+    return Path(full)
 
 
 def save_candles(
