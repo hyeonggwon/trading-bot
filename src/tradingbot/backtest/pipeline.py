@@ -868,7 +868,9 @@ def _run_ml_walk_forward_combined(
         strategy = CombinedStrategy.from_filter_strings(
             cand.entry, cand.exit, cand.symbol, cand.timeframe
         )
-        for f in strategy.entry_filters:
+        # exit side too: lgbm_prob is entry-role (check_exit is always False),
+        # but injecting everywhere removes the disk-model load path entirely.
+        for f in strategy.entry_filters + strategy.exit_filters:
             if isinstance(f, LgbmProbFilter):
                 # Align the filter's feature columns with the runner's
                 # training frame (same external source, or none).
