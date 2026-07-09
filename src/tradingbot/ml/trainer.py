@@ -226,6 +226,15 @@ class LGBMTrainer:
             "has_calibrator": has_calibrator,
             **meta,
         }
+        # Preserve tuner-produced keys across retrains: the trainers never put
+        # these in ``meta``, so a plain refresh would otherwise silently revert
+        # a tuned model to defaults on its NEXT retrain (the booster keeps the
+        # params for one cycle, the meta record must survive indefinitely).
+        # An explicit key in the new ``meta`` still wins.
+        prior = self.load_meta(symbol, timeframe, model_dir) or {}
+        for key in ("tuning", "entry_threshold", "exit_threshold"):
+            if key not in full_meta and key in prior:
+                full_meta[key] = prior[key]
         meta_path.write_text(json.dumps(full_meta, indent=2, default=str))
 
         log.info(f"LightGBM model saved: {model_path}")
@@ -293,14 +302,23 @@ class LGBMTrainer:
     def load_meta(
         symbol: str, timeframe: str, model_dir: Path = Path("models")
     ) -> dict[str, Any] | None:
-        """Load model metadata. Returns dict or None if not found."""
+        """Load model metadata. Returns dict or None if not found/unreadable.
+
+        Corrupt meta counts as missing (same defensive read as load_catalog):
+        every caller already handles None, and the pipeline's staleness check
+        then retrains instead of aborting the whole run.
+        """
         symbol_key = symbol.replace("/", "_")
         meta_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_meta.json"
 
         if not meta_path.exists():
             return None
 
-        meta: dict[str, Any] = json.loads(meta_path.read_text())
+        try:
+            meta: dict[str, Any] = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            log.warning(f"Unreadable model meta treated as missing: {meta_path} ({e})")
+            return None
         return meta
 
     @staticmethod

@@ -10,6 +10,9 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
+# Canonical embargo lives in backtest.walk_forward so rule and ML windows
+# share one frame; re-exported here for existing ml.* importers.
+from tradingbot.backtest.walk_forward import EMBARGO_CANDLES as EMBARGO_CANDLES
 from tradingbot.ml.features import build_feature_matrix
 from tradingbot.ml.targets import (
     build_target,
@@ -57,7 +60,6 @@ def _build_target_dispatch(
 
 log = logging.getLogger(__name__)
 
-EMBARGO_CANDLES = 150  # ~3x max indicator lookback (52) for safer purging
 MIN_VAL_FOR_EARLY_STOPPING = 1000  # below this, fall back to fixed rounds
 
 CANDLES_PER_MONTH = {

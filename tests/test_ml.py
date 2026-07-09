@@ -319,6 +319,41 @@ class TestBuildTargetTripleBarrier:
 
 
 class TestTrainer:
+    def test_save_preserves_tuning_keys_across_retrain(self, tmp_path):
+        """재학습 save가 기존 meta의 tuning/임계값을 잃지 않는다 (무한 사이클 보존)."""
+        import json as _json
+
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        df = _make_data(500)
+        df_feat, feature_cols = build_feature_matrix(df)
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        trainer = LGBMTrainer()
+        model = trainer.train(X, y)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+
+        # 튜너 산출물 주입 (ml-tune / threshold-tune이 meta를 패치한 상태)
+        meta_path = tmp_path / "lgbm_BTC_KRW_1h_meta.json"
+        meta = _json.loads(meta_path.read_text())
+        meta["tuning"] = {"best_params": {"num_leaves": 31}}
+        meta["entry_threshold"] = 0.5
+        meta_path.write_text(_json.dumps(meta))
+
+        # 평시 재학습 (trainers는 이 키들을 meta 인자로 넣지 않음)
+        trainer.save(model, "BTC/KRW", "1h", {}, feature_cols, model_dir=tmp_path)
+        kept = _json.loads(meta_path.read_text())
+        assert kept["tuning"]["best_params"] == {"num_leaves": 31}
+        assert kept["entry_threshold"] == 0.5
+
+        # 새 meta에 명시된 키는 새 값이 이긴다
+        trainer.save(
+            model, "BTC/KRW", "1h", {"entry_threshold": 0.4}, feature_cols, model_dir=tmp_path
+        )
+        assert _json.loads(meta_path.read_text())["entry_threshold"] == 0.4
+
     def test_train_and_predict(self):
         from tradingbot.ml.trainer import LGBMTrainer
 
@@ -759,6 +794,35 @@ class TestLGBMStrategy:
         prob = strategy._predict(df_feat.dropna(subset=feature_cols), "BTC/KRW")
         assert prob is not None
         assert 0.0 <= prob <= 1.0
+
+    def test_lgbm_prob_filter_set_model_bypasses_file_io(self, tmp_path):
+        """LgbmProbFilter.set_model(): 디스크 접근 없이 주입 모델로 check_entry 동작."""
+        from tradingbot.strategy.filters.ml import LgbmProbFilter
+
+        df = _make_data(500)
+        df_feat, feature_cols = build_feature_matrix(df.copy())
+        target = build_target(df_feat)
+        mask = df_feat[feature_cols].notna().all(axis=1) & target.notna()
+        X, y = df_feat.loc[mask, feature_cols], target[mask]
+
+        from tradingbot.ml.trainer import LGBMTrainer
+
+        model = LGBMTrainer().train(X, y)
+        # Note: NOT saving — tmp_path stays empty.
+
+        f = LgbmProbFilter(threshold=0.0, model_dir=str(tmp_path))
+        f.set_model(model=model, calibrator=None, feature_cols=feature_cols, win_loss_ratio=2.0)
+
+        assert f._loaded is True  # 주입이 디스크 로드 경로를 확정적으로 차단
+        assert f._load_model() is model
+        assert list(tmp_path.iterdir()) == []
+        assert f.check_entry(df_feat.dropna(subset=feature_cols)) is True  # threshold 0
+        assert f.last_prob is not None and 0.0 <= f.last_prob <= 1.0
+        assert f.last_strength is not None
+
+        # Without injection the same empty model_dir yields no model → False
+        bare = LgbmProbFilter(threshold=0.0, model_dir=str(tmp_path))
+        assert bare.check_entry(df_feat.dropna(subset=feature_cols)) is False
 
     def test_no_model_no_trades(self, tmp_path):
         """Without a model file, strategy should generate no trades."""

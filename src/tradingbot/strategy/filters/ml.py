@@ -56,6 +56,26 @@ class LgbmProbFilter(BaseFilter):
         self.last_prob: float | None = None
         self.last_strength: float | None = None
 
+    def set_model(
+        self,
+        *,
+        model: Any,
+        calibrator: Any = None,
+        feature_cols: list[str] | None = None,
+        win_loss_ratio: float = 1.5,
+    ) -> None:
+        """Inject a pre-trained model, bypassing disk load.
+
+        Time-honest walk-forward path (mirrors ``LGBMStrategy.set_model``):
+        the pipeline trains a fresh model per window and injects it here so
+        the filter never touches the saved (future-fitted) model on disk.
+        """
+        self._model = model
+        self._calibrator = calibrator
+        self._feature_names = feature_cols
+        self._win_loss_ratio = win_loss_ratio
+        self._loaded = True
+
     def _load_model(self) -> Any:
         """Lazy-load LightGBM model and calibrator. Only attempts once."""
         if self._loaded:

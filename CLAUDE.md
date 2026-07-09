@@ -81,6 +81,13 @@ tradingbot combine --entry "trend_up:4 + rsi_oversold:30 + lgbm_prob:0.45" --exi
 tradingbot combine-scan --top 15
 tradingbot combine-scan --verify-top 5                        # Re-verify top N with full engine
 
+# Selection pipeline (ML smart-train → scan(+lgbm) → validate → rank → deploy artifacts)
+tradingbot pipeline                                           # defaults: top 5, rank by OOS avg_test_sharpe, ML on
+tradingbot pipeline --no-ml                                   # rules/combine only (pre-ML behavior)
+tradingbot pipeline --retrain-all --ml-stale-days 3           # force retrain / tighter freshness
+tradingbot pipeline --skip-rules --top 3 --rank-by walk_forward_efficiency
+# → results/pipeline/<run_id>/ (stage JSONs + summary.md + deploy/{paper.sh,live.sh,docker-compose.override.yml})
+
 # External data (for ML features: kimchi premium, funding rate, FNG, USD/KRW)
 tradingbot download-external --since 2024-01-01
 
@@ -169,7 +176,8 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/backtest/simulator.py` — Order fill simulation with slippage and fees (Upbit: 0.05%)
 - `src/tradingbot/backtest/report.py` — Performance metrics: Sharpe, Sortino, max drawdown, win rate, profit factor
 - `src/tradingbot/backtest/optimizer.py` — Grid search parameter optimization with parallel execution, optional `progress` parameter
-- `src/tradingbot/backtest/walk_forward.py` — Walk-forward validation (train/test window rolling), optional `progress` parameter
+- `src/tradingbot/backtest/walk_forward.py` — Walk-forward validation: expanding train windows + `EMBARGO_CANDLES`(150) gap — ML WF와 동일 프레임(정본 상수는 여기, `ml/walk_forward.py`가 re-export). Optional `progress` parameter. `WalkForwardValidator` (registry strategies, per-window grid optimization) + `walk_forward_combined` (fixed-filter combined strategies)
+- `src/tradingbot/backtest/pipeline.py` — Selection pipeline orchestrator (`tradingbot pipeline`), 6 stages: ML smart-train (missing/stale models via `_needs_training`, `--retrain-all`/`--no-ml-train`) → scan (rules + combine templates + lgbm) → select top-N (min-trades gate; lgbm competes as kind="ml", lgbm_prob templates as kind="combined") → validate (rules: walk-forward, ml: `MLStrategyWalkForward` fresh-model-per-window; lgbm_prob templates: same runner + `strategy_factory`가 윈도우 모델을 `LgbmProbFilter.set_model`로 주입 = `ml_walk_forward_combined`; `serialize_ml_wf_report`가 %→fraction 정규화) → OOS rank (`validation` provenance column, None-metric demotion) → deploy artifacts (generated only, never executed; ml winner = `--strategy lgbm` + model dependency note). 검증은 전 종류가 단일 윈도우 프레임(`--wf-train-months`(6)/`--wf-test-months`(2), expanding+embargo). Stage 0은 `--ml-tune`(Optuna, meta 타깃 상속)·`--ml-tune-thresholds`(임계값 스윕) opt-in을 지원하고, 스마트 갱신 재학습은 meta의 `tuning.best_params`·타깃 설정을 보존한다. 검증은 튜닝 파라미터를 의도적으로 미상속(선택 편향 차단). Run outputs: `results/pipeline/<run_id>/` stage JSONs read by the dashboard Pipeline page
 - `src/tradingbot/ml/features.py` — 10 technical features + 6 optional external features (kimchi premium, funding rate, FNG, USD/KRW) + 12 optional extras (regime/lag/session, opt-in via `include_extra`).
 - `src/tradingbot/ml/targets.py` — 4h forward-return labelling: `binary` (default), `atr` (volatility-scaled threshold), `triple-barrier` (TP/SL/timeout). CLI default is `binary`; `--target-kind` selects.
 - `src/tradingbot/ml/trainer.py` — LGBMTrainer: train, evaluate, calibrate (isotonic), save/load (.lgb + _meta.json + _cal.json)
@@ -195,7 +203,7 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
 - `src/tradingbot/risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown)
 - `src/tradingbot/notifications/telegram.py` — Telegram Bot API notifications
-- `src/tradingbot/dashboard/app.py` — Streamlit web dashboard (Live Monitor + entry pause/resume control + Backtest Viewer + Model Catalog)
+- `src/tradingbot/dashboard/` — Streamlit GUI with full CLI parity: `app.py` (mode router) + `views/` pages (Live Monitor·Trading·Backtest·Combine·ML·Pipeline·Data·Models·Jobs). `forms.py` auto-generates command forms via click introspection (`PAGE_COMMANDS` parity ratchet enforced by tests/test_dashboard_forms.py); `jobs.py` runs long commands as detached CLI subprocesses tracked on disk (`personal/gui_jobs/`, SIGINT cancel, duplicate state-file guard for paper/live)
 - `src/tradingbot/config.py` — Pydantic settings from YAML + .env override
 - `src/tradingbot/utils/logging.py` — Console + JSON file logging with daily rotation (LOG_DIR env)
 

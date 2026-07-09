@@ -7,6 +7,7 @@ graph TB
         tradingbot_backtest_holdout[backtest.holdout]
         tradingbot_backtest_optimizer[backtest.optimizer]
         tradingbot_backtest_parallel[backtest.parallel]
+        tradingbot_backtest_pipeline[backtest.pipeline]
         tradingbot_backtest_report[backtest.report]
         tradingbot_backtest_simulator[backtest.simulator]
         tradingbot_backtest_vectorized[backtest.vectorized]
@@ -18,6 +19,7 @@ graph TB
         tradingbot_cli_combine[cli.combine]
         tradingbot_cli_data[cli.data]
         tradingbot_cli_ml[cli.ml]
+        tradingbot_cli_pipeline[cli.pipeline]
         tradingbot_cli_trade[cli.trade]
         tradingbot_config[config]
         tradingbot_core[core]
@@ -26,6 +28,9 @@ graph TB
         tradingbot_core_models[core.models]
         tradingbot_dashboard[dashboard]
         tradingbot_dashboard_app[dashboard.app]
+        tradingbot_dashboard_forms[dashboard.forms]
+        tradingbot_dashboard_jobs[dashboard.jobs]
+        tradingbot_dashboard_views[dashboard.views]
         tradingbot_data[data]
         tradingbot_data_external_fetcher[data.external_fetcher]
         tradingbot_data_fetcher[data.fetcher]
@@ -65,6 +70,7 @@ graph TB
         tradingbot_strategy_lgbm_strategy[strategy.lgbm_strategy]
         tradingbot_strategy_registry[strategy.registry]
         tradingbot_utils[utils]
+        tradingbot_utils_io[utils.io]
         tradingbot_utils_logging[utils.logging]
         tradingbot_utils_time[utils.time]
     end
@@ -88,6 +94,18 @@ graph TB
     tradingbot_backtest_parallel --> tradingbot_strategy_combined
     tradingbot_backtest_parallel --> tradingbot_strategy_filters
     tradingbot_backtest_parallel --> tradingbot_strategy_registry
+    tradingbot_backtest_pipeline --> tradingbot_backtest_parallel
+    tradingbot_backtest_pipeline --> tradingbot_backtest_walk_forward
+    tradingbot_backtest_pipeline --> tradingbot_config
+    tradingbot_backtest_pipeline --> tradingbot_data_storage
+    tradingbot_backtest_pipeline --> tradingbot_ml_parallel
+    tradingbot_backtest_pipeline --> tradingbot_ml_strategy_walk_forward
+    tradingbot_backtest_pipeline --> tradingbot_ml_threshold_tuner
+    tradingbot_backtest_pipeline --> tradingbot_ml_trainer
+    tradingbot_backtest_pipeline --> tradingbot_strategy_combined
+    tradingbot_backtest_pipeline --> tradingbot_strategy_filters
+    tradingbot_backtest_pipeline --> tradingbot_strategy_registry
+    tradingbot_backtest_pipeline --> tradingbot_utils_io
     tradingbot_backtest_report --> tradingbot_core_models
     tradingbot_backtest_simulator --> tradingbot_config
     tradingbot_backtest_simulator --> tradingbot_core_enums
@@ -110,7 +128,6 @@ graph TB
     tradingbot_cli_backtest --> tradingbot_backtest_engine
     tradingbot_cli_backtest --> tradingbot_backtest_optimizer
     tradingbot_cli_backtest --> tradingbot_backtest_parallel
-    tradingbot_cli_backtest --> tradingbot_backtest_report
     tradingbot_cli_backtest --> tradingbot_backtest_walk_forward
     tradingbot_cli_backtest --> tradingbot_cli__shared
     tradingbot_cli_backtest --> tradingbot_cli_combine
@@ -149,6 +166,11 @@ graph TB
     tradingbot_cli_ml --> tradingbot_strategy_base
     tradingbot_cli_ml --> tradingbot_strategy_lgbm_strategy
     tradingbot_cli_ml --> tradingbot_utils_logging
+    tradingbot_cli_pipeline --> tradingbot_backtest_pipeline
+    tradingbot_cli_pipeline --> tradingbot_cli__shared
+    tradingbot_cli_pipeline --> tradingbot_cli_combine
+    tradingbot_cli_pipeline --> tradingbot_utils_logging
+    tradingbot_cli_trade --> tradingbot
     tradingbot_cli_trade --> tradingbot_cli__shared
     tradingbot_cli_trade --> tradingbot_cli_combine
     tradingbot_cli_trade --> tradingbot_config
@@ -164,14 +186,19 @@ graph TB
     tradingbot_cli_trade --> tradingbot_utils_logging
     tradingbot_core_events --> tradingbot_core_models
     tradingbot_core_models --> tradingbot_core_enums
-    tradingbot_dashboard_app --> tradingbot_backtest_engine
-    tradingbot_dashboard_app --> tradingbot_backtest_report
-    tradingbot_dashboard_app --> tradingbot_config
-    tradingbot_dashboard_app --> tradingbot_data_storage
-    tradingbot_dashboard_app --> tradingbot_live_control
-    tradingbot_dashboard_app --> tradingbot_ml_trainer
-    tradingbot_dashboard_app --> tradingbot_strategy_base
-    tradingbot_dashboard_app --> tradingbot_strategy_registry
+    tradingbot_dashboard_app --> tradingbot_dashboard_views
+    tradingbot_dashboard_forms --> tradingbot_cli
+    tradingbot_dashboard_forms --> tradingbot_strategy_registry
+    tradingbot_dashboard_views --> tradingbot_backtest_engine
+    tradingbot_dashboard_views --> tradingbot_backtest_report
+    tradingbot_dashboard_views --> tradingbot_cli_combine
+    tradingbot_dashboard_views --> tradingbot_config
+    tradingbot_dashboard_views --> tradingbot_dashboard
+    tradingbot_dashboard_views --> tradingbot_data_storage
+    tradingbot_dashboard_views --> tradingbot_live_control
+    tradingbot_dashboard_views --> tradingbot_ml_trainer
+    tradingbot_dashboard_views --> tradingbot_strategy_base
+    tradingbot_dashboard_views --> tradingbot_strategy_registry
     tradingbot_data_external_fetcher --> tradingbot_data_storage
     tradingbot_data_fetcher --> tradingbot_config
     tradingbot_exchange_base --> tradingbot_core_enums
@@ -223,6 +250,7 @@ graph TB
     tradingbot_ml_threshold_tuner --> tradingbot_strategy_lgbm_strategy
     tradingbot_ml_tuner --> tradingbot_config
     tradingbot_ml_tuner --> tradingbot_ml_strategy_walk_forward
+    tradingbot_ml_walk_forward --> tradingbot_backtest_walk_forward
     tradingbot_ml_walk_forward --> tradingbot_ml_features
     tradingbot_ml_walk_forward --> tradingbot_ml_targets
     tradingbot_ml_walk_forward --> tradingbot_ml_trainer

@@ -1,8 +1,10 @@
 """Walk-forward validation.
 
-Splits data into rolling train/test windows, optimizes parameters on each
-training window, then evaluates on the subsequent test window. This measures
-how well optimized parameters generalize to unseen data.
+Splits data into expanding train/test windows with an embargo gap — the same
+frame as the ML walk-forward (``ml.walk_forward.make_expanding_windows``), so
+rule and ML validation numbers are directly comparable. Parameters are
+optimized on each training window, then evaluated on the subsequent test
+window. This measures how well optimized parameters generalize to unseen data.
 """
 
 from __future__ import annotations
@@ -23,6 +25,10 @@ if TYPE_CHECKING:
     from rich.progress import Progress
 
 logger = structlog.get_logger()
+
+# Canonical embargo for BOTH rule and ML walk-forward windows (~3x max
+# indicator lookback (52) for safer purging). ml.walk_forward re-exports this.
+EMBARGO_CANDLES = 150
 
 
 @dataclass
@@ -160,37 +166,47 @@ def create_walk_forward_windows(
     df: pd.DataFrame,
     train_months: int = 3,
     test_months: int = 1,
+    embargo_candles: int = EMBARGO_CANDLES,
 ) -> list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]]:
-    """Create rolling train/test window boundaries.
+    """Create expanding train/test window boundaries with an embargo gap.
+
+    Mirrors ``ml.walk_forward.make_expanding_windows``: train always starts at
+    the first candle and ``train_end`` advances by ``test_months`` per window;
+    ``embargo_candles`` rows are skipped between train_end and test_start so
+    the spans used for fitting and scoring never touch.
 
     Returns list of (train_start, train_end, test_start, test_end) tuples.
     """
+    if test_months < 1:
+        return []  # train_end would never advance — no valid frame exists
+
     start = df.index.min()
     end = df.index.max()
 
-    windows = []
-    current = start
+    windows: list[tuple[pd.Timestamp, pd.Timestamp, pd.Timestamp, pd.Timestamp]] = []
+    train_start = pd.Timestamp(start)
+    train_end = train_start + pd.DateOffset(months=train_months)
 
     while True:
-        train_start = current
-        train_end = train_start + pd.DateOffset(months=train_months)
-        test_start = train_end
+        # Embargo applied in candle counts (index positions), matching the
+        # ML frame's integer gap regardless of timeframe.
+        pos = int(df.index.searchsorted(train_end)) + embargo_candles
+        if pos >= len(df.index):
+            break
+        test_start = pd.Timestamp(df.index[pos])
         test_end = test_start + pd.DateOffset(months=test_months)
 
         if test_end > end:
             break
 
-        windows.append(
-            (
-                pd.Timestamp(train_start),
-                pd.Timestamp(train_end),
-                pd.Timestamp(test_start),
-                pd.Timestamp(test_end),
-            )
-        )
+        # A data gap larger than the test span can pin test_start in place
+        # while train_end advances — the same candles would be scored twice.
+        # Skip forward until the frame actually moves.
+        if not windows or test_start > windows[-1][2]:
+            windows.append((train_start, pd.Timestamp(train_end), test_start, test_end))
 
-        # Slide forward by test_months
-        current = test_start
+        # Expand: train grows by one test span per window
+        train_end = train_end + pd.DateOffset(months=test_months)
 
     return windows
 
@@ -338,3 +354,141 @@ def _run_test(
 
     engine = BacktestEngine(strategy=strategy, config=config)
     return engine.run(data)
+
+
+def walk_forward_combined(
+    strategy: Strategy,
+    strategy_name: str,
+    symbol: str,
+    df: pd.DataFrame,
+    config: AppConfig,
+    train_months: int = 3,
+    test_months: int = 1,
+    progress: Progress | None = None,
+) -> WalkForwardReport:
+    """Walk-forward for fixed-filter (combined) strategies — no optimization.
+
+    Same expanding+embargo windows as :class:`WalkForwardValidator`, but the strategy
+    is fixed: each window backtests the train and test spans with a warmup
+    buffer so indicator values at the window edge match full-history
+    computation. Returns an empty-windows report when the data cannot fit
+    a single window.
+    """
+    import copy
+
+    # Warmup buffer: enough for the most demanding indicators
+    # (e.g., trend_up:4 with SMA_50 at 4x = 200 bars, plus margin)
+    warmup_bars = 300
+
+    wf_config = config.model_copy(deep=True)
+    wf_config.backtest.start_date = None
+    wf_config.backtest.end_date = None
+
+    windows = create_walk_forward_windows(df, train_months, test_months)
+    if not windows:
+        return WalkForwardReport(windows=[], strategy_name=strategy_name)
+
+    results: list[WalkForwardWindow] = []
+    task = progress.add_task("Walk-Forward (combined)", total=len(windows)) if progress else None
+
+    for i, (train_start, train_end, test_start, test_end) in enumerate(windows):
+        if progress and task is not None:
+            progress.update(
+                task,
+                description=f"WF {i + 1}/{len(windows)}: {train_start.date()}~{test_end.date()}",
+            )
+
+        # Train window — include warmup buffer for indicator computation
+        train_start_idx = df.index.searchsorted(train_start)
+        train_warmup_idx = max(0, train_start_idx - warmup_bars)
+        train_with_warmup = df.iloc[train_warmup_idx:].copy()
+        train_with_warmup = train_with_warmup[train_with_warmup.index < train_end]
+
+        train_strategy = copy.deepcopy(strategy)
+        engine = BacktestEngine(strategy=train_strategy, config=wf_config)
+        full_train_report = engine.run({symbol: train_with_warmup})
+
+        # Filter to train period only
+        train_start_dt = (
+            train_start.to_pydatetime() if hasattr(train_start, "to_pydatetime") else train_start
+        )
+        train_trades = [
+            t
+            for t in full_train_report.trades
+            if t.entry_order.created_at is not None and t.entry_order.created_at >= train_start_dt
+        ]
+        train_equity = full_train_report.equity_curve[
+            full_train_report.equity_curve.index >= train_start
+        ]
+
+        if len(train_equity) < 2:
+            train_report = full_train_report
+        else:
+            train_report = BacktestReport(
+                trades=train_trades,
+                equity_curve=train_equity,
+                initial_balance=float(train_equity.iloc[0]),
+                final_balance=float(train_equity.iloc[-1]),
+                timeframe=wf_config.trading.timeframe,
+            )
+
+        # Test window — include warmup buffer for indicator computation
+        test_start_idx = df.index.searchsorted(test_start)
+        warmup_idx = max(0, test_start_idx - warmup_bars)
+        test_with_warmup = df.iloc[warmup_idx:].copy()
+        test_with_warmup = test_with_warmup[test_with_warmup.index < test_end]
+
+        test_strategy = copy.deepcopy(strategy)
+        engine = BacktestEngine(strategy=test_strategy, config=wf_config)
+        full_report = engine.run({symbol: test_with_warmup})
+
+        # Filter to test period only (exclude warmup trades)
+        test_start_dt = (
+            test_start.to_pydatetime() if hasattr(test_start, "to_pydatetime") else test_start
+        )
+        test_trades = [
+            t
+            for t in full_report.trades
+            if t.entry_order.created_at is not None and t.entry_order.created_at >= test_start_dt
+        ]
+        test_equity = full_report.equity_curve[full_report.equity_curve.index >= test_start]
+
+        if len(test_equity) < 2:
+            test_sharpe = 0.0
+            test_return_val = 0.0
+            test_dd = 0.0
+            test_trade_count = 0
+        else:
+            filtered_report = BacktestReport(
+                trades=test_trades,
+                equity_curve=test_equity,
+                initial_balance=float(test_equity.iloc[0]),
+                final_balance=float(test_equity.iloc[-1]),
+                timeframe=wf_config.trading.timeframe,
+            )
+            test_sharpe = filtered_report.sharpe_ratio
+            test_return_val = filtered_report.total_return
+            test_dd = filtered_report.max_drawdown
+            test_trade_count = filtered_report.total_trades
+
+        results.append(
+            WalkForwardWindow(
+                window_index=i,
+                train_start=train_start,
+                train_end=train_end,
+                test_start=test_start,
+                test_end=test_end,
+                best_params={"filters": "fixed"},
+                train_sharpe=train_report.sharpe_ratio,
+                train_return=train_report.total_return,
+                test_sharpe=test_sharpe,
+                test_return=test_return_val,
+                test_trades=test_trade_count,
+                test_max_drawdown=test_dd,
+            )
+        )
+
+        if progress and task is not None:
+            progress.advance(task)
+
+    return WalkForwardReport(windows=results, strategy_name=strategy_name)

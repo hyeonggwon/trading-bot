@@ -76,11 +76,17 @@ def train_pair(
     target_kind: str = "binary",
     atr_mult: float = 1.0,
     include_extra: bool = False,
+    lgbm_params: dict[str, Any] | None = None,
 ) -> PairTrainResult:
     """Train a single symbol x timeframe pair.
 
     Top-level function for spawn-safe pickling. Imports are deferred
     to avoid loading heavy libraries in the main process.
+
+    ``lgbm_params`` lets callers preserve a tuned booster's hyperparameters
+    across a retrain (the pipeline's smart refresh passes the existing
+    meta's ``tuning.best_params``); ``num_threads`` always wins the merge
+    so worker-pool thread clamping stays effective.
     """
     import logging
 
@@ -127,7 +133,7 @@ def train_pair(
             atr_mult=atr_mult,
             include_extra=include_extra,
             model_dir=Path(model_dir),
-            lgbm_params={"num_threads": num_threads},
+            lgbm_params={**(lgbm_params or {}), "num_threads": num_threads},
         )
         report = trainer.run(df, external_df=external_df)
         return PairTrainResult(

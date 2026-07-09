@@ -18,6 +18,21 @@ class TestParquetPath:
         assert "BTC_KRW" in str(path)
         assert path.name == "1h.parquet"
 
+    @pytest.mark.parametrize(
+        ("symbol", "timeframe"),
+        [
+            ("..", "1h"),  # dirname traversal
+            ("../../etc", "1h"),
+            ("BTC/KRW", "../1h"),  # timeframe traversal
+            ("BTC/KRW", "1h/../x"),
+            ("", "1h"),
+        ],
+    )
+    def test_path_injection_rejected(self, tmp_data_dir, symbol, timeframe):
+        """경로 성분 검증 — CLI 인자가 data_dir 밖을 가리킬 수 없다."""
+        with pytest.raises(ValueError):
+            get_parquet_path(symbol, timeframe, tmp_data_dir)
+
 
 class TestSaveLoad:
     def test_save_and_load(self, sample_df, tmp_data_dir):

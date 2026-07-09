@@ -8,6 +8,7 @@ from tradingbot.cli import backtest  # noqa: F401
 from tradingbot.cli import combine  # noqa: F401
 from tradingbot.cli import trade  # noqa: F401
 from tradingbot.cli import ml  # noqa: F401
+from tradingbot.cli import pipeline  # noqa: F401
 
 # isort: on
 from tradingbot.cli._shared import (

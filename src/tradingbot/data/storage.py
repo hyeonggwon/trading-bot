@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import re
 from pathlib import Path
 from typing import cast
 
@@ -11,6 +13,12 @@ logger = structlog.get_logger()
 DEFAULT_DATA_DIR = Path("data")
 EXTERNAL_SUBDIR = "external"
 
+# Trust-boundary shape checks for path components. symbol/timeframe arrive
+# from CLI args and directory listings; a stray ".." or separator must never
+# reach a filesystem path (py/path-injection).
+_DIRNAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9_\-]*")
+_TIMEFRAME_RE = re.compile(r"[0-9]+[a-zA-Z]{1,3}")
+
 
 def _symbol_to_dirname(symbol: str) -> str:
     """Convert symbol like 'BTC/KRW' to directory name 'BTC_KRW'."""
@@ -18,9 +26,25 @@ def _symbol_to_dirname(symbol: str) -> str:
 
 
 def get_parquet_path(symbol: str, timeframe: str, data_dir: Path = DEFAULT_DATA_DIR) -> Path:
-    """Get the parquet file path for a symbol/timeframe pair."""
+    """Get the parquet file path for a symbol/timeframe pair.
+
+    Every candle read/write routes through here, so this is the single
+    validation point keeping symbol/timeframe out of path-injection territory.
+    Raises ValueError on identifiers that don't look like 'BTC/KRW' / '4h'.
+    """
     dirname = _symbol_to_dirname(symbol)
-    return data_dir / dirname / f"{timeframe}.parquet"
+    if not _DIRNAME_RE.fullmatch(dirname):
+        raise ValueError(f"invalid symbol for data path: {symbol!r}")
+    if not _TIMEFRAME_RE.fullmatch(timeframe):
+        raise ValueError(f"invalid timeframe for data path: {timeframe!r}")
+    # Normalize + containment check on the final path (canonical
+    # py/path-injection barrier) — the shape checks above are the domain
+    # guard, this closes the mechanical escape hatch.
+    base = os.path.abspath(str(data_dir))
+    full = os.path.normpath(os.path.join(base, dirname, f"{timeframe}.parquet"))
+    if not full.startswith(base + os.sep):
+        raise ValueError(f"data path escapes {data_dir!r}: {symbol!r}/{timeframe!r}")
+    return Path(full)
 
 
 def save_candles(

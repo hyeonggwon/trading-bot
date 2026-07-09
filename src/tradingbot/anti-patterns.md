@@ -51,3 +51,17 @@ CLAUDE.md 의 "How not" 섹션은 이 파일을 1줄로만 가리킨다.
 **증상:** `realized_vol_low/high` 의 커스텀 `vol_period`/`rank_period` 가 크면(합+1 > 200) 라이브/페이퍼 신호가 백테스트와 조용히 어긋난다(에러·NaN 없음 — `min_periods=10` 때문에 값은 항상 나온다).
 **원인:** 라이브 엔진은 캔들을 200개만 fetch 하는데, 백분위 랭크 창에 partial-window vol 값이 섞이면 풀 히스토리 계산과 순위가 달라진다. 풀 윈도우 패리티 경계는 `vol_period + rank_period + 1 ≤ 200` (기본 20/50 → 71, 안전).
 **처방:** 필터는 `min_history`(BaseFilter 기본 0)를 선언하고 `CombinedStrategy.min_history` 가 최댓값을 집계 — 라이브 엔진이 워밍업에서 200 초과 시 `filter_history_truncated` 경고를 낸다. 새 장주기 필터를 만들면 `min_history` 를 같이 선언할 것. 회귀: `tests/test_combine.py::test_min_history_parity_bound`.
+
+## standalone click 으로 Typer 명령 introspection · 2026-07-07
+
+**증상:** `isinstance(typer.main.get_command(app), click.Group)` 이 False — 대시보드 auto-form 계층이 AssertionError 로 즉사. `isinstance(param, click.Option)` 도 전부 False 라 옵션이 조용히 0개가 될 수 있음.
+**원인:** typer ≥0.16 은 click 을 `typer._click` 으로 벤더링 — 반환 객체가 PyPI click 클래스의 인스턴스가 아님. venv 에 click 이 별도로 깔려 있으면 import 는 성공해서 더 비명백해짐.
+**처방:** duck-typing 으로만 introspection: `param.param_type_name == "option"`, `param.type.name`("integer"/"float"/"boolean"/"text"), `is_flag`/`secondary_opts` 속성 사용. 진입점: `dashboard/forms.py` `get_cli_commands()`/`command_param_specs()`.
+**참고:** GUI 파리티 작업 (2026-07-07).
+
+## ML 워크포워드 수익률을 fraction으로 가정 · 2026-07-08
+
+**증상:** 파이프라인 통합 랭킹에서 ML 후보의 누적 수익률이 룰 후보의 100배로 계산돼 lgbm이 항상 압승 — 조용한 랭킹 오염 (예외 없음).
+**원인:** `MLStrategyWalkForwardReport`는 `return_pct`/`cumulative_return_pct`/`max_dd_pct`가 **% 단위**(`total_return * 100`, `ml/strategy_walk_forward.py`)인데 `WalkForwardReport`는 fraction 단위. 이름의 `_pct` 접미사를 지나치면 두 보고서를 그대로 섞게 됨.
+**처방:** 두 보고서를 한 척도로 비교할 땐 반드시 `backtest/pipeline.py`의 `serialize_ml_wf_report()` 경유(/100 정규화 + 단위 고정 테스트 `tests/test_pipeline.py::TestMlWfAdapter`). 새 지표 추가 시 `_pct` 접미사면 fraction 변환 후 공통 스키마에 편입.
+**참고:** 파이프라인 ML 통합 (2026-07-08).

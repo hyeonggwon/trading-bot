@@ -10,6 +10,7 @@ no exposure to its test data during training.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, cast
@@ -30,8 +31,11 @@ from tradingbot.ml.walk_forward import (
     candles_per_month,
     make_expanding_windows,
 )
-from tradingbot.strategy.base import StrategyParams
+from tradingbot.strategy.base import Strategy, StrategyParams
 from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+
+# (model, calibrator, feature_cols, win_loss_ratio) → ready-to-run Strategy
+StrategyFactory = Callable[[Any, Any, list[str], float], Strategy]
 
 log = logging.getLogger(__name__)
 
@@ -80,7 +84,15 @@ class MLStrategyWalkForward:
         external_data_dir: str | Path | None = None,
         config: AppConfig | None = None,
         lgbm_params: dict[str, Any] | None = None,
+        strategy_factory: StrategyFactory | None = None,
+        warmup_candles: int = WARMUP_CANDLES,
     ) -> None:
+        """``strategy_factory``: builds the per-window strategy from the freshly
+        trained (model, calibrator, feature_cols, win_loss_ratio) — symbol/
+        timeframe binding is the factory's job. None = LGBMStrategy (default).
+        ``warmup_candles``: test-slice warmup prefix; combined-filter strategies
+        need more than the ML feature warmup (e.g. SMA50×4 = 200 bars).
+        """
         if target_kind not in VALID_TARGET_KINDS:
             raise ValueError(
                 f"Unknown target_kind={target_kind!r}; expected one of {VALID_TARGET_KINDS}"
@@ -99,6 +111,8 @@ class MLStrategyWalkForward:
         self.external_data_dir = Path(external_data_dir) if external_data_dir else None
         self.config = config or AppConfig()
         self.trainer = LGBMTrainer(lgbm_params)
+        self.strategy_factory = strategy_factory
+        self.warmup_candles = warmup_candles
 
     def run(self, df: pd.DataFrame) -> MLStrategyWalkForwardReport:
         """Run walk-forward and return per-window backtest metrics."""
@@ -168,26 +182,31 @@ class MLStrategyWalkForward:
                 n_skipped += 1
                 continue
 
-            strategy = LGBMStrategy(
-                StrategyParams(
-                    values={
-                        "entry_threshold": self.entry_threshold,
-                        "exit_threshold": self.exit_threshold,
-                        "external_data_dir": (
-                            str(self.external_data_dir) if self.external_data_dir else None
-                        ),
-                    }
+            if self.strategy_factory is not None:
+                # Fresh strategy per window — same isolation as deepcopy in
+                # walk_forward_combined, and each window gets its own model.
+                strategy = self.strategy_factory(model, calibrator, feature_cols, win_loss_ratio)
+            else:
+                strategy = LGBMStrategy(
+                    StrategyParams(
+                        values={
+                            "entry_threshold": self.entry_threshold,
+                            "exit_threshold": self.exit_threshold,
+                            "external_data_dir": (
+                                str(self.external_data_dir) if self.external_data_dir else None
+                            ),
+                        }
+                    )
                 )
-            )
-            strategy.timeframe = self.timeframe
-            strategy.symbols = [self.symbol]
-            strategy.set_model(
-                symbol=self.symbol,
-                model=model,
-                calibrator=calibrator,
-                feature_cols=feature_cols,
-                win_loss_ratio=win_loss_ratio,
-            )
+                strategy.timeframe = self.timeframe
+                strategy.symbols = [self.symbol]
+                strategy.set_model(
+                    symbol=self.symbol,
+                    model=model,
+                    calibrator=calibrator,
+                    feature_cols=feature_cols,
+                    win_loss_ratio=win_loss_ratio,
+                )
 
             test_ohlcv = self._slice_test_ohlcv(df, df_valid, test_start_idx, test_end_idx)
             if test_ohlcv.empty:
@@ -361,7 +380,7 @@ class MLStrategyWalkForward:
 
         ``df`` is the original OHLCV; ``df_valid`` indexes into rows where
         all features and target are non-NaN. We map the test window endpoints
-        to positions in ``df`` and prepend ``WARMUP_CANDLES`` rows so the
+        to positions in ``df`` and prepend ``warmup_candles`` rows so the
         engine can pre-compute indicators correctly. Predictions on those
         warmup candles return None (NaN features) so they generate no trades.
         """
@@ -372,5 +391,5 @@ class MLStrategyWalkForward:
         df_pos_start = cast(int, df.index.get_loc(test_start_ts))
         df_pos_end = cast(int, df.index.get_loc(test_end_ts))
 
-        warmup_start = max(0, df_pos_start - WARMUP_CANDLES)
+        warmup_start = max(0, df_pos_start - self.warmup_candles)
         return df.iloc[warmup_start : df_pos_end + 1]
