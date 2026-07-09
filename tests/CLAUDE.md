@@ -2,7 +2,7 @@
 
 ## What — 무엇을 하는가
 
-`tradingbot` 패키지의 pytest 스위트. 24 개 `test_*.py` 파일이 모듈별 단위·통합 테스트를 모은다. 외부 거래소·네트워크는 mock 으로 대체하고 candle/Parquet I/O 는 합성 데이터(fixture)로 검증.
+`tradingbot` 패키지의 pytest 스위트. 27 개 `test_*.py` 파일이 모듈별 단위·통합 테스트를 모은다. 외부 거래소·네트워크는 mock 으로 대체하고 candle/Parquet I/O 는 합성 데이터(fixture)로 검증.
 
 ## How — 일반적인 수정
 
@@ -10,6 +10,7 @@
 - **백테스트/엔진 회귀 테스트**: `test_backtest_engine.py`·`test_multi_symbol.py`·`test_vectorized.py`. anti-lookahead 가 깨졌는지 확인하는 테스트는 여기서 추가 — 지표 추가 시 in/out-of-sample 대비 검증 케이스 동봉.
 - **ML 회귀 테스트**: `test_ml.py`(trainer/walk_forward), `test_tuner.py`(Optuna), `test_threshold_tuner.py`, `test_diagnostics.py`. fixture 가 작은 합성 시계열을 만들어 LightGBM 가 실제 fit 되도록 한다 — 2 분 안에 끝나야 CI 부담 없음.
 - **라이브/페이퍼**: `test_live_engine.py`·`test_live_trading.py`·`test_paper_exchange.py`·`test_ws_client.py`. 실제 ccxt/WebSocket 연결 금지, `unittest.mock` 또는 `BaseExchange` 자식 stub.
+- **대시보드/파이프라인**: `test_dashboard.py`·`test_dashboard_forms.py`·`test_dashboard_jobs.py`·`test_pipeline.py`. `test_dashboard_forms.py` 의 `PAGE_COMMANDS` 파리티 래칫은 새 CLI 명령이 페이지 슬롯 미배정이면 실패 — 버그가 아니라 `dashboard/forms.py` 배정 누락 신호. `test_pipeline.py::TestMlWfAdapter` 는 ML 리포트 %→fraction 단위 정규화를 고정.
 - **실행**: `pytest tests/ -v` (전체) 또는 `pytest tests/test_<x>.py::test_<func> -v` (단건).
 
 ## How not — 빌드를 깨뜨리는 비명백한 패턴
