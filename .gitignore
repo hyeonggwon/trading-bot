@@ -54,6 +54,9 @@ personal/
 # Claude Code local state
 .claude/
 
+# OMC (oh-my-claudecode) tooling/session state
+.omc/
+
 # CLI output (results/ml_walkforward, etc.)
 results/
 
