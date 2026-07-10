@@ -67,6 +67,7 @@ class DataFetcher:
         tf_ms = TIMEFRAME_MS.get(timeframe, 3_600_000)
 
         all_rows: list[list[float]] = []
+        retries_429 = 0
 
         while True:
             self._rate_limit()
@@ -74,9 +75,21 @@ class DataFetcher:
                 ohlcv = self.exchange.fetch_ohlcv(
                     symbol, timeframe=timeframe, since=since_ms, limit=limit
                 )
+            except ccxt.RateLimitExceeded as e:
+                retries_429 += 1
+                if retries_429 > 5:
+                    logger.error("ccxt_error", symbol=symbol, error=str(e))
+                    raise
+                wait = min(5.0 * 2 ** (retries_429 - 1), 60.0)
+                logger.warning(
+                    "rate_limited_backoff", symbol=symbol, wait_sec=wait, attempt=retries_429
+                )
+                time.sleep(wait)
+                continue
             except ccxt.BaseError as e:
                 logger.error("ccxt_error", symbol=symbol, error=str(e))
                 raise
+            retries_429 = 0
 
             if not ohlcv:
                 break
