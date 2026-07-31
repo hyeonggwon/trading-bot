@@ -658,7 +658,6 @@ class TestLGBMStrategy:
         from tradingbot.backtest.engine import BacktestEngine
         from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
         from tradingbot.ml.trainer import LGBMTrainer
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         df = _make_data(500)
@@ -675,13 +674,11 @@ class TestLGBMStrategy:
 
         # Backtest
         strategy = LGBMStrategy(
-            StrategyParams(
-                values={
-                    "model_dir": str(tmp_path),
-                    "entry_threshold": 0.30,  # Below base rate (synthetic model outputs ~0.35)
-                    "exit_threshold": 0.25,
-                }
-            )
+            {
+                "model_dir": str(tmp_path),
+                "entry_threshold": 0.30,  # Below base rate (synthetic model outputs ~0.35)
+                "exit_threshold": 0.25,
+            }
         )
         strategy.timeframe = "1h"
 
@@ -757,7 +754,6 @@ class TestLGBMStrategy:
     def test_set_model_bypasses_file_io(self, tmp_path):
         """set_model() should inject model into strategy without reading from disk."""
         from tradingbot.ml.trainer import LGBMTrainer
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         df = _make_data(500)
@@ -770,7 +766,7 @@ class TestLGBMStrategy:
         model = trainer.train(X, y)
         # Note: NOT calling trainer.save — tmp_path stays empty.
 
-        strategy = LGBMStrategy(StrategyParams(values={"model_dir": str(tmp_path)}))
+        strategy = LGBMStrategy({"model_dir": str(tmp_path)})
         strategy.timeframe = "1h"
         strategy.set_model(
             symbol="BTC/KRW",
@@ -828,17 +824,14 @@ class TestLGBMStrategy:
         """Without a model file, strategy should generate no trades."""
         from tradingbot.backtest.engine import BacktestEngine
         from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         df = _make_data(300)
 
         strategy = LGBMStrategy(
-            StrategyParams(
-                values={
-                    "model_dir": str(tmp_path),  # Empty dir — no model
-                }
-            )
+            {
+                "model_dir": str(tmp_path),  # Empty dir — no model
+            }
         )
         strategy.timeframe = "1h"
 
@@ -863,7 +856,6 @@ class TestLGBMStrategy:
         from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
         from tradingbot.data.external_fetcher import save_external
         from tradingbot.ml.trainer import LGBMTrainer
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         df = _make_data(500)
@@ -912,14 +904,12 @@ class TestLGBMStrategy:
 
         # Backtest with external_data_dir — must match the 16-column model
         strategy = LGBMStrategy(
-            StrategyParams(
-                values={
-                    "model_dir": str(tmp_path),
-                    "external_data_dir": str(external_dir),
-                    "entry_threshold": 0.30,
-                    "exit_threshold": 0.25,
-                }
-            )
+            {
+                "model_dir": str(tmp_path),
+                "external_data_dir": str(external_dir),
+                "entry_threshold": 0.30,
+                "exit_threshold": 0.25,
+            }
         )
         strategy.timeframe = "1h"
 
@@ -956,7 +946,6 @@ class TestLGBMStrategy:
             align_external_to,
             save_external,
         )
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         # Two symbols with *disjoint* date ranges — worst case for a shared cache
@@ -992,12 +981,10 @@ class TestLGBMStrategy:
         )
 
         strategy = LGBMStrategy(
-            StrategyParams(
-                values={
-                    "model_dir": str(tmp_path),
-                    "external_data_dir": str(external_dir),
-                }
-            )
+            {
+                "model_dir": str(tmp_path),
+                "external_data_dir": str(external_dir),
+            }
         )
         strategy.timeframe = "1h"
 

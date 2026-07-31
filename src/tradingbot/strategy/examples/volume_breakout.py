@@ -22,7 +22,7 @@ import pandas as pd
 from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.data.indicators import add_ema, add_volume_sma
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 
 class VolumeBreakoutStrategy(Strategy):
@@ -32,7 +32,7 @@ class VolumeBreakoutStrategy(Strategy):
     timeframe = "1h"
     symbols = ["BTC/KRW"]
 
-    def __init__(self, params: StrategyParams | None = None):
+    def __init__(self, params: dict[str, Any] | None = None):
         super().__init__(params)
         self.volume_sma_period: int = self.params.get("volume_sma_period", 20)
         self.volume_spike_threshold: float = self.params.get("volume_spike_threshold", 2.5)

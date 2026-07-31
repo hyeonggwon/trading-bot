@@ -31,7 +31,7 @@ from tradingbot.ml.walk_forward import (
     candles_per_month,
     make_expanding_windows,
 )
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
 # (model, calibrator, feature_cols, win_loss_ratio) → ready-to-run Strategy
@@ -188,15 +188,13 @@ class MLStrategyWalkForward:
                 strategy = self.strategy_factory(model, calibrator, feature_cols, win_loss_ratio)
             else:
                 strategy = LGBMStrategy(
-                    StrategyParams(
-                        values={
-                            "entry_threshold": self.entry_threshold,
-                            "exit_threshold": self.exit_threshold,
-                            "external_data_dir": (
-                                str(self.external_data_dir) if self.external_data_dir else None
-                            ),
-                        }
-                    )
+                    {
+                        "entry_threshold": self.entry_threshold,
+                        "exit_threshold": self.exit_threshold,
+                        "external_data_dir": (
+                            str(self.external_data_dir) if self.external_data_dir else None
+                        ),
+                    }
                 )
                 strategy.timeframe = self.timeframe
                 strategy.symbols = [self.symbol]

@@ -26,12 +26,13 @@ import os
 import signal
 import subprocess
 import sys
-import tempfile
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from tradingbot.utils.io import atomic_write_json
 
 DEFAULT_JOBS_DIR = Path("personal/gui_jobs")
 
@@ -101,7 +102,7 @@ def start_job(
         "state_file": state_file,
         "stop_requested": False,
     }
-    _write_json(job_dir / "job.json", meta)
+    atomic_write_json(job_dir / "job.json", meta)
 
     # ponytail: the reaper dies with the dashboard process — a job that
     # outlives a dashboard restart keeps running but loses its exit code
@@ -143,7 +144,7 @@ def stop_job(job: Job) -> None:
             "state_file": job.state_file,
         }
     meta["stop_requested"] = True
-    _write_json(meta_path, meta)
+    atomic_write_json(meta_path, meta)
 
     try:
         os.killpg(job.pid, signal.SIGINT)
@@ -241,15 +242,3 @@ def _pid_alive(pid: int) -> bool:
     except PermissionError:
         return True
     return True
-
-
-def _write_json(path: Path, data: dict[str, Any]) -> None:
-    """Atomic write — same tmp+replace pattern as live/control.py."""
-    tmp_fd, tmp_path = tempfile.mkstemp(dir=path.parent, suffix=".tmp")
-    try:
-        with os.fdopen(tmp_fd, "w") as f:
-            json.dump(data, f, indent=2)
-        os.replace(tmp_path, path)
-    except Exception:
-        os.unlink(tmp_path)
-        raise

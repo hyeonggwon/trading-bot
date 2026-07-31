@@ -18,7 +18,7 @@ from tradingbot.core.models import Position, Signal
 from tradingbot.ml.features import FEATURE_COLS, WARMUP_CANDLES, build_feature_matrix
 from tradingbot.ml.trainer import LGBMTrainer
 from tradingbot.ml.utils import kelly_strength
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 log = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class LGBMStrategy(Strategy):
     timeframe = "1h"
     symbols = ["BTC/KRW"]
 
-    def __init__(self, params: StrategyParams | None = None):
+    def __init__(self, params: dict[str, Any] | None = None):
         super().__init__(params)
         # Defaults sit inside the calibrated probability range produced by
         # MLWalkForwardTrainer. Isotonic calibration maps raw scores to

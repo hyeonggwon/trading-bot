@@ -5,7 +5,6 @@ from __future__ import annotations
 from datetime import UTC
 
 from tradingbot.exchange.ws_client import (
-    TickerData,
     _symbol_to_upbit_code,
     _upbit_code_to_symbol,
 )
@@ -28,22 +27,6 @@ class TestSymbolConversion:
             assert _upbit_code_to_symbol(code) == sym
 
 
-class TestTickerData:
-    def test_creation(self):
-        from datetime import datetime
-
-        td = TickerData(
-            symbol="BTC/KRW",
-            price=50_000_000,
-            volume=1234.5,
-            change="RISE",
-            timestamp=datetime.now(UTC),
-        )
-        assert td.symbol == "BTC/KRW"
-        assert td.price == 50_000_000
-        assert td.change == "RISE"
-
-
 class TestUpbitWebSocketClient:
     def test_init(self):
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
@@ -54,13 +37,26 @@ class TestUpbitWebSocketClient:
         assert "KRW-BTC" in client._codes
         assert "KRW-ETH" in client._codes
 
-    def test_callback_registration(self):
+    def test_message_records_last_price_timestamp(self):
+        """A parsed ticker message stamps _last_price_ts for that symbol."""
+        import asyncio
+
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW"])
-        calls = []
-        client.on_ticker(lambda td: calls.append(td))
-        assert len(client._callbacks) == 1
+        assert "BTC/KRW" not in client._last_price_ts
+
+        asyncio.run(
+            client._handle_message(
+                {
+                    "type": "ticker",
+                    "code": "KRW-BTC",
+                    "trade_price": 50000000,
+                }
+            )
+        )
+
+        assert "BTC/KRW" in client._last_price_ts
 
     def test_stop(self):
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
@@ -77,8 +73,6 @@ class TestUpbitWebSocketClient:
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW"])
-        received = []
-        client.on_ticker(lambda td: received.append(td))
 
         msg = {
             "type": "ticker",
@@ -89,9 +83,6 @@ class TestUpbitWebSocketClient:
         }
         asyncio.run(client._handle_message(msg))
 
-        assert len(received) == 1
-        assert received[0].symbol == "BTC/KRW"
-        assert received[0].price == 50000000
         assert client.last_prices["BTC/KRW"] == 50000000
 
     def test_ignore_non_ticker(self):
@@ -101,11 +92,9 @@ class TestUpbitWebSocketClient:
         from tradingbot.exchange.ws_client import UpbitWebSocketClient
 
         client = UpbitWebSocketClient(["BTC/KRW"])
-        received = []
-        client.on_ticker(lambda td: received.append(td))
 
         asyncio.run(client._handle_message({"type": "trade", "code": "KRW-BTC"}))
-        assert len(received) == 0
+        assert client.last_prices == {}
 
     def test_ignore_zero_price(self):
         """Zero/negative prices should be ignored."""

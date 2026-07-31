@@ -27,6 +27,27 @@ PERIODS_PER_YEAR: dict[str, float] = {
 }
 
 
+def sharpe_from_equity(equity: pd.Series, timeframe: str) -> float:
+    """Annualized Sharpe ratio from an equity curve, scaled by timeframe.
+
+    Uses population std (ddof=0), consistent with Sortino. Returns 0.0
+    unless there are at least 2 return observations and a positive std.
+    """
+    returns = equity.pct_change().dropna()
+    std = returns.std(ddof=0)
+    ann_factor = float(np.sqrt(PERIODS_PER_YEAR.get(timeframe, 8766)))
+    return float(returns.mean() / std * ann_factor) if len(returns) > 1 and std > 0 else 0.0
+
+
+def max_drawdown_from_equity(equity: pd.Series) -> float:
+    """Maximum drawdown as a positive fraction (e.g., 0.15 = 15%)."""
+    if equity.empty:
+        return 0.0
+    peak = equity.expanding().max()
+    drawdown = (peak - equity) / peak
+    return float(drawdown.max())
+
+
 @dataclass
 class BacktestReport:
     """Performance report for a completed backtest."""
@@ -48,10 +69,6 @@ class BacktestReport:
     @property
     def winning_trades(self) -> int:
         return sum(1 for t in self.trades if t.is_win)
-
-    @property
-    def losing_trades(self) -> int:
-        return self.total_trades - self.winning_trades
 
     @property
     def win_rate(self) -> float:
@@ -90,21 +107,13 @@ class BacktestReport:
     @property
     def max_drawdown(self) -> float:
         """Maximum drawdown as a positive fraction (e.g., 0.15 = 15%)."""
-        if self.equity_curve.empty:
-            return 0.0
-        peak = self.equity_curve.expanding().max()
-        drawdown = (peak - self.equity_curve) / peak
-        return float(drawdown.max())
+        return max_drawdown_from_equity(self.equity_curve)
 
     @property
     def sharpe_ratio(self) -> float:
         """Annualized Sharpe ratio, scaled by timeframe.
         Uses population std (ddof=0) consistent with Sortino calculation."""
-        returns = self.equity_curve.pct_change().dropna()
-        std = returns.std(ddof=0)
-        if len(returns) < 2 or std == 0:
-            return 0.0
-        return float(returns.mean() / std * self._annualization_factor)
+        return sharpe_from_equity(self.equity_curve, self.timeframe)
 
     @property
     def sortino_ratio(self) -> float:

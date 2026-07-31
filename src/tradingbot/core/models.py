@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, cast
-
-import pandas as pd
 
 from tradingbot.core.enums import (
     OrderSide,
@@ -25,46 +22,6 @@ class Candle:
     low: float
     close: float
     volume: float
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "timestamp": self.timestamp,
-            "open": self.open,
-            "high": self.high,
-            "low": self.low,
-            "close": self.close,
-            "volume": self.volume,
-        }
-
-
-def candles_to_dataframe(candles: list[Candle]) -> pd.DataFrame:
-    """Convert list of Candle objects to a pandas DataFrame."""
-    if not candles:
-        return pd.DataFrame(columns=["timestamp", "open", "high", "low", "close", "volume"])
-    df = pd.DataFrame([c.to_dict() for c in candles])
-    df["timestamp"] = pd.to_datetime(df["timestamp"])
-    df = df.set_index("timestamp")
-    return df
-
-
-def dataframe_to_candles(df: pd.DataFrame) -> list[Candle]:
-    """Convert a pandas DataFrame back to list of Candle objects."""
-    candles = []
-    for ts, row in df.iterrows():
-        candles.append(
-            Candle(
-                # cast: candle frames are datetime-indexed, non-Timestamp values are datetime
-                timestamp=(
-                    ts.to_pydatetime() if isinstance(ts, pd.Timestamp) else cast(datetime, ts)
-                ),
-                open=float(row["open"]),
-                high=float(row["high"]),
-                low=float(row["low"]),
-                close=float(row["close"]),
-                volume=float(row["volume"]),
-            )
-        )
-    return candles
 
 
 @dataclass(frozen=True)
@@ -157,14 +114,7 @@ class Position:
         return self.entry_price * self.size
 
     def unrealized_pnl(self, current_price: float) -> float:
-        if self.side == PositionSide.LONG:
-            return (current_price - self.entry_price) * self.size
-        return 0.0
-
-    def unrealized_pnl_pct(self, current_price: float) -> float:
-        if self.entry_value == 0:
-            return 0.0
-        return self.unrealized_pnl(current_price) / self.entry_value
+        return (current_price - self.entry_price) * self.size
 
 
 @dataclass
@@ -174,10 +124,6 @@ class PortfolioState:
     timestamp: datetime
     cash: float
     positions: list[Position] = field(default_factory=list)
-
-    @property
-    def total_position_value(self) -> float:
-        return sum(p.entry_value for p in self.positions)
 
     def equity(self, prices: dict[str, float]) -> float:
         """Total equity = cash + sum of position values at current prices."""

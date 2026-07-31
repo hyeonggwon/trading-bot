@@ -165,7 +165,7 @@ def optimize(
     df = load_candles(symbol, timeframe, Path(data_dir))
     console.print(f"[bold]Optimizing {strategy_name} on {symbol} ({len(df)} candles)[/bold]")
 
-    optimizer = GridSearchOptimizer(strategy_cls=strategy_cls, config=config, max_workers=1)
+    optimizer = GridSearchOptimizer(strategy_cls=strategy_cls, config=config)
     with _progress_context() as progress:
         results = optimizer.optimize(
             {symbol: df},

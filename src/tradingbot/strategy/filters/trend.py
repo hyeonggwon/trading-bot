@@ -56,10 +56,6 @@ class TrendUpFilter(BaseFilter):
             return False
         return bool(close < sma)
 
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df[self._col_close()] > df[self._col_sma()]
 
@@ -115,10 +111,6 @@ class TrendDownFilter(BaseFilter):
             return False
         return bool(close > sma)
 
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df[self._col_close()] < df[self._col_sma()]
 
@@ -160,10 +152,6 @@ class AdxStrongFilter(BaseFilter):
         if pd.isna(val):
             return False
         return bool(val < self.threshold)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
 
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df[f"adx_{self.period}"] > self.threshold
@@ -210,10 +198,6 @@ class IchimokuAboveFilter(BaseFilter):
         if pd.isna(span_a) or pd.isna(span_b):
             return False
         return bool(close < min(span_a, span_b))
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
 
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         s = self._suffix()
@@ -264,10 +248,6 @@ class AroonUpFilter(BaseFilter):
         if pd.isna(up) or pd.isna(dn):
             return False
         return bool(dn > up)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
 
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         up = df[f"aroon_up_{self.period}"]

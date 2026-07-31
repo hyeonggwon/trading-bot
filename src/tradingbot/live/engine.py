@@ -28,6 +28,7 @@ from tradingbot.exchange.ws_client import UpbitWebSocketClient
 from tradingbot.live.control import control_path_for, read_pause
 from tradingbot.live.order_manager import OrderManager
 from tradingbot.live.state import StateManager
+from tradingbot.notifications.telegram import TelegramNotifier
 from tradingbot.risk.manager import RiskManager
 from tradingbot.risk.validators import TradeValidator
 from tradingbot.strategy.base import Strategy
@@ -67,7 +68,7 @@ class LiveEngine:
         exchange: BaseExchange,
         config: AppConfig,
         state_manager: StateManager | None = None,
-        notifier: object | None = None,
+        notifier: TelegramNotifier | None = None,
         order_manager: OrderManager | None = None,
         trade_validator: TradeValidator | None = None,
         ws_client: UpbitWebSocketClient | None = None,
@@ -170,7 +171,7 @@ class LiveEngine:
                 await self._tick_all(symbols, timeframe)
             except Exception as e:
                 logger.error("tick_error", error=str(e), type=type(e).__name__)
-                if self.notifier and hasattr(self.notifier, "send_error"):
+                if self.notifier:
                     await self.notifier.send_error(f"Tick error: {e}")
 
             # Between candle polls, monitor prices + stop losses at a faster
@@ -362,7 +363,7 @@ class LiveEngine:
 
     async def _notify_alert(self, message: str) -> None:
         """Send an operator alert through the notifier if one is wired."""
-        if self.notifier and hasattr(self.notifier, "send_error"):
+        if self.notifier:
             await self.notifier.send_error(message)
 
     def _ledger_equity(self, raw_equity: float, unrealized: float) -> float:
@@ -655,7 +656,7 @@ class LiveEngine:
         )
         await self._handle_exit(stop_signal, symbol, position)
         if symbol not in self.state.positions:
-            if self.notifier and hasattr(self.notifier, "send_signal"):
+            if self.notifier:
                 await self.notifier.send_signal(
                     f"STOP LOSS {symbol}: price={current_price:,.0f}, "
                     f"stop={position.stop_loss:,.0f}"
@@ -692,7 +693,7 @@ class LiveEngine:
         )
         await self._handle_exit(tp_signal, symbol, position)
         if symbol not in self.state.positions:
-            if self.notifier and hasattr(self.notifier, "send_signal"):
+            if self.notifier:
                 await self.notifier.send_signal(
                     f"TAKE PROFIT {symbol}: price={current_price:,.0f}, "
                     f"target={position.take_profit:,.0f}"
@@ -834,7 +835,7 @@ class LiveEngine:
                 quantity=f"{order.quantity:.8f}",
                 price=f"{order.filled_price:,.0f}" if order.filled_price else "N/A",
             )
-            if self.notifier and hasattr(self.notifier, "send_signal"):
+            if self.notifier:
                 await self.notifier.send_signal(
                     f"BUY {symbol}: qty={order.quantity:.8f}, price={order.filled_price:,.0f}"
                 )
@@ -921,7 +922,7 @@ class LiveEngine:
                 exit=f"{fill_price:,.0f}",
                 pnl=f"{pnl:,.0f}",
             )
-            if self.notifier and hasattr(self.notifier, "send_signal"):
+            if self.notifier:
                 await self.notifier.send_signal(
                     f"SELL {symbol}: price={fill_price:,.0f}, PnL={pnl:,.0f} KRW"
                 )

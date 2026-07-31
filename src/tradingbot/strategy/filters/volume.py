@@ -41,18 +41,8 @@ class VolumeSpikeFilter(BaseFilter):
             return False
         return bool(ratio >= self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df[self._col_ratio()] >= self.threshold
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 class ObvRisingFilter(BaseFilter):
@@ -96,10 +86,6 @@ class ObvRisingFilter(BaseFilter):
             return False
         return bool(obv < sma)
 
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df["obv"] > df[self._col_sma()]
 
@@ -141,10 +127,6 @@ class MfiConfirmFilter(BaseFilter):
         if pd.isna(val):
             return False
         return bool(val < (100 - self.threshold))
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
 
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df[f"mfi_{self.period}"] > self.threshold

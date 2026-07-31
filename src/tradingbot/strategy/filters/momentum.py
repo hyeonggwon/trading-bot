@@ -39,19 +39,9 @@ class RsiOversoldFilter(BaseFilter):
             return False
         return bool(prev <= self.threshold and curr > self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False  # Not an exit filter
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         col = f"rsi_{self.period}"
         return (df[col].shift(1) <= self.threshold) & (df[col] > self.threshold)
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 class RsiOverboughtFilter(BaseFilter):
@@ -71,9 +61,6 @@ class RsiOverboughtFilter(BaseFilter):
             df = add_rsi(df, period=self.period)
         return df
 
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False  # Not an entry filter
-
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         if len(df) < 1:
             return False
@@ -82,13 +69,6 @@ class RsiOverboughtFilter(BaseFilter):
         if pd.isna(curr):
             return False
         return bool(curr >= self.threshold)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
-    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
         return df[f"rsi_{self.period}"] >= self.threshold
@@ -141,10 +121,6 @@ class MacdCrossUpFilter(BaseFilter):
             return False
         return bool(prev >= 0 and curr < 0)
 
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         col = self._hist_col()
         return (df[col].shift(1) <= 0) & (df[col] > 0)
@@ -182,19 +158,9 @@ class StochOversoldFilter(BaseFilter):
             return False
         return bool(prev <= self.threshold and curr > self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         col = f"stoch_k_{self.k_period}"
         return (df[col].shift(1) <= self.threshold) & (df[col] > self.threshold)
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 class CciOversoldFilter(BaseFilter):
@@ -224,19 +190,9 @@ class CciOversoldFilter(BaseFilter):
             return False
         return bool(prev <= -self.threshold and curr > -self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         col = f"cci_{self.period}"
         return (df[col].shift(1) <= -self.threshold) & (df[col] > -self.threshold)
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 class RocPositiveFilter(BaseFilter):
@@ -265,19 +221,9 @@ class RocPositiveFilter(BaseFilter):
             return False
         return bool(prev <= 0 and curr > 0)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         col = f"roc_{self.period}"
         return (df[col].shift(1) <= 0) & (df[col] > 0)
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 class MfiOversoldFilter(BaseFilter):
@@ -307,16 +253,6 @@ class MfiOversoldFilter(BaseFilter):
             return False
         return bool(prev <= self.threshold and curr > self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         col = f"mfi_{self.period}"
         return (df[col].shift(1) <= self.threshold) & (df[col] > self.threshold)
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)

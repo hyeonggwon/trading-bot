@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import UTC, datetime
+from typing import cast
 
 import ccxt
 import pandas as pd
@@ -23,6 +25,48 @@ TIMEFRAME_MS: dict[str, int] = {
     "1d": 86_400_000,
     "1w": 604_800_000,
 }
+
+
+def _paginate_ohlcv(
+    fetch_page: Callable[[int | None], list[list[float]]],
+    since_ms: int | None,
+    until_ms: int | None,
+    tf_ms: int,
+    limit: int,
+    on_continue: Callable[[list[list[float]], int], None] | None = None,
+) -> list[list[float]]:
+    """Accumulate OHLCV rows by repeatedly calling ``fetch_page``.
+
+    Shared pagination skeleton for CCXT OHLCV endpoints: advance ``since_ms``
+    from the last row's timestamp + ``tf_ms``, stop on an empty page, a short
+    page (``len < limit // 2``, indicating end of available data), or
+    ``since_ms`` passing ``until_ms``/now. Rate limiting and retries are the
+    caller's responsibility inside ``fetch_page``. ``on_continue`` fires only
+    when the loop is about to fetch another page (mirrors the per-page
+    progress log / pacing sleep call sites had before extraction).
+    """
+    all_rows: list[list[float]] = []
+    while True:
+        page = fetch_page(since_ms)
+        if not page:
+            break
+
+        all_rows.extend(page)
+        last_ts = page[-1][0]
+        since_ms = int(last_ts) + tf_ms
+
+        if until_ms and since_ms > until_ms:
+            break
+        now_ms = int(time.time() * 1000)
+        if since_ms > now_ms:
+            break
+        if len(page) < limit // 2:
+            break
+
+        if on_continue is not None:
+            on_continue(all_rows, int(last_ts))
+
+    return all_rows
 
 
 class DataFetcher:
@@ -66,57 +110,46 @@ class DataFetcher:
         until_ms = int(until.timestamp() * 1000) if until else None
         tf_ms = TIMEFRAME_MS.get(timeframe, 3_600_000)
 
-        all_rows: list[list[float]] = []
-        retries_429 = 0
-
-        while True:
-            self._rate_limit()
-            try:
-                ohlcv = self.exchange.fetch_ohlcv(
-                    symbol, timeframe=timeframe, since=since_ms, limit=limit
-                )
-            except ccxt.RateLimitExceeded as e:
-                retries_429 += 1
-                if retries_429 > 5:
+        def _fetch_page(page_since_ms: int | None) -> list[list[float]]:
+            retries_429 = 0
+            while True:
+                self._rate_limit()
+                try:
+                    return cast(
+                        "list[list[float]]",
+                        self.exchange.fetch_ohlcv(
+                            symbol, timeframe=timeframe, since=page_since_ms, limit=limit
+                        ),
+                    )
+                except ccxt.RateLimitExceeded as e:
+                    retries_429 += 1
+                    if retries_429 > 5:
+                        logger.error("ccxt_error", symbol=symbol, error=str(e))
+                        raise
+                    wait = min(5.0 * 2 ** (retries_429 - 1), 60.0)
+                    logger.warning(
+                        "rate_limited_backoff", symbol=symbol, wait_sec=wait, attempt=retries_429
+                    )
+                    time.sleep(wait)
+                    continue
+                except ccxt.BaseError as e:
                     logger.error("ccxt_error", symbol=symbol, error=str(e))
                     raise
-                wait = min(5.0 * 2 ** (retries_429 - 1), 60.0)
-                logger.warning(
-                    "rate_limited_backoff", symbol=symbol, wait_sec=wait, attempt=retries_429
-                )
-                time.sleep(wait)
-                continue
-            except ccxt.BaseError as e:
-                logger.error("ccxt_error", symbol=symbol, error=str(e))
-                raise
-            retries_429 = 0
 
-            if not ohlcv:
-                break
-
-            all_rows.extend(ohlcv)
-            last_ts = ohlcv[-1][0]
-
-            # Move past the last candle for next page
-            since_ms = last_ts + tf_ms
-
-            # Stop if we've passed the until boundary or reached present
-            if until_ms and since_ms > until_ms:
-                break
-            now_ms = int(time.time() * 1000)
-            if since_ms > now_ms:
-                break
-            # Upbit sometimes returns slightly fewer than limit (e.g., 199 instead of 200)
-            # Only stop if we got significantly fewer, indicating end of available data
-            if len(ohlcv) < limit // 2:
-                break
-
+        def _log_progress(rows: list[list[float]], last_ts: int) -> None:
+            # Upbit sometimes returns slightly fewer than limit (e.g., 199 instead of 200);
+            # _paginate_ohlcv only stops on a significantly shorter page, indicating
+            # end of available data.
             logger.debug(
                 "fetching_page",
                 symbol=symbol,
-                fetched=len(all_rows),
+                fetched=len(rows),
                 last_ts=datetime.fromtimestamp(last_ts / 1000, tz=UTC).isoformat(),
             )
+
+        all_rows = _paginate_ohlcv(
+            _fetch_page, since_ms, until_ms, tf_ms, limit, on_continue=_log_progress
+        )
 
         if not all_rows:
             return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])

@@ -52,10 +52,6 @@ class AtrBreakoutFilter(BaseFilter):
             return False
         return bool(close < ema - atr * self.multiplier)
 
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return (
             df["close"] > df[f"ema_{self.ema_period}"] + df[f"atr_{self.period}"] * self.multiplier
@@ -104,10 +100,6 @@ class KeltnerBreakFilter(BaseFilter):
             return False
         return bool(close < mid)
 
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df["close"] > df[f"kc_upper_{self.period}"]
 
@@ -150,20 +142,10 @@ class BbSqueezeFilter(BaseFilter):
         # Transition: BB was inside KC → BB now outside KC
         return bool(prev_bb < prev_kc and curr_bb >= curr_kc)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False  # Confirmation filter only
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         bb_col = f"bb_upper_{self.bb_period}_{self.bb_std}"
         kc_col = f"kc_upper_{self.kc_period}"
         return (df[bb_col].shift(1) < df[kc_col].shift(1)) & (df[bb_col] >= df[kc_col])
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 class BbBandwidthLowFilter(BaseFilter):
@@ -195,22 +177,12 @@ class BbBandwidthLowFilter(BaseFilter):
         bandwidth = (upper - lower) / mid
         return bool(bandwidth < self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False  # Confirmation filter only
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         upper = df[f"bb_upper_{self.period}_{self.std}"]
         lower = df[f"bb_lower_{self.period}_{self.std}"]
         mid = df[f"bb_middle_{self.period}_{self.std}"]
         bandwidth = (upper - lower) / mid.replace(0, float("nan"))
         return bandwidth < self.threshold
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 def _add_realized_vol(df: pd.DataFrame, vol_period: int, rank_period: int) -> pd.DataFrame:
@@ -258,18 +230,8 @@ class RealizedVolLowFilter(BaseFilter):
             return False
         return bool(val < self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False  # Confirmation filter only
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df[f"realized_vol_pct_{self.vol_period}_{self.rank_period}"] < self.threshold
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
 
 class RealizedVolHighFilter(BaseFilter):
@@ -303,15 +265,5 @@ class RealizedVolHighFilter(BaseFilter):
             return False
         return bool(val > self.threshold)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False  # Confirmation filter only
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         return df[f"realized_vol_pct_{self.vol_period}_{self.rank_period}"] > self.threshold
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)

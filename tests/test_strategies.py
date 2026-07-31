@@ -7,7 +7,6 @@ import pandas as pd
 
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
-from tradingbot.strategy.base import StrategyParams
 from tradingbot.strategy.examples.bollinger_breakout import BollingerBreakoutStrategy
 from tradingbot.strategy.examples.macd_momentum import MacdMomentumStrategy
 
@@ -47,7 +46,7 @@ class TestMacdMomentum:
     def test_backtest_runs(self):
         df = _make_cyclic_data(300)
         config = _make_config()
-        strategy = MacdMomentumStrategy(StrategyParams({"fast": 8, "slow": 20, "signal": 7}))
+        strategy = MacdMomentumStrategy({"fast": 8, "slow": 20, "signal": 7})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -58,7 +57,7 @@ class TestMacdMomentum:
     def test_generates_trades(self):
         df = _make_cyclic_data(300)
         config = _make_config()
-        strategy = MacdMomentumStrategy(StrategyParams({"fast": 8, "slow": 20, "signal": 7}))
+        strategy = MacdMomentumStrategy({"fast": 8, "slow": 20, "signal": 7})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -76,7 +75,7 @@ class TestBollingerBreakout:
     def test_backtest_runs(self):
         df = _make_cyclic_data(300)
         config = _make_config()
-        strategy = BollingerBreakoutStrategy(StrategyParams({"period": 20, "std": 2.0}))
+        strategy = BollingerBreakoutStrategy({"period": 20, "std": 2.0})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -88,7 +87,7 @@ class TestBollingerBreakout:
         df = _make_cyclic_data(300)
         config = _make_config()
         # Use tighter bands to trigger more breakouts
-        strategy = BollingerBreakoutStrategy(StrategyParams({"period": 15, "std": 1.5}))
+        strategy = BollingerBreakoutStrategy({"period": 15, "std": 1.5})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})

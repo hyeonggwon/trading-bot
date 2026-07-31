@@ -348,7 +348,6 @@ def ml_backtest(
     from tradingbot.backtest.engine import BacktestEngine
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.trainer import LGBMTrainer
-    from tradingbot.strategy.base import StrategyParams
     from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
     try:
@@ -387,13 +386,11 @@ def ml_backtest(
         period_note = "full data range (--include-train)"
 
     strategy = LGBMStrategy(
-        StrategyParams(
-            values={
-                "entry_threshold": entry_threshold,
-                "exit_threshold": exit_threshold,
-                "model_dir": model_dir,
-            }
-        )
+        {
+            "entry_threshold": entry_threshold,
+            "exit_threshold": exit_threshold,
+            "model_dir": model_dir,
+        }
     )
     strategy.symbols = [symbol]
     strategy.timeframe = timeframe
@@ -1092,7 +1089,7 @@ def ml_tune(
 
     from tradingbot.data.external_fetcher import build_external_df
     from tradingbot.data.storage import load_candles
-    from tradingbot.ml.tuner import LGBMTuner, reserve_tuning_window
+    from tradingbot.ml.tuner import LGBMTuner, patch_meta_tuning, reserve_tuning_window
     from tradingbot.ml.walk_forward import MLWalkForwardTrainer
 
     # Load the user's AppConfig so the tuner respects fee rate, slippage,
@@ -1213,28 +1210,8 @@ def ml_tune(
             f"precision: {final_report.holdout_precision:.4f}"
         )
 
-        # Patch the model meta with tuning info so downstream tools can audit
-        # which params produced the saved booster. We rewrite the file rather
-        # than threading a callback because trainer.save() owns meta layout.
-        # Write to a sibling temp file first then os.replace — keeps the meta
-        # file uncorrupted if the process is interrupted mid-write.
         if final_model_path is not None:
-            import os
-
-            symbol_key = symbol.replace("/", "_")
-            meta_path = Path(model_dir) / f"lgbm_{symbol_key}_{timeframe}_meta.json"
-            if meta_path.exists():
-                meta_dict = json.loads(meta_path.read_text())
-                meta_dict["tuning"] = {
-                    "best_params": dict(result.best_params),
-                    "best_value": result.best_value,
-                    "objective": objective,
-                    "n_trials_completed": result.n_trials_completed,
-                    "elapsed_sec": result.elapsed_sec,
-                }
-                tmp_path = meta_path.with_suffix(".json.tmp")
-                tmp_path.write_text(json.dumps(meta_dict, indent=2, default=str))
-                os.replace(tmp_path, meta_path)
+            patch_meta_tuning(model_dir, symbol, timeframe, result, objective)
 
     # ---- Persist tuner report ----
     out_dir = Path(output_dir)

@@ -102,10 +102,8 @@ def load_config(
     if config_dir is None:
         config_dir = Path("config")
 
-    data: dict[str, Any] = {}
-
     default_path = config_dir / "default.yaml"
-    data = deep_merge(data, load_yaml_config(default_path))
+    data = load_yaml_config(default_path)
 
     backtest_path = config_dir / "backtest.yaml"
     if backtest_path.exists():
@@ -115,8 +113,3 @@ def load_config(
         data = deep_merge(data, overrides)
 
     return AppConfig(**data)
-
-
-def load_env() -> EnvSettings:
-    """Load environment variables / .env file."""
-    return EnvSettings()

@@ -7,7 +7,6 @@ results by selected metrics. Supports parallel execution.
 from __future__ import annotations
 
 import itertools
-from concurrent.futures import ProcessPoolExecutor, as_completed
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
@@ -16,7 +15,7 @@ import structlog
 
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -46,7 +45,7 @@ def _run_single_backtest(
     config: AppConfig,
 ) -> OptimizationResult:
     """Run a single backtest with given parameters. Designed for parallel execution."""
-    strategy = strategy_cls(StrategyParams(params))
+    strategy = strategy_cls(params)
     strategy.symbols = config.trading.symbols
     strategy.timeframe = config.trading.timeframe
 
@@ -85,11 +84,9 @@ class GridSearchOptimizer:
         self,
         strategy_cls: type[Strategy],
         config: AppConfig,
-        max_workers: int | None = None,
     ):
         self.strategy_cls = strategy_cls
         self.config = config
-        self.max_workers = max_workers
 
     def optimize(
         self,
@@ -121,35 +118,13 @@ class GridSearchOptimizer:
         opt_task = progress.add_task("Optimizing", total=total) if progress else None
 
         try:
-            if self.max_workers == 1 or total <= 4:
-                # Sequential execution for small searches or debugging
-                for i, params in enumerate(combinations):
-                    result = _run_single_backtest(self.strategy_cls, params, data, self.config)
-                    results.append(result)
-                    if progress and opt_task is not None:
-                        progress.advance(opt_task)
-                    elif (i + 1) % 10 == 0 or i + 1 == total:
-                        logger.debug("optimization_progress", completed=i + 1, total=total)
-            else:
-                # Parallel execution
-                with ProcessPoolExecutor(max_workers=self.max_workers) as executor:
-                    futures = {
-                        executor.submit(
-                            _run_single_backtest,
-                            self.strategy_cls,
-                            params,
-                            data,
-                            self.config,
-                        ): params
-                        for params in combinations
-                    }
-                    for i, future in enumerate(as_completed(futures)):
-                        result = future.result()
-                        results.append(result)
-                        if progress and opt_task is not None:
-                            progress.advance(opt_task)
-                        elif (i + 1) % 10 == 0 or i + 1 == total:
-                            logger.debug("optimization_progress", completed=i + 1, total=total)
+            for i, params in enumerate(combinations):
+                result = _run_single_backtest(self.strategy_cls, params, data, self.config)
+                results.append(result)
+                if progress and opt_task is not None:
+                    progress.advance(opt_task)
+                elif (i + 1) % 10 == 0 or i + 1 == total:
+                    logger.debug("optimization_progress", completed=i + 1, total=total)
         finally:
             if progress and opt_task is not None:
                 progress.remove_task(opt_task)
@@ -165,23 +140,6 @@ class GridSearchOptimizer:
         )
 
         return results
-
-    @staticmethod
-    def results_to_dataframe(results: list[OptimizationResult]) -> pd.DataFrame:
-        """Convert optimization results to a DataFrame for analysis."""
-        rows = []
-        for r in results:
-            row = {**r.params}
-            row["sharpe_ratio"] = r.sharpe_ratio
-            row["sortino_ratio"] = r.sortino_ratio
-            row["total_return"] = r.total_return
-            row["max_drawdown"] = r.max_drawdown
-            row["total_trades"] = r.total_trades
-            row["win_rate"] = r.win_rate
-            row["profit_factor"] = r.profit_factor
-            row["final_balance"] = r.final_balance
-            rows.append(row)
-        return pd.DataFrame(rows)
 
     @staticmethod
     def print_results(results: list[OptimizationResult], top_n: int = 10) -> None:

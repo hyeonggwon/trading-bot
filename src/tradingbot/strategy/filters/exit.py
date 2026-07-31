@@ -33,9 +33,6 @@ class StochOverboughtFilter(BaseFilter):
             df = add_stochastic(df, k_period=self.k_period, d_period=self.d_period)
         return df
 
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False
-
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"stoch_k_{self.k_period}"
         if col not in df.columns:
@@ -44,13 +41,6 @@ class StochOverboughtFilter(BaseFilter):
         if pd.isna(val):
             return False
         return bool(val >= self.threshold)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
-    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
         return df[f"stoch_k_{self.k_period}"] >= self.threshold
@@ -73,9 +63,6 @@ class CciOverboughtFilter(BaseFilter):
             df = add_cci(df, period=self.period)
         return df
 
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False
-
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"cci_{self.period}"
         if col not in df.columns:
@@ -84,13 +71,6 @@ class CciOverboughtFilter(BaseFilter):
         if pd.isna(val):
             return False
         return bool(val > self.threshold)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
-    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
         return df[f"cci_{self.period}"] > self.threshold
@@ -113,9 +93,6 @@ class MfiOverboughtFilter(BaseFilter):
             df = add_mfi(df, period=self.period)
         return df
 
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False
-
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"mfi_{self.period}"
         if col not in df.columns:
@@ -124,13 +101,6 @@ class MfiOverboughtFilter(BaseFilter):
         if pd.isna(val):
             return False
         return bool(val >= self.threshold)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
-    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
         return df[f"mfi_{self.period}"] >= self.threshold
@@ -153,9 +123,6 @@ class ZscoreExtremeFilter(BaseFilter):
             df = add_zscore(df, period=self.period)
         return df
 
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False
-
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"zscore_{self.period}"
         if col not in df.columns:
@@ -164,13 +131,6 @@ class ZscoreExtremeFilter(BaseFilter):
         if pd.isna(val):
             return False
         return bool(val > self.threshold)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
-    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
         return df[f"zscore_{self.period}"] > self.threshold
@@ -193,9 +153,6 @@ class PctFromMaExitFilter(BaseFilter):
             df = add_pct_from_ma(df, period=self.period)
         return df
 
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False
-
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         col = f"pct_from_ma_{self.period}"
         if col not in df.columns:
@@ -204,13 +161,6 @@ class PctFromMaExitFilter(BaseFilter):
         if pd.isna(val):
             return False
         return bool(val > self.threshold)
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
-    def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)
 
     def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
         return df[f"pct_from_ma_{self.period}"] > self.threshold
@@ -237,9 +187,6 @@ class AtrTrailingExitFilter(BaseFilter):
             else:
                 df = add_atr(df, period=self.period)
         return df
-
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         atr_col = f"atr_{self.period}"
@@ -284,9 +231,6 @@ class TimeStopExitFilter(BaseFilter):
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         return df
-
-    def check_entry(self, df: pd.DataFrame) -> bool:
-        return False
 
     def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
         if entry_index is None or not (0 <= entry_index < len(df)):

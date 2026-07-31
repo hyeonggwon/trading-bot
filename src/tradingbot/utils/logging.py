@@ -97,3 +97,9 @@ def _setup_file_logging(log_dir: str, level: str) -> None:
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
     root_logger.setLevel(log_level)
+
+
+def silence_worker_logging() -> None:
+    """Silence stdlib + structlog in spawned workers (parent's progress bar owns the tty)."""
+    logging.getLogger().setLevel(logging.CRITICAL)
+    structlog.configure(wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL))

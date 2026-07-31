@@ -45,6 +45,18 @@ DEFAULT_LGBM_PARAMS = {
 }
 
 
+def model_paths(model_dir: str | Path, symbol: str, timeframe: str) -> tuple[Path, Path, Path]:
+    """Return (booster .lgb, meta _meta.json, calibrator _cal.json) paths for a model."""
+    model_dir = Path(model_dir)
+    symbol_key = symbol.replace("/", "_")
+    stem = f"lgbm_{symbol_key}_{timeframe}"
+    return (
+        model_dir / f"{stem}.lgb",
+        model_dir / f"{stem}_meta.json",
+        model_dir / f"{stem}_cal.json",
+    )
+
+
 class LGBMTrainer:
     """Train and manage LightGBM models for trading."""
 
@@ -199,15 +211,12 @@ class LGBMTrainer:
         Returns path to saved model file.
         """
         model_dir.mkdir(parents=True, exist_ok=True)
-        symbol_key = symbol.replace("/", "_")
-        model_path = model_dir / f"lgbm_{symbol_key}_{timeframe}.lgb"
-        meta_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_meta.json"
+        model_path, meta_path, cal_path = model_paths(model_dir, symbol, timeframe)
 
         model.save_model(str(model_path))
 
         has_calibrator = False
         if calibrator is not None:
-            cal_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_cal.json"
             cal_data = {
                 "x": calibrator.X_thresholds_.tolist(),
                 "y": calibrator.y_thresholds_.tolist(),
@@ -245,8 +254,7 @@ class LGBMTrainer:
         """Load a saved model. Returns lgb.Booster or None if not found."""
         import lightgbm as lgb
 
-        symbol_key = symbol.replace("/", "_")
-        model_path = model_dir / f"lgbm_{symbol_key}_{timeframe}.lgb"
+        model_path, _, _ = model_paths(model_dir, symbol, timeframe)
 
         if not model_path.exists():
             log.warning(f"LightGBM model not found: {model_path}")
@@ -262,8 +270,7 @@ class LGBMTrainer:
         from scipy.interpolate import interp1d
         from sklearn.isotonic import IsotonicRegression
 
-        symbol_key = symbol.replace("/", "_")
-        cal_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_cal.json"
+        _, _, cal_path = model_paths(model_dir, symbol, timeframe)
 
         if not cal_path.exists():
             return None
@@ -308,8 +315,7 @@ class LGBMTrainer:
         every caller already handles None, and the pipeline's staleness check
         then retrains instead of aborting the whole run.
         """
-        symbol_key = symbol.replace("/", "_")
-        meta_path = model_dir / f"lgbm_{symbol_key}_{timeframe}_meta.json"
+        _, meta_path, _ = model_paths(model_dir, symbol, timeframe)
 
         if not meta_path.exists():
             return None

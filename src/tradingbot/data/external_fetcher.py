@@ -6,7 +6,6 @@ and USD/KRW exchange rate. All sources are free and require no authentication.
 
 from __future__ import annotations
 
-import csv
 import io
 import json
 import logging
@@ -14,11 +13,12 @@ import time
 import urllib.request
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, cast
 
 import ccxt
 import pandas as pd
 
+from tradingbot.data.fetcher import TIMEFRAME_MS, _paginate_ohlcv
 from tradingbot.data.storage import DEFAULT_DATA_DIR, EXTERNAL_SUBDIR
 
 log = logging.getLogger(__name__)
@@ -81,39 +81,28 @@ def fetch_binance_ohlcv(
     since_ms = int(since.timestamp() * 1000)
     until_ms = int(until.timestamp() * 1000) if until else None
 
-    tf_ms_map = {
-        "1h": 3_600_000,
-        "4h": 14_400_000,
-        "1d": 86_400_000,
-    }
-    tf_ms = tf_ms_map.get(timeframe, 3_600_000)
+    tf_ms = TIMEFRAME_MS.get(timeframe, 3_600_000)
 
-    all_rows: list[list[float]] = []
-    max_pages = 5000
-    for _ in range(max_pages):
+    def _fetch_page(page_since_ms: int | None) -> list[list[float]]:
         try:
-            ohlcv = exchange.fetch_ohlcv(
-                "BTC/USDT", timeframe=timeframe, since=since_ms, limit=limit
+            return cast(
+                "list[list[float]]",
+                exchange.fetch_ohlcv(
+                    "BTC/USDT", timeframe=timeframe, since=page_since_ms, limit=limit
+                ),
             )
         except ccxt.BaseError as e:
             log.warning(f"Binance OHLCV fetch error: {e}")
-            break
+            return []
 
-        if not ohlcv:
-            break
-
-        all_rows.extend(ohlcv)
-        last_ts = ohlcv[-1][0]
-        since_ms = last_ts + tf_ms
-
-        if until_ms and since_ms > until_ms:
-            break
-        if since_ms > int(time.time() * 1000):
-            break
-        if len(ohlcv) < limit // 2:
-            break
-
-        time.sleep(0.1)  # rate limit
+    all_rows = _paginate_ohlcv(
+        _fetch_page,
+        since_ms,
+        until_ms,
+        tf_ms,
+        limit,
+        on_continue=lambda _rows, _last_ts: time.sleep(0.1),  # rate limit
+    )
 
     if not all_rows:
         return pd.DataFrame(columns=["open", "high", "low", "close", "volume"])
@@ -216,27 +205,24 @@ def fetch_usd_krw(since: datetime | None = None) -> pd.DataFrame:
     # the rate to DATE 00:00 UTC would expose the model to future info during
     # the 0–17h window. Treating it as available only on the *next* UTC day
     # is a conservative and simple guarantee for hourly crypto backtests.
-    reader = csv.DictReader(io.StringIO(text))
-    rows = []
-    for row in reader:
-        val = row.get("DEXKOUS", "").strip()
-        # FRED renamed DATE → observation_date; accept either.
-        date_str = row.get("observation_date") or row.get("DATE") or ""
-        if val and val != "." and date_str:
-            try:
-                rows.append(
-                    {
-                        "timestamp": pd.Timestamp(date_str, tz="UTC") + pd.Timedelta(days=1),
-                        "usd_krw": float(val),
-                    }
-                )
-            except (ValueError, KeyError):
-                continue
+    raw = pd.read_csv(io.StringIO(text))
+    # FRED renamed DATE → observation_date; accept either.
+    date_col = "observation_date" if "observation_date" in raw.columns else "DATE"
+    # Missing values are "." in FRED's CSV; to_numeric/to_datetime coerce
+    # those (and any other malformed cell) to NaN/NaT, dropped below —
+    # equivalent to the old loop's `val != "."` / try-except skip.
+    df = pd.DataFrame(
+        {
+            "timestamp": pd.to_datetime(raw[date_col], errors="coerce", utc=True)
+            + pd.Timedelta(days=1),
+            "usd_krw": pd.to_numeric(raw["DEXKOUS"], errors="coerce"),
+        }
+    ).dropna()
 
-    if not rows:
+    if df.empty:
         return pd.DataFrame(columns=["usd_krw"])
 
-    df = pd.DataFrame(rows).set_index("timestamp").sort_index()
+    df = df.set_index("timestamp").sort_index()
     df.index = df.index.astype("datetime64[ms, UTC]")
     return df
 

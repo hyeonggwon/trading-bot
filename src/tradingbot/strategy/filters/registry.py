@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from tradingbot.strategy.filters.base import BaseFilter
 
 
@@ -130,190 +132,53 @@ def parse_filter_spec(spec: str, base_timeframe: str = "1h") -> BaseFilter:
     return filter_cls(**kwargs)
 
 
+_FILTER_ARGS: dict[str, list[tuple[str, Callable[[str], int | float | str]]]] = {
+    "trend_up": [("tf_factor", int), ("sma_period", int)],
+    "trend_down": [("tf_factor", int), ("sma_period", int)],
+    "rsi_oversold": [("threshold", float), ("period", int)],
+    "rsi_overbought": [("threshold", float), ("period", int)],
+    "macd_cross_up": [("fast", int), ("slow", int), ("signal", int)],
+    "volume_spike": [("threshold", float), ("sma_period", int)],
+    "price_breakout": [("lookback", int)],
+    "ema_above": [("period", int)],
+    "bb_upper_break": [("period", int), ("std", float)],
+    "stoch_oversold": [("threshold", float), ("k_period", int), ("d_period", int)],
+    "stoch_overbought": [("threshold", float), ("k_period", int), ("d_period", int)],
+    "cci_oversold": [("threshold", float), ("period", int)],
+    "cci_overbought": [("threshold", float), ("period", int)],
+    "roc_positive": [("period", int)],
+    "mfi_oversold": [("threshold", float), ("period", int)],
+    "mfi_overbought": [("threshold", float), ("period", int)],
+    "mfi_confirm": [("threshold", float), ("period", int)],
+    "ema_cross_up": [("fast", int), ("slow", int)],
+    "donchian_break": [("period", int)],
+    "adx_strong": [("threshold", float), ("period", int)],
+    "ichimoku_above": [("window1", int), ("window2", int), ("window3", int)],
+    "aroon_up": [("threshold", float), ("period", int)],
+    "atr_breakout": [("period", int), ("multiplier", float), ("ema_period", int)],
+    "keltner_break": [("period", int), ("atr_period", int)],
+    "bb_squeeze": [("bb_period", int), ("kc_period", int)],
+    "bb_bandwidth_low": [("threshold", float), ("period", int)],
+    "realized_vol_low": [("threshold", float), ("vol_period", int), ("rank_period", int)],
+    "realized_vol_high": [("threshold", float), ("vol_period", int), ("rank_period", int)],
+    "session_kst": [("start_hour", int), ("end_hour", int)],
+    "obv_rising": [("obv_sma_period", int)],
+    "zscore_extreme": [("threshold", float), ("period", int)],
+    "pct_from_ma_exit": [("period", int), ("threshold", float)],
+    "atr_trailing_exit": [("period", int), ("multiplier", float)],
+    "time_stop": [("max_bars", int)],
+    "lgbm_prob": [("threshold", float), ("model_dir", str)],
+}
+
+
 def _parse_filter_params(
     name: str, parts: list[str], kwargs: dict[str, int | float | str], base_timeframe: str
 ) -> None:
     """Parse filter-specific parameters into kwargs dict."""
+    for (key, conv), raw in zip(_FILTER_ARGS.get(name, []), parts[1:]):
+        kwargs[key] = conv(raw)
     if name in ("trend_up", "trend_down"):
-        if len(parts) >= 2:
-            kwargs["tf_factor"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["sma_period"] = int(parts[2])
         kwargs["base_timeframe"] = base_timeframe
-
-    elif name == "rsi_oversold":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "rsi_overbought":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "macd_cross_up":
-        if len(parts) >= 2:
-            kwargs["fast"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["slow"] = int(parts[2])
-        if len(parts) >= 4:
-            kwargs["signal"] = int(parts[3])
-
-    elif name == "volume_spike":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["sma_period"] = int(parts[2])
-
-    elif name == "price_breakout":
-        if len(parts) >= 2:
-            kwargs["lookback"] = int(parts[1])
-
-    elif name == "ema_above":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-
-    elif name == "bb_upper_break":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["std"] = float(parts[2])
-
-    # ── New filters ──
-
-    elif name in ("stoch_oversold", "stoch_overbought"):
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["k_period"] = int(parts[2])
-        if len(parts) >= 4:
-            kwargs["d_period"] = int(parts[3])
-
-    elif name in ("cci_oversold", "cci_overbought"):
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "roc_positive":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-
-    elif name in ("mfi_oversold", "mfi_overbought"):
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "mfi_confirm":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "ema_cross_up":
-        if len(parts) >= 2:
-            kwargs["fast"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["slow"] = int(parts[2])
-
-    elif name == "donchian_break":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-
-    elif name == "adx_strong":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "ichimoku_above":
-        if len(parts) >= 2:
-            kwargs["window1"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["window2"] = int(parts[2])
-        if len(parts) >= 4:
-            kwargs["window3"] = int(parts[3])
-
-    elif name == "aroon_up":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "atr_breakout":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["multiplier"] = float(parts[2])
-        if len(parts) >= 4:
-            kwargs["ema_period"] = int(parts[3])
-
-    elif name == "keltner_break":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["atr_period"] = int(parts[2])
-
-    elif name == "bb_squeeze":
-        if len(parts) >= 2:
-            kwargs["bb_period"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["kc_period"] = int(parts[2])
-
-    elif name == "bb_bandwidth_low":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name in ("realized_vol_low", "realized_vol_high"):
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["vol_period"] = int(parts[2])
-        if len(parts) >= 4:
-            kwargs["rank_period"] = int(parts[3])
-
-    elif name == "session_kst":
-        if len(parts) >= 2:
-            kwargs["start_hour"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["end_hour"] = int(parts[2])
-
-    elif name == "obv_rising":
-        if len(parts) >= 2:
-            kwargs["obv_sma_period"] = int(parts[1])
-
-    elif name == "zscore_extreme":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["period"] = int(parts[2])
-
-    elif name == "pct_from_ma_exit":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["threshold"] = float(parts[2])
-
-    elif name == "atr_trailing_exit":
-        if len(parts) >= 2:
-            kwargs["period"] = int(parts[1])
-        if len(parts) >= 3:
-            kwargs["multiplier"] = float(parts[2])
-
-    elif name == "time_stop":
-        if len(parts) >= 2:
-            kwargs["max_bars"] = int(parts[1])
-
-    elif name == "lgbm_prob":
-        if len(parts) >= 2:
-            kwargs["threshold"] = float(parts[1])
-        if len(parts) >= 3:
-            kwargs["model_dir"] = parts[2]
 
 
 def parse_filter_string(filter_string: str, base_timeframe: str = "1h") -> list[BaseFilter]:

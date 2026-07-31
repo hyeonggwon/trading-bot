@@ -10,13 +10,13 @@ import pandas as pd
 import pytest
 import typer
 
-from tradingbot.cli import (
+from tradingbot.cli import app
+from tradingbot.cli._shared import _app_root
+from tradingbot.cli.combine import (
     COMBINE_TEMPLATES,
-    _app_root,
     _build_combined_strategy,
     _find_combine_template,
     _resolve_strategy,
-    app,
 )
 from tradingbot.strategy.filters.registry import parse_filter_string
 
@@ -738,7 +738,7 @@ class TestValidateDateRange:
     """Tests for _validate_date_range used by scan/combine-scan."""
 
     def test_valid_dates_pass(self):
-        from tradingbot.cli import _validate_date_range
+        from tradingbot.cli._shared import _validate_date_range
 
         _validate_date_range("2024-01-01", "2024-12-31")
         _validate_date_range(None, None)
@@ -748,7 +748,7 @@ class TestValidateDateRange:
     def test_invalid_start_raises_typer_exit(self):
         import typer
 
-        from tradingbot.cli import _validate_date_range
+        from tradingbot.cli._shared import _validate_date_range
 
         with pytest.raises(typer.Exit):
             _validate_date_range("not-a-date", None)
@@ -756,7 +756,7 @@ class TestValidateDateRange:
     def test_invalid_end_raises_typer_exit(self):
         import typer
 
-        from tradingbot.cli import _validate_date_range
+        from tradingbot.cli._shared import _validate_date_range
 
         with pytest.raises(typer.Exit):
             _validate_date_range(None, "2024-13-99")
@@ -766,7 +766,7 @@ class TestResolveHoldoutWindow:
     """Tests for _resolve_holdout_window used by backtest/combine."""
 
     def test_explicit_start_takes_precedence(self):
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df = _make_cyclic_df(100)
         s, e, note = _resolve_holdout_window(df, "2024-02-01", None, False)
@@ -775,7 +775,7 @@ class TestResolveHoldoutWindow:
         assert "user-specified" in note
 
     def test_explicit_end_takes_precedence(self):
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df = _make_cyclic_df(100)
         s, e, note = _resolve_holdout_window(df, None, "2024-03-01", False)
@@ -784,7 +784,7 @@ class TestResolveHoldoutWindow:
         assert "user-specified" in note
 
     def test_include_train_returns_none_bounds(self):
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df = _make_cyclic_df(100)
         s, e, note = _resolve_holdout_window(df, None, None, True)
@@ -794,7 +794,7 @@ class TestResolveHoldoutWindow:
 
     def test_default_returns_last_20_percent_single_df(self):
         """100 candles → cutoff at index 80 timestamp."""
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df = _make_cyclic_df(100)
         s, e, note = _resolve_holdout_window(df, None, None, False)
@@ -805,7 +805,7 @@ class TestResolveHoldoutWindow:
 
     def test_default_custom_pct(self):
         """holdout_pct=0.1 → cutoff at index 90."""
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df = _make_cyclic_df(100)
         s, _e, note = _resolve_holdout_window(df, None, None, False, holdout_pct=0.1)
@@ -814,7 +814,7 @@ class TestResolveHoldoutWindow:
 
     def test_multi_symbol_uses_common_window(self):
         """Multi-df: cutoff must lie inside the common timestamp range."""
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df1 = _make_cyclic_df(100)  # starts 2024-01-01 00:00, 100h long
         df2_index = pd.date_range("2024-01-02", periods=100, freq="h", tz="UTC")
@@ -833,7 +833,7 @@ class TestResolveHoldoutWindow:
 
     def test_explicit_start_beats_include_train(self):
         """Precedence: --start > --include-train."""
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df = _make_cyclic_df(100)
         s, _e, note = _resolve_holdout_window(df, "2024-01-15", None, True)
@@ -841,7 +841,7 @@ class TestResolveHoldoutWindow:
         assert "user-specified" in note
 
     def test_empty_dict_returns_none(self):
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         s, e, note = _resolve_holdout_window({}, None, None, False)
         assert s is None and e is None
@@ -849,7 +849,7 @@ class TestResolveHoldoutWindow:
 
     def test_multi_symbol_with_empty_df_does_not_crash(self):
         """Regression: an empty DataFrame in the dict must not raise IndexError."""
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df_real = _make_cyclic_df(100)
         df_empty = pd.DataFrame(
@@ -877,7 +877,7 @@ class TestResolveHoldoutWindow:
         every candle and breaking comparability with the single-symbol /
         ml-backtest holdout.
         """
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         base = pd.Timestamp("2024-01-01", tz="UTC")
         # 9 dense hourly candles, then one candle ~1000h in the future.
@@ -899,7 +899,7 @@ class TestResolveHoldoutWindow:
         assert multi_s == single_s
 
     def test_multi_symbol_all_empty_returns_none(self):
-        from tradingbot.cli import _resolve_holdout_window
+        from tradingbot.cli._shared import _resolve_holdout_window
 
         df_empty = pd.DataFrame(
             columns=["open", "high", "low", "close", "volume"],
@@ -920,7 +920,7 @@ class TestWalkForwardCombined:
 
     def test_runs_without_error(self):
         """Walk-forward combined should complete and print results."""
-        from tradingbot.cli import _walk_forward_combined
+        from tradingbot.cli.backtest import _walk_forward_combined
 
         strategy = _build_combined_strategy(
             "rsi_oversold:30",
@@ -944,7 +944,7 @@ class TestWalkForwardCombined:
 
     def test_insufficient_data_handled(self):
         """Walk-forward combined should handle too-short data gracefully."""
-        from tradingbot.cli import _walk_forward_combined
+        from tradingbot.cli.backtest import _walk_forward_combined
 
         strategy = _build_combined_strategy(
             "rsi_oversold:30",
@@ -1014,7 +1014,7 @@ class TestMlCommandsRespectYamlConfig:
 
         import tradingbot.data.storage as storage_mod
         import tradingbot.ml.strategy_walk_forward as swf_mod
-        from tradingbot.cli import ml_walk_forward
+        from tradingbot.cli.ml import ml_walk_forward
 
         self._write_config(tmp_path / "config")
         monkeypatch.chdir(tmp_path)
@@ -1052,7 +1052,7 @@ class TestMlCommandsRespectYamlConfig:
         import tradingbot.data.storage as storage_mod
         import tradingbot.ml.strategy_walk_forward as swf_mod
         import tradingbot.ml.walk_forward as wf_mod
-        from tradingbot.cli import ml_diagnostics
+        from tradingbot.cli.ml import ml_diagnostics
 
         self._write_config(tmp_path / "config")
         monkeypatch.chdir(tmp_path)

@@ -45,13 +45,6 @@ class SessionKstFilter(BaseFilter):
         kst_hour = int((df.index[-1] + pd.Timedelta(hours=9)).hour)
         return self._in_session(kst_hour)
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False  # Entry gate only — never blocks or forces an exit
-
-    @property
-    def supports_vectorized(self) -> bool:
-        return True
-
     def vectorized_entry(self, df: pd.DataFrame) -> pd.Series:
         if not isinstance(df.index, pd.DatetimeIndex):
             return pd.Series(False, index=df.index)
@@ -61,6 +54,3 @@ class SessionKstFilter(BaseFilter):
         else:
             mask = (hours >= self.start_hour) | (hours < self.end_hour)
         return pd.Series(mask, index=df.index)
-
-    def vectorized_exit(self, df: pd.DataFrame) -> pd.Series:
-        return pd.Series(False, index=df.index)

@@ -80,7 +80,6 @@ class TestGridSearchOptimizer:
         optimizer = GridSearchOptimizer(
             strategy_cls=SmaCrossStrategy,
             config=config,
-            max_workers=1,
         )
         results = optimizer.optimize(
             {config.trading.symbols[0]: df},
@@ -101,7 +100,6 @@ class TestGridSearchOptimizer:
         optimizer = GridSearchOptimizer(
             strategy_cls=SmaCrossStrategy,
             config=config,
-            max_workers=1,
         )
         results = optimizer.optimize(
             {config.trading.symbols[0]: df},
@@ -110,26 +108,6 @@ class TestGridSearchOptimizer:
 
         assert len(results) == 1
         assert results[0].params == {"fast_period": 10, "slow_period": 30}
-
-    def test_to_dataframe(self):
-        """Results should convert to a valid DataFrame."""
-        df = _make_long_data(4)
-        config = _make_config()
-
-        optimizer = GridSearchOptimizer(
-            strategy_cls=SmaCrossStrategy,
-            config=config,
-            max_workers=1,
-        )
-        results = optimizer.optimize(
-            {config.trading.symbols[0]: df},
-            param_space={"fast_period": [5, 10], "slow_period": [20, 30]},
-        )
-
-        results_df = optimizer.results_to_dataframe(results)
-        assert len(results_df) == 4
-        assert "fast_period" in results_df.columns
-        assert "sharpe_ratio" in results_df.columns
 
 
 class TestWalkForwardWindows:

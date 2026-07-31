@@ -1,6 +1,6 @@
 """Telegram notification sender.
 
-Sends trading signals, order fills, daily reports, and error alerts
+Sends trading signals and error alerts
 to a Telegram chat via the Bot API. Uses plain HTTP requests to
 avoid heavy dependencies.
 """
@@ -8,7 +8,7 @@ avoid heavy dependencies.
 from __future__ import annotations
 
 import asyncio
-from urllib.parse import quote
+from urllib.parse import urlencode
 
 import structlog
 
@@ -44,7 +44,7 @@ class TelegramNotifier:
         import urllib.request
 
         url = TELEGRAM_API_URL.format(token=self._token)
-        params = f"chat_id={self._chat_id}&text={quote(text)}&parse_mode=HTML"
+        params = urlencode({"chat_id": self._chat_id, "text": text, "parse_mode": "HTML"})
         full_url = f"{url}?{params}"
 
         try:
@@ -64,17 +64,7 @@ class TelegramNotifier:
         text = f"📊 <b>Signal</b>\n{message}"
         return await self._send(text)
 
-    async def send_fill(self, message: str) -> bool:
-        """Send an order fill notification."""
-        text = f"✅ <b>Order Filled</b>\n{message}"
-        return await self._send(text)
-
     async def send_error(self, message: str) -> bool:
         """Send an error alert."""
         text = f"🚨 <b>Error</b>\n{message}"
-        return await self._send(text)
-
-    async def send_daily_report(self, report: str) -> bool:
-        """Send daily performance report."""
-        text = f"📈 <b>Daily Report</b>\n{report}"
         return await self._send(text)

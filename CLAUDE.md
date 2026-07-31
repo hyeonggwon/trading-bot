@@ -154,7 +154,7 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/core/models.py` — Dataclasses: Candle, Signal (frozen), Order, Trade, Position, PortfolioState (mutable)
 - `src/tradingbot/core/enums.py` — OrderSide, SignalType, PositionSide, OrderStatus
 - `src/tradingbot/strategy/base.py` — Abstract `Strategy` class with `indicators()`, `should_entry()`, `should_exit()`, `supports_precompute`
-- `src/tradingbot/strategy/registry.py` — Strategy name → class lookup, loads built-in + custom strategies from top-level `strategies/`
+- `src/tradingbot/strategy/registry.py` — Strategy name → class lookup for the 7 built-in strategies
 - `src/tradingbot/strategy/combined.py` — CombinedStrategy: AND entry (role-aware skip, ML strength collection) + OR exit with entry_index for trailing stops
 - `src/tradingbot/strategy/lgbm_strategy.py` — LGBMStrategy: LightGBM model inference + Half-Kelly position sizing (empirical avg_win/avg_loss ratio from training meta). Default thresholds: entry 0.45 / exit 0.30 (calibrated probabilities cluster below 0.50 due to isotonic squashing toward base rate). Reads per-symbol entry/exit thresholds from meta when present (Phase 5 threshold tuner output) — falls back to CLI/param defaults otherwise. `set_model()` injects pre-trained models for time-honest walk-forward.
 - `src/tradingbot/strategy/examples/` — 6 built-in strategy files (sma_cross, rsi_mean_reversion, macd_momentum, bollinger_breakout, multi_timeframe, volume_breakout)

@@ -88,18 +88,12 @@ def train_pair(
     meta's ``tuning.best_params``); ``num_threads`` always wins the merge
     so worker-pool thread clamping stays effective.
     """
-    import logging
-
-    import structlog
-
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+    from tradingbot.utils.logging import silence_worker_logging
 
     # Suppress logs in child process to avoid polluting the parent's progress bar
-    logging.getLogger().setLevel(logging.CRITICAL)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
-    )
+    silence_worker_logging()
 
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))
@@ -194,17 +188,15 @@ def tune_pair(
     so multiple workers don't oversubscribe the host CPU.
     """
     import json
-    import logging
     import os
     import time
-
-    import structlog
 
     from tradingbot.config import AppConfig
     from tradingbot.data.external_fetcher import build_external_df
     from tradingbot.data.storage import load_candles
-    from tradingbot.ml.tuner import LGBMTuner, reserve_tuning_window
+    from tradingbot.ml.tuner import LGBMTuner, patch_meta_tuning, reserve_tuning_window
     from tradingbot.ml.walk_forward import MLWalkForwardTrainer
+    from tradingbot.utils.logging import silence_worker_logging
 
     # LightGBM honours OMP_NUM_THREADS for its OpenMP parallelism. Set it
     # before any LightGBM import paths take effect — otherwise N workers
@@ -212,10 +204,7 @@ def tune_pair(
     os.environ["OMP_NUM_THREADS"] = str(max(1, num_threads))
     os.environ["MKL_NUM_THREADS"] = str(max(1, num_threads))
 
-    logging.getLogger().setLevel(logging.CRITICAL)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
-    )
+    silence_worker_logging()
 
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))
@@ -325,25 +314,12 @@ def tune_pair(
             # Patch tuning info into the saved meta so users can audit which
             # params produced this booster (mirrors ml-tune's behaviour).
             if final_model_path is not None:
-                symbol_key = symbol.replace("/", "_")
-                meta_path = Path(model_dir) / f"lgbm_{symbol_key}_{timeframe}_meta.json"
-                if meta_path.exists():
-                    try:
-                        meta_dict = json.loads(meta_path.read_text())
-                        meta_dict["tuning"] = {
-                            "best_params": dict(result.best_params),
-                            "best_value": result.best_value,
-                            "objective": objective,
-                            "n_trials_completed": result.n_trials_completed,
-                            "elapsed_sec": result.elapsed_sec,
-                        }
-                        tmp_path = meta_path.with_suffix(".json.tmp")
-                        tmp_path.write_text(json.dumps(meta_dict, indent=2, default=str))
-                        os.replace(tmp_path, meta_path)
-                    except (json.JSONDecodeError, OSError):
-                        # Meta corruption shouldn't kill the run; users can
-                        # inspect the per-model JSON instead.
-                        pass
+                try:
+                    patch_meta_tuning(model_dir, symbol, timeframe, result, objective)
+                except (json.JSONDecodeError, OSError):
+                    # Meta corruption shouldn't kill the run; users can
+                    # inspect the per-model JSON instead.
+                    pass
 
         # Per-model JSON+MD reports (same layout as ``ml-tune``).
         out_dir = Path(output_dir)
@@ -498,18 +474,13 @@ def tune_thresholds_pair(
     backtests than the sequential path.
     """
     import json
-    import logging
-
-    import structlog
 
     from tradingbot.config import AppConfig
     from tradingbot.data.storage import load_candles
     from tradingbot.ml.threshold_tuner import ThresholdTuner, patch_meta_thresholds
+    from tradingbot.utils.logging import silence_worker_logging
 
-    logging.getLogger().setLevel(logging.CRITICAL)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
-    )
+    silence_worker_logging()
 
     try:
         df = load_candles(symbol, timeframe, Path(data_dir))

@@ -62,15 +62,11 @@ def _run_batch(
     explicit slicing because ``vectorized_backtest`` does not consult
     config.
     """
-    import logging
-
     import pandas as pd
-    import structlog
 
-    logging.getLogger().setLevel(logging.CRITICAL)
-    structlog.configure(
-        wrapper_class=structlog.make_filtering_bound_logger(logging.CRITICAL),
-    )
+    from tradingbot.utils.logging import silence_worker_logging
+
+    silence_worker_logging()
 
     from tradingbot.backtest.holdout import resolve_holdout_window
     from tradingbot.config import load_config
