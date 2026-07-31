@@ -7,7 +7,6 @@ import pandas as pd
 
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
-from tradingbot.strategy.base import StrategyParams
 from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
 
 
@@ -56,7 +55,7 @@ class TestMultiSymbolBacktest:
             "ETH/KRW": _make_symbol_data("ETH/KRW", 200, phase_offset=1.5),
         }
         config = _make_config(symbols)
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
         strategy.symbols = symbols
 
         engine = BacktestEngine(strategy=strategy, config=config)
@@ -73,7 +72,7 @@ class TestMultiSymbolBacktest:
             sym: _make_symbol_data(sym, 200, phase_offset=i * 1.0) for i, sym in enumerate(symbols)
         }
         config = _make_config(symbols)
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
         strategy.symbols = symbols
 
         engine = BacktestEngine(strategy=strategy, config=config)
@@ -90,7 +89,7 @@ class TestMultiSymbolBacktest:
             "ETH/KRW": _make_symbol_data("ETH/KRW", 200, phase_offset=1.5),
         }
         config = _make_config(symbols)
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
         strategy.symbols = symbols
 
         engine = BacktestEngine(strategy=strategy, config=config)
@@ -108,7 +107,7 @@ class TestMultiSymbolBacktest:
         config = _make_config(symbols, balance=20_000_000)
         config.risk.max_open_positions = 2  # Only 2 simultaneous
 
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
         strategy.symbols = symbols
 
         engine = BacktestEngine(strategy=strategy, config=config)
@@ -121,7 +120,7 @@ class TestMultiSymbolBacktest:
         """Single symbol should work exactly as before."""
         data = {"BTC/KRW": _make_symbol_data("BTC/KRW", 200)}
         config = _make_config(["BTC/KRW"])
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run(data)
@@ -134,7 +133,7 @@ class TestMultiSymbolBacktest:
         symbols = ["BTC/KRW", "ETH/KRW"]
         data = {"BTC/KRW": _make_symbol_data("BTC/KRW", 200)}  # No ETH data
         config = _make_config(symbols)
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
         strategy.symbols = symbols
 
         engine = BacktestEngine(strategy=strategy, config=config)
@@ -151,7 +150,7 @@ class TestMultiSymbolBacktest:
             "ETH/KRW": _make_symbol_data("ETH/KRW", 100),
         }
         config = _make_config(symbols)
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 5, "slow_period": 15}))
+        strategy = SmaCrossStrategy({"fast_period": 5, "slow_period": 15})
         strategy.symbols = symbols
 
         engine = BacktestEngine(strategy=strategy, config=config)
@@ -168,7 +167,7 @@ class TestMultiSymbolBacktest:
             "ETH/KRW": _make_symbol_data("ETH/KRW", 200, phase_offset=1.5),
         }
         config = _make_config(symbols)
-        params = StrategyParams({"fast_period": 10, "slow_period": 30})
+        params = {"fast_period": 10, "slow_period": 30}
 
         engine1 = BacktestEngine(strategy=SmaCrossStrategy(params), config=config)
         report1 = engine1.run(data)

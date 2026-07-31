@@ -22,7 +22,7 @@ import pandas as pd
 from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.data.indicators import add_rsi
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 TIMEFRAME_TO_MINUTES: dict[str, int] = {
     "1m": 1,
@@ -76,7 +76,7 @@ class MultiTimeframeStrategy(Strategy):
     symbols = ["BTC/KRW"]
     supports_precompute = False  # Resampling depends on visible data length
 
-    def __init__(self, params: StrategyParams | None = None):
+    def __init__(self, params: dict[str, Any] | None = None):
         super().__init__(params)
         self.higher_tf_factor: int = self.params.get("higher_tf_factor", 4)  # 1h → 4h
         self.trend_sma_period: int = self.params.get("trend_sma_period", 50)

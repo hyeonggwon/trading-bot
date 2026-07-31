@@ -13,7 +13,7 @@ import pandas as pd
 from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.data.indicators import add_sma
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 
 class SmaCrossStrategy(Strategy):
@@ -21,7 +21,7 @@ class SmaCrossStrategy(Strategy):
     timeframe = "1h"
     symbols = ["BTC/KRW"]
 
-    def __init__(self, params: StrategyParams | None = None):
+    def __init__(self, params: dict[str, Any] | None = None):
         super().__init__(params)
         self.fast_period: int = self.params.get("fast_period", 20)
         self.slow_period: int = self.params.get("slow_period", 50)

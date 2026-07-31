@@ -19,7 +19,7 @@ from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
 from tradingbot.core.enums import OrderSide, SignalType
 from tradingbot.core.models import Signal
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
 
 
@@ -84,7 +84,7 @@ class TestBacktestEngine:
         """Backtest should run without errors and produce a report."""
         df = _make_trending_data(200)
         config = self._make_config()
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -98,7 +98,7 @@ class TestBacktestEngine:
         """With trending data, SMA crossover should generate at least one trade."""
         df = _make_trending_data(200)
         config = self._make_config()
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -109,7 +109,7 @@ class TestBacktestEngine:
         """Trades should include fees."""
         df = _make_trending_data(200)
         config = self._make_config()
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -123,7 +123,7 @@ class TestBacktestEngine:
         """Equity curve should have one entry per candle (minus first)."""
         df = _make_trending_data(100)
         config = self._make_config()
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 5, "slow_period": 15}))
+        strategy = SmaCrossStrategy({"fast_period": 5, "slow_period": 15})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -149,7 +149,7 @@ class TestBacktestEngine:
         """Report should compute valid metrics."""
         df = _make_trending_data(200)
         config = self._make_config()
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -188,7 +188,7 @@ class TestAntiLookahead:
             ),
             backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
         )
-        params = StrategyParams({"fast_period": 5, "slow_period": 15})
+        params = {"fast_period": 5, "slow_period": 15}
 
         # Run 1: full backtest
         engine1 = BacktestEngine(strategy=SmaCrossStrategy(params), config=config)
@@ -263,11 +263,11 @@ class TestBugFixes:
 
         config = self._make_config()
 
-        strategy_short = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy_short = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
         engine_short = BacktestEngine(strategy=strategy_short, config=config)
         report_short = engine_short.run({"BTC/KRW": df_short})
 
-        strategy_long = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy_long = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
         engine_long = BacktestEngine(strategy=strategy_long, config=config)
         report_long = engine_long.run({"BTC/KRW": df_long})
 
@@ -287,7 +287,7 @@ class TestBugFixes:
         """Bug #4: Each trade should pair with its own entry order, not a stale one."""
         df = _make_trending_data(200)
         config = self._make_config()
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 10, "slow_period": 30}))
+        strategy = SmaCrossStrategy({"fast_period": 10, "slow_period": 30})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -341,7 +341,7 @@ class TestBugFixes:
         """Bug #9: Peak equity should be tracked continuously, not just on signals."""
         df = _make_trending_data(100)
         config = self._make_config()
-        strategy = SmaCrossStrategy(StrategyParams({"fast_period": 5, "slow_period": 15}))
+        strategy = SmaCrossStrategy({"fast_period": 5, "slow_period": 15})
 
         engine = BacktestEngine(strategy=strategy, config=config)
         report = engine.run({"BTC/KRW": df})
@@ -380,7 +380,7 @@ class TestBugFixes:
         ``iloc[:idx]`` reads indicator values from the unsliced start of the
         full dataset, which is a silent data corruption."""
         df = _make_trending_data(200)
-        strategy_full = SmaCrossStrategy(StrategyParams({"fast_period": 5, "slow_period": 15}))
+        strategy_full = SmaCrossStrategy({"fast_period": 5, "slow_period": 15})
         strategy_full.symbols = ["BTC/KRW"]
         # Compute indicators on the FULL df, then pass that as precomputed
         # alongside config dates that slice to a window starting at candle 100.
@@ -409,7 +409,7 @@ class TestBugFixes:
         # the engine self-consistently uses today as a baseline). The bug is
         # that with precomputed, the indicator df is unsliced and iloc[:idx]
         # corrupts values silently.
-        strategy_with = SmaCrossStrategy(StrategyParams({"fast_period": 5, "slow_period": 15}))
+        strategy_with = SmaCrossStrategy({"fast_period": 5, "slow_period": 15})
         strategy_with.symbols = ["BTC/KRW"]
         engine_with = BacktestEngine(strategy=strategy_with, config=config)
         report_with = engine_with.run({"BTC/KRW": df.copy()}, precomputed_indicators=precomputed)

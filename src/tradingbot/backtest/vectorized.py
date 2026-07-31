@@ -29,13 +29,12 @@ signals the two engines produce identical trade bars (see
 from __future__ import annotations
 
 from dataclasses import dataclass
-from math import sqrt
 from typing import cast
 
 import numpy as np
 import pandas as pd
 
-from tradingbot.backtest.report import PERIODS_PER_YEAR
+from tradingbot.backtest.report import max_drawdown_from_equity, sharpe_from_equity
 from tradingbot.strategy.filters.base import BaseFilter
 from tradingbot.strategy.filters.exit import AtrTrailingExitFilter, TimeStopExitFilter
 
@@ -320,22 +319,13 @@ def _compute_metrics(
         equity[exit_idx] = current_equity
 
     # Forward fill gaps
-    for i in range(1, n):
-        if np.isnan(equity[i]):
-            equity[i] = equity[i - 1]
-
-    equity_series = pd.Series(equity, index=index)
+    equity_series = pd.Series(equity, index=index).ffill()
 
     # Sharpe ratio
-    returns = equity_series.pct_change().dropna()
-    std = returns.std(ddof=0)
-    ann_factor = sqrt(PERIODS_PER_YEAR.get(timeframe, 8766))
-    sharpe = float(returns.mean() / std * ann_factor) if len(returns) > 1 and std > 0 else 0.0
+    sharpe = sharpe_from_equity(equity_series, timeframe)
 
     # Max drawdown
-    peak = equity_series.expanding().max()
-    drawdown = (peak - equity_series) / peak
-    max_dd = float(drawdown.max())
+    max_dd = max_drawdown_from_equity(equity_series)
 
     # Win rate, profit factor
     pnls = [t[6] for t in trades]

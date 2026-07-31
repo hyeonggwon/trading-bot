@@ -16,8 +16,6 @@ from tradingbot.core.models import (
     Position,
     Signal,
     Trade,
-    candles_to_dataframe,
-    dataframe_to_candles,
 )
 
 
@@ -32,29 +30,6 @@ class TestCandle:
             volume=1000,
         )
         assert c.close == 105
-
-    def test_to_dict(self):
-        ts = datetime(2024, 1, 1, tzinfo=UTC)
-        c = Candle(timestamp=ts, open=100, high=110, low=95, close=105, volume=1000)
-        d = c.to_dict()
-        assert d["open"] == 100
-        assert d["timestamp"] == ts
-
-
-class TestCandleConversion:
-    def test_roundtrip(self, sample_candles):
-        df = candles_to_dataframe(sample_candles)
-        assert len(df) == 10
-        assert list(df.columns) == ["open", "high", "low", "close", "volume"]
-
-        recovered = dataframe_to_candles(df)
-        assert len(recovered) == 10
-        assert recovered[0].open == sample_candles[0].open
-        assert recovered[0].close == sample_candles[0].close
-
-    def test_empty_list(self):
-        df = candles_to_dataframe([])
-        assert df.empty
 
 
 class TestSignal:
@@ -142,7 +117,6 @@ class TestPosition:
         )
         # Price went up to 52M
         assert pos.unrealized_pnl(52_000_000) == 20000.0
-        assert pos.unrealized_pnl_pct(52_000_000) == 20000.0 / 500000.0
 
 
 class TestPortfolioState:

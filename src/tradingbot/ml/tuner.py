@@ -12,6 +12,7 @@ first. Sandbox plan calls for 50 trials × 60 min per (symbol, timeframe).
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass, field
@@ -22,6 +23,8 @@ import pandas as pd
 
 from tradingbot.config import AppConfig
 from tradingbot.ml.strategy_walk_forward import MLStrategyWalkForward
+from tradingbot.ml.trainer import model_paths
+from tradingbot.utils.io import atomic_write_json
 
 if TYPE_CHECKING:
     import optuna
@@ -61,6 +64,33 @@ class LGBMTunerResult:
     elapsed_sec: float = 0.0
     objective: str = "holdout_sharpe"
     trials: list[dict[str, Any]] = field(default_factory=list)
+
+
+def patch_meta_tuning(
+    model_dir: str | Path,
+    symbol: str,
+    timeframe: str,
+    result: LGBMTunerResult,
+    objective: str,
+) -> None:
+    """Patch tuning info into the saved model meta (audit trail for the booster).
+
+    Rewrites the file rather than threading a callback because
+    ``LGBMTrainer.save()`` owns meta layout. No-op if the meta file doesn't
+    exist yet (e.g. the final training run failed).
+    """
+    _, meta_path, _ = model_paths(model_dir, symbol, timeframe)
+    if not meta_path.exists():
+        return
+    meta_dict = json.loads(meta_path.read_text())
+    meta_dict["tuning"] = {
+        "best_params": dict(result.best_params),
+        "best_value": result.best_value,
+        "objective": objective,
+        "n_trials_completed": result.n_trials_completed,
+        "elapsed_sec": result.elapsed_sec,
+    }
+    atomic_write_json(meta_path, meta_dict)
 
 
 class LGBMTuner:

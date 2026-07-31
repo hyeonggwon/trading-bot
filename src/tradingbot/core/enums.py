@@ -14,7 +14,6 @@ class OrderType(str, Enum):
 class OrderStatus(str, Enum):
     PENDING = "pending"
     FILLED = "filled"
-    PARTIALLY_FILLED = "partially_filled"
     CANCELLED = "cancelled"
 
 
@@ -25,4 +24,3 @@ class SignalType(str, Enum):
 
 class PositionSide(str, Enum):
     LONG = "long"
-    FLAT = "flat"

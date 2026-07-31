@@ -7,8 +7,6 @@ to a JSON file so the bot can survive restarts.
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -17,6 +15,7 @@ import structlog
 
 from tradingbot.core.enums import PositionSide
 from tradingbot.core.models import Position
+from tradingbot.utils.io import atomic_write_json
 
 logger = structlog.get_logger()
 
@@ -59,21 +58,7 @@ class StateManager:
             "saved_at": datetime.now(UTC).isoformat(),
         }
 
-        # Atomic write: write to temp file then rename (prevents partial reads)
-        self.state_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_fd, tmp_path = tempfile.mkstemp(dir=self.state_path.parent, suffix=".tmp")
-        try:
-            with os.fdopen(tmp_fd, "w") as f:
-                json.dump(data, f, indent=2, default=str)
-                # Flush to disk before the atomic rename: without fsync a
-                # power loss can make the rename durable but not the data,
-                # replacing good state with an empty/truncated file.
-                f.flush()
-                os.fsync(f.fileno())
-            os.replace(tmp_path, self.state_path)
-        except Exception:
-            os.unlink(tmp_path)
-            raise
+        atomic_write_json(self.state_path, data, fsync=True)
         self.last_save = datetime.now(UTC)
         logger.debug("state_saved", positions=len(self.positions))
 

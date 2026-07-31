@@ -397,7 +397,6 @@ class TestPatchMetaThresholds:
 
 class TestLGBMStrategyMetaThresholds:
     def test_load_model_picks_up_meta_thresholds(self, tmp_path):
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         df = _make_data(600)
@@ -422,13 +421,11 @@ class TestLGBMStrategyMetaThresholds:
         )
 
         strategy = LGBMStrategy(
-            StrategyParams(
-                values={
-                    "model_dir": str(tmp_path),
-                    "entry_threshold": 0.45,  # CLI default — should be overridden
-                    "exit_threshold": 0.30,
-                }
-            )
+            {
+                "model_dir": str(tmp_path),
+                "entry_threshold": 0.45,  # CLI default — should be overridden
+                "exit_threshold": 0.30,
+            }
         )
         strategy.timeframe = "1h"
         # Trigger the lazy load → populates per-symbol thresholds from meta.
@@ -439,7 +436,6 @@ class TestLGBMStrategyMetaThresholds:
 
     def test_ignore_meta_thresholds_param_keeps_init_values(self, tmp_path):
         """ThresholdTuner relies on this opt-out — meta override must yield."""
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         df = _make_data(600)
@@ -467,14 +463,12 @@ class TestLGBMStrategyMetaThresholds:
         # the per-symbol override stays empty and ``should_entry`` should
         # fall back to ``self.entry_threshold`` from params.
         strategy = LGBMStrategy(
-            StrategyParams(
-                values={
-                    "model_dir": str(tmp_path),
-                    "entry_threshold": 0.40,
-                    "exit_threshold": 0.20,
-                    "ignore_meta_thresholds": True,
-                }
-            )
+            {
+                "model_dir": str(tmp_path),
+                "entry_threshold": 0.40,
+                "exit_threshold": 0.20,
+                "ignore_meta_thresholds": True,
+            }
         )
         strategy.timeframe = "1h"
         strategy._load_model("BTC/KRW")
@@ -486,12 +480,9 @@ class TestLGBMStrategyMetaThresholds:
 
     def test_set_model_does_not_populate_meta_thresholds(self):
         """Injection path keeps the param-defined thresholds (used by ml-walk-forward)."""
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
-        strategy = LGBMStrategy(
-            StrategyParams(values={"entry_threshold": 0.45, "exit_threshold": 0.30})
-        )
+        strategy = LGBMStrategy({"entry_threshold": 0.45, "exit_threshold": 0.30})
         strategy.symbols = ["BTC/KRW"]
         strategy.timeframe = "1h"
         # set_model intentionally does not touch the threshold dicts.
@@ -506,7 +497,6 @@ class TestLGBMStrategyMetaThresholds:
         assert "BTC/KRW" not in strategy._exit_thresholds
 
     def test_load_model_without_meta_thresholds_uses_defaults(self, tmp_path):
-        from tradingbot.strategy.base import StrategyParams
         from tradingbot.strategy.lgbm_strategy import LGBMStrategy
 
         df = _make_data(600)
@@ -514,13 +504,11 @@ class TestLGBMStrategyMetaThresholds:
         _train_and_save(df, tmp_path, df.index[int(len(df) * 0.7)])
 
         strategy = LGBMStrategy(
-            StrategyParams(
-                values={
-                    "model_dir": str(tmp_path),
-                    "entry_threshold": 0.45,
-                    "exit_threshold": 0.30,
-                }
-            )
+            {
+                "model_dir": str(tmp_path),
+                "entry_threshold": 0.45,
+                "exit_threshold": 0.30,
+            }
         )
         strategy.timeframe = "1h"
         loaded = strategy._load_model("BTC/KRW")

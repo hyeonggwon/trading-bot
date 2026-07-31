@@ -8,22 +8,11 @@ strategy methods — the current incomplete candle is never visible.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
 from typing import Any
 
 import pandas as pd
 
 from tradingbot.core.models import Position, Signal
-
-
-@dataclass
-class StrategyParams:
-    """Container for strategy parameters, enabling optimization."""
-
-    values: dict[str, Any] = field(default_factory=dict)
-
-    def get(self, key: str, default: Any = None) -> Any:
-        return self.values.get(key, default)
 
 
 class Strategy(ABC):
@@ -47,8 +36,8 @@ class Strategy(ABC):
     # (e.g., higher-timeframe resampling). These will use per-iteration computation.
     supports_precompute: bool = True
 
-    def __init__(self, params: StrategyParams | None = None):
-        self.params = params or StrategyParams()
+    def __init__(self, params: dict[str, Any] | None = None):
+        self.params = params or {}
         # Copy class-level mutable defaults to instance to prevent shared state
         self.symbols = list(self.symbols)
 

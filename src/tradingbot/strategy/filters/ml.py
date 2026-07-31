@@ -113,36 +113,33 @@ class LgbmProbFilter(BaseFilter):
         Merges external features when ``external_data_dir`` is configured
         so models trained with kimchi/funding/etc. see those columns here.
         """
-        try:
-            from tradingbot.ml.features import FEATURE_COLS, build_feature_matrix
+        from tradingbot.ml.features import FEATURE_COLS, build_feature_matrix
 
-            # Load model first so we can check the full set of required feature
-            # names (10 for pure-technical models, 16 for external-feature models)
-            self._load_model()
-            required_cols = self._feature_names or FEATURE_COLS
+        # Load model first so we can check the full set of required feature
+        # names (10 for pure-technical models, 16 for external-feature models)
+        self._load_model()
+        required_cols = self._feature_names or FEATURE_COLS
 
-            # Skip if all required features already computed
-            if all(col in df.columns for col in required_cols):
-                return df
+        # Skip if all required features already computed
+        if all(col in df.columns for col in required_cols):
+            return df
 
-            if not self._external_load_tried and self.external_data_dir is not None:
-                self._external_load_tried = True
-                try:
-                    from tradingbot.data.external_fetcher import load_external_components
+        if not self._external_load_tried and self.external_data_dir is not None:
+            self._external_load_tried = True
+            try:
+                from tradingbot.data.external_fetcher import load_external_components
 
-                    self._external_components = load_external_components(self.external_data_dir)
-                except Exception as e:
-                    log.warning(f"LgbmProbFilter: failed to load external data: {e}")
+                self._external_components = load_external_components(self.external_data_dir)
+            except Exception as e:
+                log.warning(f"LgbmProbFilter: failed to load external data: {e}")
 
-            external_df = None
-            if self._external_components is not None:
-                from tradingbot.data.external_fetcher import align_external_to
+        external_df = None
+        if self._external_components is not None:
+            from tradingbot.data.external_fetcher import align_external_to
 
-                external_df = align_external_to(df, self._external_components)
+            external_df = align_external_to(df, self._external_components)
 
-            df, _ = build_feature_matrix(df, external_df=external_df)
-        except ImportError:
-            log.warning("LgbmProbFilter: lightgbm/ml not installed — skipping compute")
+        df, _ = build_feature_matrix(df, external_df=external_df)
         return df
 
     def check_entry(self, df: pd.DataFrame) -> bool:
@@ -154,10 +151,7 @@ class LgbmProbFilter(BaseFilter):
         if model is None:
             return False
 
-        try:
-            from tradingbot.ml.features import FEATURE_COLS, WARMUP_CANDLES
-        except ImportError:
-            return False
+        from tradingbot.ml.features import FEATURE_COLS, WARMUP_CANDLES
 
         if len(df) < WARMUP_CANDLES + 2:
             return False
@@ -193,5 +187,7 @@ class LgbmProbFilter(BaseFilter):
 
         return False
 
-    def check_exit(self, df: pd.DataFrame, entry_index: int | None = None) -> bool:
-        return False  # Entry-only filter
+    @property
+    def supports_vectorized(self) -> bool:
+        # Model inference is not vectorized; routed to the full engine.
+        return False

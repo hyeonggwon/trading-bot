@@ -3,7 +3,7 @@
 Subscribes to ticker and trade streams. Provides:
 - Real-time price updates for multiple symbols
 - Automatic reconnection with exponential backoff
-- Async callback interface for price updates
+- Poll-based price access via ``last_prices`` / ``fresh_prices()``
 
 Upbit WebSocket endpoint: wss://api.upbit.com/websocket/v1
 Subscription format:
@@ -15,17 +15,11 @@ from __future__ import annotations
 import asyncio
 import json
 import uuid
-from collections.abc import Awaitable, Callable
 from datetime import UTC, datetime
 from typing import Any
 
 import structlog
-
-try:
-    import websockets
-    from websockets.asyncio.client import connect as ws_connect
-except ImportError:
-    websockets = None  # type: ignore
+from websockets.asyncio.client import connect as ws_connect
 
 logger = structlog.get_logger()
 
@@ -53,46 +47,18 @@ def _upbit_code_to_symbol(code: str) -> str:
     return code
 
 
-class TickerData:
-    """Parsed ticker update from WebSocket."""
-
-    __slots__ = ("symbol", "price", "volume", "change", "timestamp")
-
-    def __init__(
-        self,
-        symbol: str,
-        price: float,
-        volume: float,
-        change: str,
-        timestamp: datetime,
-    ):
-        self.symbol = symbol
-        self.price = price
-        self.volume = volume
-        self.change = change
-        self.timestamp = timestamp
-
-
-# Callback: can be sync or async
-TickerCallback = Callable[[TickerData], None] | Callable[[TickerData], Awaitable[None]]
-
-
 class UpbitWebSocketClient:
     """Async WebSocket client for Upbit real-time data.
 
     Usage:
         client = UpbitWebSocketClient(["BTC/KRW", "ETH/KRW"])
-        client.on_ticker(my_callback)
         await client.run()  # Runs forever with auto-reconnect
+        # Elsewhere: client.last_prices or client.fresh_prices(max_age_seconds=60)
     """
 
     def __init__(self, symbols: list[str]):
-        if websockets is None:
-            raise ImportError("websockets package required: pip install websockets")
-
         self._symbols = symbols
         self._codes = [_symbol_to_upbit_code(s) for s in symbols]
-        self._callbacks: list[TickerCallback] = []
         self._running = False
         self._stop_event: asyncio.Event | None = None
         self._last_prices: dict[str, float] = {}
@@ -120,10 +86,6 @@ class UpbitWebSocketClient:
             if ts is not None and (now - ts).total_seconds() <= max_age_seconds:
                 fresh[symbol] = price
         return fresh
-
-    def on_ticker(self, callback: TickerCallback) -> None:
-        """Register a callback for ticker updates."""
-        self._callbacks.append(callback)
 
     async def run(self) -> None:
         """Connect and stream data. Reconnects automatically on failure."""
@@ -229,22 +191,6 @@ class UpbitWebSocketClient:
         # Local receive time — used by fresh_prices() to detect a dead/silent
         # connection (the exchange event timestamp can't reveal a stalled feed).
         self._last_price_ts[symbol] = datetime.now(UTC)
-
-        ticker = TickerData(
-            symbol=symbol,
-            price=price,
-            volume=float(data.get("acc_trade_volume_24h", 0)),
-            change=data.get("change", ""),
-            timestamp=datetime.fromtimestamp(data.get("timestamp", 0) / 1000, tz=UTC),
-        )
-
-        for callback in self._callbacks:
-            try:
-                result = callback(ticker)
-                if asyncio.iscoroutine(result):
-                    await result
-            except Exception:
-                logger.exception("ws_callback_error")
 
     def stop(self) -> None:
         """Request graceful shutdown. Interrupts reconnect sleep immediately."""

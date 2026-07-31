@@ -20,7 +20,6 @@ from __future__ import annotations
 
 import json
 import logging
-import os
 from dataclasses import dataclass, field
 from itertools import product
 from pathlib import Path
@@ -31,9 +30,9 @@ import pandas as pd
 from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.config import AppConfig
 from tradingbot.ml.features import WARMUP_CANDLES
-from tradingbot.ml.trainer import LGBMTrainer
-from tradingbot.strategy.base import StrategyParams
+from tradingbot.ml.trainer import LGBMTrainer, model_paths
 from tradingbot.strategy.lgbm_strategy import LGBMStrategy
+from tradingbot.utils.io import atomic_write_json
 
 log = logging.getLogger(__name__)
 
@@ -294,18 +293,14 @@ class ThresholdTuner:
         ``(None, None)`` if the strategy fails to build the feature matrix
         (e.g. external data missing for an extras-trained model).
         """
-        params = StrategyParams(
-            values={
-                "model_dir": str(self.model_dir),
-                "external_data_dir": (
-                    str(self.external_data_dir) if self.external_data_dir else None
-                ),
-                # Indicator pre-compute path doesn't actually load thresholds,
-                # but stay consistent with ``_evaluate`` so any future feature
-                # build that does is also unaffected by stale meta overrides.
-                "ignore_meta_thresholds": True,
-            }
-        )
+        params = {
+            "model_dir": str(self.model_dir),
+            "external_data_dir": (str(self.external_data_dir) if self.external_data_dir else None),
+            # Indicator pre-compute path doesn't actually load thresholds,
+            # but stay consistent with ``_evaluate`` so any future feature
+            # build that does is also unaffected by stale meta overrides.
+            "ignore_meta_thresholds": True,
+        }
         indicator_strategy = LGBMStrategy(params)
         indicator_strategy.symbols = [self.symbol]
         indicator_strategy.timeframe = self.timeframe
@@ -381,23 +376,19 @@ class ThresholdTuner:
         config.trading.timeframe = self.timeframe
         config.trading.initial_balance = self.balance
 
-        params = StrategyParams(
-            values={
-                "entry_threshold": float(entry_threshold),
-                "exit_threshold": float(exit_threshold),
-                "model_dir": str(self.model_dir),
-                "external_data_dir": (
-                    str(self.external_data_dir) if self.external_data_dir else None
-                ),
-                # Critical: without this opt-out, ``_load_model`` would
-                # overwrite the per-trial entry/exit with whatever meta
-                # currently has, collapsing every grid cell onto the same
-                # thresholds. This was discovered when re-running the XRP
-                # tuner on a model whose meta had already been patched with
-                # 0.55/0.35 — every combo produced 5 trades.
-                "ignore_meta_thresholds": True,
-            }
-        )
+        params = {
+            "entry_threshold": float(entry_threshold),
+            "exit_threshold": float(exit_threshold),
+            "model_dir": str(self.model_dir),
+            "external_data_dir": (str(self.external_data_dir) if self.external_data_dir else None),
+            # Critical: without this opt-out, ``_load_model`` would
+            # overwrite the per-trial entry/exit with whatever meta
+            # currently has, collapsing every grid cell onto the same
+            # thresholds. This was discovered when re-running the XRP
+            # tuner on a model whose meta had already been patched with
+            # 0.55/0.35 — every combo produced 5 trades.
+            "ignore_meta_thresholds": True,
+        }
         strategy = LGBMStrategy(params)
         strategy.symbols = [self.symbol]
         strategy.timeframe = self.timeframe
@@ -454,8 +445,7 @@ def patch_meta_thresholds(
         )
         return None
 
-    symbol_key = symbol.replace("/", "_")
-    meta_path = Path(model_dir) / f"lgbm_{symbol_key}_{timeframe}_meta.json"
+    _, meta_path, _ = model_paths(model_dir, symbol, timeframe)
     if not meta_path.exists():
         log.warning("ThresholdTuner: meta missing at %s — cannot patch", meta_path)
         return None
@@ -497,7 +487,5 @@ def patch_meta_thresholds(
         "validation_end": result.validation_end,
     }
 
-    tmp_path = meta_path.with_suffix(".json.tmp")
-    tmp_path.write_text(json.dumps(meta_dict, indent=2, default=str))
-    os.replace(tmp_path, meta_path)
+    atomic_write_json(meta_path, meta_dict)
     return meta_path

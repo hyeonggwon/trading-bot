@@ -13,7 +13,7 @@ import pandas as pd
 from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.data.indicators import add_rsi
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 
 class RsiMeanReversionStrategy(Strategy):
@@ -21,7 +21,7 @@ class RsiMeanReversionStrategy(Strategy):
     timeframe = "1h"
     symbols = ["BTC/KRW"]
 
-    def __init__(self, params: StrategyParams | None = None):
+    def __init__(self, params: dict[str, Any] | None = None):
         super().__init__(params)
         self.rsi_period: int = self.params.get("rsi_period", 14)
         self.oversold: float = self.params.get("oversold", 30.0)

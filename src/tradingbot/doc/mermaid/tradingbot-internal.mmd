@@ -24,7 +24,6 @@ graph TB
         tradingbot_config[config]
         tradingbot_core[core]
         tradingbot_core_enums[core.enums]
-        tradingbot_core_events[core.events]
         tradingbot_core_models[core.models]
         tradingbot_dashboard[dashboard]
         tradingbot_dashboard_app[dashboard.app]
@@ -184,7 +183,6 @@ graph TB
     tradingbot_cli_trade --> tradingbot_risk_validators
     tradingbot_cli_trade --> tradingbot_strategy_base
     tradingbot_cli_trade --> tradingbot_utils_logging
-    tradingbot_core_events --> tradingbot_core_models
     tradingbot_core_models --> tradingbot_core_enums
     tradingbot_dashboard_app --> tradingbot_dashboard_views
     tradingbot_dashboard_forms --> tradingbot_cli

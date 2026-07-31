@@ -14,7 +14,7 @@ Upbit KRW 스팟 전용 트레이딩 봇 패키지. `core` 의 dataclass 를 공
 
 | Layer | 책임 (한 줄) | 의존 방향 (import 가능) |
 |---|---|---|
-| `core` | Candle/Signal/Order/Trade/Position/PortfolioState dataclass + enums + events | (leaf — 다른 tradingbot 패키지 import 안 함) |
+| `core` | Candle/Signal/Order/Trade/Position/PortfolioState dataclass + enums | (leaf — 다른 tradingbot 패키지 import 안 함) |
 | `config` | Pydantic 설정(YAML + .env) | `core` |
 | `data` | OHLCV/외부데이터 fetch, Parquet I/O, 19개 지표 래퍼 | `config` |
 | `strategy` | `Strategy` ABC + 31 filter + Combined/LGBM 전략 + registry | `core`, `data`, `ml` |

@@ -10,6 +10,7 @@ window. This measures how well optimized parameters generalize to unseen data.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from statistics import fmean
 from typing import TYPE_CHECKING, Any
 
 import pandas as pd
@@ -19,7 +20,7 @@ from tradingbot.backtest.engine import BacktestEngine
 from tradingbot.backtest.optimizer import GridSearchOptimizer
 from tradingbot.backtest.report import BacktestReport
 from tradingbot.config import AppConfig
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 if TYPE_CHECKING:
     from rich.progress import Progress
@@ -62,21 +63,15 @@ class WalkForwardReport:
 
     @property
     def avg_test_sharpe(self) -> float:
-        if not self.windows:
-            return 0.0
-        return sum(w.test_sharpe for w in self.windows) / len(self.windows)
+        return fmean(w.test_sharpe for w in self.windows) if self.windows else 0.0
 
     @property
     def avg_test_return(self) -> float:
-        if not self.windows:
-            return 0.0
-        return sum(w.test_return for w in self.windows) / len(self.windows)
+        return fmean(w.test_return for w in self.windows) if self.windows else 0.0
 
     @property
     def avg_train_sharpe(self) -> float:
-        if not self.windows:
-            return 0.0
-        return sum(w.train_sharpe for w in self.windows) / len(self.windows)
+        return fmean(w.train_sharpe for w in self.windows) if self.windows else 0.0
 
     @property
     def walk_forward_efficiency(self) -> float:
@@ -286,7 +281,6 @@ class WalkForwardValidator:
                 optimizer = GridSearchOptimizer(
                     strategy_cls=self.strategy_cls,
                     config=wf_config,
-                    max_workers=1,  # Sequential within each window
                 )
                 opt_results = optimizer.optimize(train_data, param_space, sort_by="sharpe_ratio")
 
@@ -348,7 +342,7 @@ def _run_test(
     config: AppConfig,
 ) -> BacktestReport:
     """Run a single backtest and return the report."""
-    strategy = strategy_cls(StrategyParams(params))
+    strategy = strategy_cls(params)
     strategy.symbols = config.trading.symbols
     strategy.timeframe = config.trading.timeframe
 

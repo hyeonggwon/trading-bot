@@ -13,7 +13,7 @@ import pandas as pd
 from tradingbot.core.enums import SignalType
 from tradingbot.core.models import Position, Signal
 from tradingbot.data.indicators import add_bollinger_bands
-from tradingbot.strategy.base import Strategy, StrategyParams
+from tradingbot.strategy.base import Strategy
 
 
 class BollingerBreakoutStrategy(Strategy):
@@ -21,7 +21,7 @@ class BollingerBreakoutStrategy(Strategy):
     timeframe = "1h"
     symbols = ["BTC/KRW"]
 
-    def __init__(self, params: StrategyParams | None = None):
+    def __init__(self, params: dict[str, Any] | None = None):
         super().__init__(params)
         self.period: int = self.params.get("period", 20)
         self.std: float = self.params.get("std", 2.0)

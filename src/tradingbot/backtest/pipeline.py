@@ -1081,7 +1081,9 @@ def write_deploy_artifacts(
     rank_note = f"rank_value={rank_value:.3f}" if rank_value is not None else "rank_value=-"
     model_note = ""
     if winner["kind"] == "ml" or "lgbm_prob" in (winner.get("entry") or ""):
-        sym_key = _comment_safe(winner["symbol"]).replace("/", "_")
+        from tradingbot.ml.trainer import model_paths
+
+        booster_path, _, _ = model_paths("models", winner["symbol"], winner["timeframe"])
         # ml winner: tuned entry/exit thresholds load from meta; lgbm_prob
         # winner: threshold rides in the --entry spec, meta supplies
         # feature names + win/loss ratio.
@@ -1090,10 +1092,7 @@ def write_deploy_artifacts(
             if winner["kind"] == "ml"
             else "threshold from --entry spec, features/kelly ratio from meta."
         )
-        model_note = (
-            f"# Requires models/lgbm_{sym_key}_{_comment_safe(winner['timeframe'])}.lgb "
-            f"(+_meta.json) — {meta_note}\n"
-        )
+        model_note = f"# Requires {_comment_safe(booster_path)} (+_meta.json) — {meta_note}\n"
 
     paper_argv = _winner_argv("paper", winner) + ["--balance", str(int(options.balance))]
     paper_sh = deploy / "paper.sh"

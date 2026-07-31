@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import asdict
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -33,9 +34,9 @@ def sample_candles() -> list[Candle]:
 @pytest.fixture
 def sample_df(sample_candles: list[Candle]) -> pd.DataFrame:
     """Convert sample candles to a DataFrame."""
-    from tradingbot.core.models import candles_to_dataframe
-
-    return candles_to_dataframe(sample_candles)
+    df = pd.DataFrame([asdict(c) for c in sample_candles])
+    df["timestamp"] = pd.to_datetime(df["timestamp"])
+    return df.set_index("timestamp")
 
 
 @pytest.fixture
