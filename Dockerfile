@@ -10,10 +10,12 @@ WORKDIR /app
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 && rm -rf /var/lib/apt/lists/*
 
 # Copy source and install (single layer for hatchling compatibility)
+# EXTRAS: 기본 ml — 대시보드 이미지는 --build-arg EXTRAS=ml,dashboard
+ARG EXTRAS=ml
 COPY pyproject.toml .
 COPY src/ src/
 COPY config/ config/
-RUN pip install --no-cache-dir ".[ml]"
+RUN pip install --no-cache-dir ".[${EXTRAS}]"
 
 # Create non-root user with all needed directories
 RUN useradd --create-home --shell /bin/bash botuser && \
