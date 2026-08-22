@@ -266,6 +266,23 @@ class TestStateManager:
         assert state.positions == {}
         assert not state_file.exists()
 
+    def test_annotate_last_equity_ledger(self, tmp_path):
+        state_file = tmp_path / "state.json"
+        state = StateManager(state_file)
+
+        # No snapshot yet — annotate is a no-op, not an error
+        state.annotate_last_equity(1_000_000)
+        assert state.equity_history == []
+
+        # Ledger stamps onto the newest snapshot and survives a round-trip
+        state.record_equity(2_216_140)
+        state.annotate_last_equity(1_815_952)
+        state.save()
+        state2 = StateManager(state_file)
+        state2.load()
+        assert state2.equity_history[-1]["equity"] == 2_216_140
+        assert state2.equity_history[-1]["ledger"] == 1_815_952
+
     def test_equity_history_capped(self, tmp_path):
         state_file = tmp_path / "state.json"
         state = StateManager(state_file)

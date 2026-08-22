@@ -436,6 +436,7 @@ class LiveEngine:
         # equity (see _ledger_equity). Peak tracking lives here — not in the
         # tick loops — so peak and breaker read the same series.
         ledger_equity = self._ledger_equity(equity, unrealized)
+        self.state.annotate_last_equity(ledger_equity)
         self.risk_manager.update_peak_equity(ledger_equity)
         breaker = self.risk_manager.check_circuit_breaker(ledger_equity)
         daily_loss = (

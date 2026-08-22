@@ -117,6 +117,17 @@ class StateManager:
         if len(self.equity_history) > 1000:
             self.equity_history = self.equity_history[-1000:]
 
+    def annotate_last_equity(self, ledger: float) -> None:
+        """Stamp the transfer-immune ledger equity onto the newest snapshot.
+
+        Called by the safety rails immediately after ``record_equity`` (both
+        tick paths call them back-to-back), so the dashboard can report a
+        deposit-immune return alongside the raw balance. Skipped ticks (e.g.
+        stale prices) simply leave no ledger key on that snapshot.
+        """
+        if self.equity_history:
+            self.equity_history[-1]["ledger"] = ledger
+
     def clear(self) -> None:
         """Reset all state."""
         self.positions = {}

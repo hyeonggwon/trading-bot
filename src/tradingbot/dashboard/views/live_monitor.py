@@ -88,7 +88,14 @@ def _render_header_metrics(data: dict[str, Any]) -> None:
     if equity_history:
         latest_equity = equity_history[-1].get("equity", 0)
         first_equity = equity_history[0].get("equity", latest_equity)
-        total_return = (latest_equity - first_equity) / first_equity if first_equity else 0
+        # Return runs on the transfer-immune ledger (like the safety rails) so
+        # a deposit doesn't read as profit; raw-equity fallback for old states.
+        ledger_baseline = data.get("ledger_baseline")
+        ledger_latest = next((e["ledger"] for e in reversed(equity_history) if "ledger" in e), None)
+        if ledger_baseline and ledger_latest is not None:
+            total_return = (ledger_latest - ledger_baseline) / ledger_baseline
+        else:
+            total_return = (latest_equity - first_equity) / first_equity if first_equity else 0
     else:
         latest_equity = 0
         total_return = 0
