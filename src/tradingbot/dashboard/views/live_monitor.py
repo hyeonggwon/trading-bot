@@ -99,11 +99,15 @@ def _render_header_metrics(data: dict[str, Any]) -> None:
     else:
         latest_equity = 0
         total_return = 0
+        ledger_latest = None
 
     peak = data.get("peak_equity") or 0
-    # Clamped: after an external deposit raw equity can sit above the
-    # ledger-tracked peak, which would read as a negative drawdown.
-    drawdown = max(0.0, (peak - latest_equity) / peak) if peak > 0 else 0
+    # Drawdown on the same transfer-immune ledger series the breaker uses —
+    # after a deposit, raw equity sits above the ledger peak and would mask a
+    # losing position as 0%. Raw fallback (clamped: raw above peak would read
+    # as a negative drawdown) for states written before ledger annotation.
+    dd_equity = ledger_latest if ledger_latest is not None else latest_equity
+    drawdown = max(0.0, (peak - dd_equity) / peak) if peak > 0 else 0
     daily_pnl = data.get("daily_pnl") or 0
     cum_pnl = data.get("cum_realized_pnl") or 0
 
@@ -119,8 +123,9 @@ def _render_header_metrics(data: dict[str, Any]) -> None:
     cols[2].metric("Open Positions", str(len(positions)))
     cols[3].metric("Last Update", format_timestamp(saved_at))
     st.caption(
-        "The breaker and daily-loss limit run on the engine's transfer-immune "
-        "ledger, which matches these figures until an external transfer occurs."
+        "Return, drawdown, peak and the safety rails all run on the engine's "
+        "transfer-immune ledger (trading PnL only); Equity is the raw account "
+        "balance including deposits/withdrawals."
     )
 
 
