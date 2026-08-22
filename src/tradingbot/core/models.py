@@ -108,10 +108,26 @@ class Position:
     entry_time: datetime
     stop_loss: float | None = None
     take_profit: float | None = None
+    adds: int = 0  # signal-triggered tranches merged in after the first entry
 
     @property
     def entry_value(self) -> float:
         return self.entry_price * self.size
+
+    def add_tranche(self, price: float, size: float) -> None:
+        """Merge an additional entry (pyramiding) into this position.
+
+        ``entry_price`` becomes the size-weighted average; ``entry_time`` is
+        deliberately left at the first entry because trailing exits derive the
+        entry candle from it. Stop loss / take profit are the caller's job —
+        they are re-derived from the new average price.
+        """
+        total_size = self.size + size
+        if total_size <= 0:
+            return
+        self.entry_price = (self.entry_price * self.size + price * size) / total_size
+        self.size = total_size
+        self.adds += 1
 
     def unrealized_pnl(self, current_price: float) -> float:
         return (current_price - self.entry_price) * self.size

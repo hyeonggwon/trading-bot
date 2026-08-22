@@ -30,6 +30,11 @@ from tradingbot.live.order_manager import OrderManager
 from tradingbot.live.state import StateManager
 from tradingbot.notifications.telegram import TelegramNotifier
 from tradingbot.risk.manager import RiskManager
+from tradingbot.risk.pyramiding import (
+    can_add_tranche,
+    restore_entry_anchor,
+    snapshot_entry_anchor,
+)
 from tradingbot.risk.validators import TradeValidator
 from tradingbot.strategy.base import Strategy
 
@@ -622,14 +627,42 @@ class LiveEngine:
                 if exit_signal:
                     await self._handle_exit(exit_signal, symbol, position)
 
-        # Check entry signals (only if no position in this symbol). Entries are
-        # gated to genuinely new candles so a restart exit re-eval never opens a
-        # position on a candle that closed before the bot came back up, and to
-        # the operator kill-switch (control file, refreshed in _tick_all).
-        if is_new_candle and not self._entries_paused and symbol not in self.state.positions:
+        # Check entry signals (a held symbol only re-enters when pyramiding
+        # allows another tranche). Entries are gated to genuinely new candles
+        # so a restart exit re-eval never opens a position on a candle that
+        # closed before the bot came back up, and to the operator kill-switch
+        # (control file, refreshed in _tick_all).
+        if is_new_candle and not self._entries_paused and await self._entry_allowed(symbol):
+            # An add must not re-pin the strategy's entry anchor, or trailing
+            # exits would restart from the add's candle.
+            anchor = (
+                snapshot_entry_anchor(self.strategy, symbol)
+                if symbol in self.state.positions
+                else None
+            )
             entry_signal = self.strategy.should_entry(confirmed_df, symbol)
             if entry_signal:
                 await self._handle_entry(entry_signal, symbol, current_price)
+            if anchor:
+                restore_entry_anchor(self.strategy, symbol, anchor)
+
+    async def _entry_allowed(self, symbol: str) -> bool:
+        """Whether an entry signal may be evaluated for ``symbol``.
+
+        A flat symbol always qualifies; a held one only when pyramiding is
+        configured and free cash clears the minimum tranche. Same gate as the
+        backtest engine (see risk.pyramiding).
+        """
+        position = self.state.positions.get(symbol)
+        if position is None:
+            return True
+        if not self.config.pyramiding.enabled:
+            return False  # pyramiding off — skip the balance round-trip
+        balance = await self.exchange.get_balance()
+        equity = await self._calculate_equity(balance=balance)
+        return can_add_tranche(
+            position, float(balance.get("KRW", 0.0)), equity, self.config.pyramiding
+        )
 
     async def _maybe_stop_out(self, symbol: str, position: Position, current_price: float) -> bool:
         """Close the position if ``current_price`` breached its stop loss.
@@ -778,7 +811,7 @@ class LiveEngine:
 
         # Pre-trade validation with expected fill price
         if self.trade_validator is not None:
-            if not self.trade_validator.validate_all(quantity, expected_price):
+            if not self.trade_validator.validate_all(quantity, expected_price, equity):
                 logger.info("signal_rejected_by_validator", symbol=symbol)
                 return
 
@@ -815,29 +848,40 @@ class LiveEngine:
                 self.trade_validator.record_order()
 
             actual_price = order.filled_price or current_price
-            actual_stop_loss = self.risk_manager.calculate_stop_loss(actual_price)
-            actual_take_profit = self.risk_manager.calculate_take_profit(actual_price)
+            position = self.state.positions.get(symbol)
+            if position is not None:
+                # Pyramiding add: blend into the open position (entry_time stays
+                # at the first entry, which trailing exits anchor on).
+                position.add_tranche(actual_price, order.quantity)
+                # Track entry fee for accurate PnL on exit — cumulative here
+                self.state.entry_fees[symbol] = self.state.entry_fees.get(symbol, 0) + (
+                    order.fee or 0
+                )
+            else:
+                position = Position(
+                    symbol=symbol,
+                    side=PositionSide.LONG,
+                    size=order.quantity,
+                    entry_price=actual_price,
+                    entry_time=datetime.now(UTC),
+                )
+                self.state.positions[symbol] = position
+                self.state.entry_fees[symbol] = order.fee or 0
+            # Rails are derived from the position's (possibly blended) average
+            position.stop_loss = self.risk_manager.calculate_stop_loss(position.entry_price)
+            position.take_profit = self.risk_manager.calculate_take_profit(position.entry_price)
 
-            self.state.positions[symbol] = Position(
-                symbol=symbol,
-                side=PositionSide.LONG,
-                size=order.quantity,
-                entry_price=actual_price,
-                entry_time=datetime.now(UTC),
-                stop_loss=actual_stop_loss,
-                take_profit=actual_take_profit,
-            )
-            # Track entry fee for accurate PnL on exit
-            self.state.entry_fees[symbol] = order.fee or 0
             logger.info(
-                "position_opened",
+                "position_opened" if position.adds == 0 else "position_added",
                 symbol=symbol,
                 quantity=f"{order.quantity:.8f}",
                 price=f"{order.filled_price:,.0f}" if order.filled_price else "N/A",
+                adds=position.adds,
             )
             if self.notifier:
+                action = "BUY" if position.adds == 0 else f"ADD #{position.adds}"
                 await self.notifier.send_signal(
-                    f"BUY {symbol}: qty={order.quantity:.8f}, price={order.filled_price:,.0f}"
+                    f"{action} {symbol}: qty={order.quantity:.8f}, price={order.filled_price:,.0f}"
                 )
         else:
             # Order came back without a confirmed fill — e.g. a market order

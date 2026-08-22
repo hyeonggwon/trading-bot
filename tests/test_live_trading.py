@@ -366,3 +366,55 @@ class TestTradeValidator:
         assert restored.daily_state() == (-250_000, reset_date)
         # The breach is still in force after the "restart".
         assert restored.validate_daily_loss() is False
+
+    # --- Equity-relative (pct) limits ---
+
+    def test_order_size_pct_limit_within(self):
+        v = TradeValidator(max_order_value_krw=10_000_000, max_order_pct=1.2)
+        assert v.validate_order_size(0.12, 50_000_000, equity=5_000_000) is True  # 6M = limit
+
+    def test_order_size_pct_limit_exceeds(self):
+        v = TradeValidator(max_order_value_krw=10_000_000, max_order_pct=1.2)
+        # 6.1M order vs 5M equity * 1.2 = 6M limit
+        assert v.validate_order_size(0.122, 50_000_000, equity=5_000_000) is False
+
+    def test_order_size_effective_limit_is_min_of_absolute_and_pct(self):
+        """When both absolute and pct limits are set, the tighter one wins."""
+        v = TradeValidator(max_order_value_krw=5_000_000, max_order_pct=1.2)
+        # equity 3M * 1.2 = 3.6M, tighter than the 5M absolute limit
+        assert v.validate_order_size(0.072, 50_000_000, equity=3_000_000) is True  # 3.6M = limit
+        assert v.validate_order_size(0.0721, 50_000_000, equity=3_000_000) is False
+
+    def test_order_size_pct_ignored_without_equity(self):
+        """No equity passed → pct limit is skipped, absolute limit alone applies."""
+        v = TradeValidator(max_order_value_krw=5_000_000, max_order_pct=0.1)
+        assert v.validate_order_size(0.1, 50_000_000) is True  # 5M within absolute, pct unused
+
+    def test_daily_loss_pct_limit(self):
+        v = TradeValidator(daily_loss_limit_krw=10_000_000, daily_loss_limit_pct=0.06)
+        v.record_trade_pnl(-290_000)
+        assert v.validate_daily_loss(equity=5_000_000) is True  # limit = 300K
+
+    def test_daily_loss_pct_limit_exceeded(self):
+        v = TradeValidator(daily_loss_limit_krw=10_000_000, daily_loss_limit_pct=0.06)
+        v.record_trade_pnl(-310_000)
+        assert v.validate_daily_loss(equity=5_000_000) is False  # limit = 300K
+
+    def test_validate_all_with_equity(self):
+        v = TradeValidator(
+            max_order_value_krw=10_000_000,
+            daily_loss_limit_krw=10_000_000,
+            max_order_pct=1.2,
+            daily_loss_limit_pct=0.06,
+        )
+        assert v.validate_all(0.1, 50_000_000, equity=5_000_000) is True  # 5M order within 6M
+
+    def test_pct_limits_regression_without_equity(self):
+        """Absolute-only construction and calls, no equity: behavior unchanged."""
+        v = TradeValidator(max_order_value_krw=500_000, daily_loss_limit_krw=200_000)
+        assert v.validate_order_size(0.01, 50_000_000) is True  # 500K = limit
+        assert v.validate_order_size(0.02, 50_000_000) is False  # 1M > 500K
+        assert v.validate_all(0.001, 50_000_000) is True  # within both absolute limits
+        v.record_trade_pnl(-250_000)
+        assert v.validate_daily_loss() is False
+        assert v.validate_all(0.001, 50_000_000) is False  # daily loss now breached

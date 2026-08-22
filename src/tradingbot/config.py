@@ -48,6 +48,18 @@ class RiskConfig(_StrictModel):
     risk_per_trade_pct: Annotated[float, Field(gt=0, le=1.0)] = 0.01
 
 
+class PyramidingConfig(_StrictModel):
+    """Signal-triggered adds to an already-open position.
+
+    Disabled by default — a held symbol is then never re-evaluated for entry,
+    exactly as before pyramiding existed. Enabled, each add still has to clear
+    the free-cash floor, which spends itself down and stops the sequence.
+    """
+
+    enabled: bool = False
+    min_add_cash_pct: Annotated[float, Field(ge=0, le=1.0)] = 0.05
+
+
 class BacktestConfig(_StrictModel):
     fee_rate: Annotated[float, Field(ge=0, le=1.0)] = 0.0005
     slippage_pct: Annotated[float, Field(ge=0, le=1.0)] = 0.001
@@ -59,6 +71,7 @@ class AppConfig(_StrictModel):
     exchange: ExchangeConfig = ExchangeConfig()
     trading: TradingConfig = TradingConfig()
     risk: RiskConfig = RiskConfig()
+    pyramiding: PyramidingConfig = PyramidingConfig()
     backtest: BacktestConfig = BacktestConfig()
 
 

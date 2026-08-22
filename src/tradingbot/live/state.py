@@ -138,6 +138,7 @@ def _position_to_dict(pos: Position) -> dict[str, Any]:
         "entry_time": pos.entry_time.isoformat(),
         "stop_loss": pos.stop_loss,
         "take_profit": pos.take_profit,
+        "adds": pos.adds,
     }
 
 
@@ -150,4 +151,5 @@ def _dict_to_position(data: dict[str, Any]) -> Position:
         entry_time=datetime.fromisoformat(data["entry_time"]),
         stop_loss=data.get("stop_loss"),
         take_profit=data.get("take_profit"),
+        adds=data.get("adds", 0),  # absent in states written before pyramiding
     )

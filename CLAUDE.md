@@ -108,6 +108,7 @@ tradingbot paper --strategy sma_cross --symbol BTC/KRW --balance 1000000
 tradingbot paper --strategy sma_cross --symbol BTC/KRW --websocket
 tradingbot paper --entry "trend_up:4 + rsi_oversold:30" --exit "rsi_overbought:70" --symbol BTC/KRW
 tradingbot live --strategy sma_cross --symbol BTC/KRW --max-order 500000 --daily-loss-limit 200000
+tradingbot live --strategy sma_cross --symbol BTC/KRW --max-order-pct 1.2 --daily-loss-stops 3  # 잔고 비례 동적 한도
 tradingbot live --strategy ML+ADXTrend --symbol BTC/KRW --websocket
 tradingbot status
 tradingbot balance
@@ -200,8 +201,9 @@ Strategies inherit from `Strategy` and implement three methods:
 - `src/tradingbot/live/state.py` — JSON-based state persistence with atomic write (positions, equity history, crash recovery)
 - `src/tradingbot/live/control.py` — Dashboard→engine control file (entry pause/resume kill-switch; engine polls it each tick, new entries only — exits/stops/rails unaffected)
 - `src/tradingbot/live/order_manager.py` — Order lifecycle (submit, poll, timeout cancel, market re-order)
-- `src/tradingbot/risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss
-- `src/tradingbot/risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown)
+- `src/tradingbot/risk/manager.py` — Position sizing (fixed-fractional), drawdown circuit breaker, stop loss. Max-open-positions cap exempts pyramiding adds (held symbol ≠ new slot)
+- `src/tradingbot/risk/pyramiding.py` — Signal-triggered pyramiding gate shared by backtest/live engines (`pyramiding.enabled` config, default off): held symbol re-evaluates entry when free cash ≥ max(50k KRW, `min_add_cash_pct`×equity); fill merges via `Position.add_tranche` (size-weighted avg entry, `entry_time` preserved — trailing exits anchor on it), stop/TP re-derived from blended avg. Inert under full sizing until deposits create idle cash
+- `src/tradingbot/risk/validators.py` — Pre-trade safety (max order size, daily loss limit, cooldown). Limits accept absolute KRW and/or equity-relative form (`--max-order-pct`, `--daily-loss-stops`); effective limit = min of those set, so deposits rescale limits without redeploying
 - `src/tradingbot/notifications/telegram.py` — Telegram Bot API notifications
 - `src/tradingbot/dashboard/` — Streamlit GUI with full CLI parity: `app.py` (mode router) + `views/` pages (Live Monitor·Trading·Backtest·Combine·ML·Pipeline·Data·Models·Jobs). `forms.py` auto-generates command forms via click introspection (`PAGE_COMMANDS` parity ratchet enforced by tests/test_dashboard_forms.py); `jobs.py` runs long commands as detached CLI subprocesses tracked on disk (`personal/gui_jobs/`, SIGINT cancel, duplicate state-file guard for paper/live)
 - `src/tradingbot/config.py` — Pydantic settings from YAML + .env override

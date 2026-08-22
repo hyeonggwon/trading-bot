@@ -18,6 +18,7 @@ from tradingbot.cli.combine import (
     _find_combine_template,
     _resolve_strategy,
 )
+from tradingbot.cli.trade import _daily_loss_limit_pct
 from tradingbot.strategy.filters.registry import parse_filter_string
 
 
@@ -1139,3 +1140,11 @@ class TestCliAssembly:
 
         cmd = typer.main.get_command(app)
         assert cmd.name == "tradingbot"
+
+
+class TestDailyLossLimitPct:
+    def test_converts_stops_to_pct(self):
+        assert _daily_loss_limit_pct(3, 0.02) == pytest.approx(0.06)
+
+    def test_none_stops_returns_none(self):
+        assert _daily_loss_limit_pct(None, 0.02) is None

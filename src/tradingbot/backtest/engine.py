@@ -28,6 +28,11 @@ from tradingbot.core.enums import (
 )
 from tradingbot.core.models import Candle, Order, PortfolioState, Position, Signal, Trade
 from tradingbot.risk.manager import RiskManager
+from tradingbot.risk.pyramiding import (
+    can_add_tranche,
+    restore_entry_anchor,
+    snapshot_entry_anchor,
+)
 from tradingbot.strategy.base import Strategy
 
 logger = structlog.get_logger()
@@ -254,11 +259,20 @@ class BacktestEngine:
                     if exit_signal:
                         self._handle_signal(exit_signal, fill_candle)
 
-                # Check entries (no entry if stop loss fired or already positioned)
-                if sym not in self.positions and sym not in stop_loss_fired_symbols:
+                # Check entries (no entry if stop loss fired this candle). A
+                # held symbol is re-evaluated only when pyramiding allows
+                # another tranche — by default it never does.
+                if sym not in stop_loss_fired_symbols and self._entry_allowed(sym):
+                    # An add must not re-pin the strategy's entry anchor, or
+                    # trailing exits would restart from the add's candle.
+                    anchor = (
+                        snapshot_entry_anchor(self.strategy, sym) if sym in self.positions else None
+                    )
                     entry_signal = self.strategy.should_entry(visible_df, sym)
                     if entry_signal:
                         self._handle_signal(entry_signal, fill_candle)
+                    if anchor:
+                        restore_entry_anchor(self.strategy, sym, anchor)
 
             # Phase 3: Update last known prices and record portfolio equity
             for sym in symbol_data:
@@ -295,6 +309,23 @@ class BacktestEngine:
             sharpe=f"{report.sharpe_ratio:.2f}",
         )
         return report
+
+    def _entry_allowed(self, symbol: str) -> bool:
+        """Whether an entry signal may be evaluated for ``symbol``.
+
+        A flat symbol always qualifies; a held one only when pyramiding is
+        configured and free cash clears the minimum tranche. Same gate as the
+        live engine (see risk.pyramiding).
+        """
+        position = self.positions.get(symbol)
+        if position is None:
+            return True
+        return can_add_tranche(
+            position,
+            self.cash,
+            self._calculate_equity(self._last_known_prices),
+            self.config.pyramiding,
+        )
 
     def _handle_signal(self, signal: Signal, fill_candle: Candle) -> None:
         """Process a signal: validate with risk manager, then execute."""
@@ -381,6 +412,21 @@ class BacktestEngine:
         order.filled_at = timestamp
         order.filled_price = fill_price
         order.fee = fee
+
+        existing = self.positions.get(order.symbol)
+        if existing is not None:
+            # Pyramiding add: blend into the open position (entry_time stays at
+            # the first entry) and re-derive the rails from the new average.
+            # The round-trip record absorbs the tranche too, so the reported
+            # trade is one entry at the blended price for the merged size.
+            existing.add_tranche(fill_price, order.quantity)
+            existing.stop_loss = self.risk_manager.calculate_stop_loss(existing.entry_price)
+            existing.take_profit = self.risk_manager.calculate_take_profit(existing.entry_price)
+            entry_order = self._entry_orders[order.symbol]
+            entry_order.quantity = existing.size
+            entry_order.filled_price = existing.entry_price
+            entry_order.fee += fee
+            return
 
         self.positions[order.symbol] = Position(
             symbol=order.symbol,

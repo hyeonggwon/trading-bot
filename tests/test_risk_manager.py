@@ -58,15 +58,9 @@ class TestRiskManager:
         portfolio = self._make_portfolio(750_000)
         assert self.rm.validate_signal(signal, portfolio, {"BTC/KRW": 50_000_000}) is False
 
-    def test_max_positions(self):
+    def _full_portfolio(self) -> PortfolioState:
+        """Portfolio at the max_open_positions=2 cap (ETH/KRW + XRP/KRW held)."""
         positions = [
-            Position(
-                "BTC/KRW",
-                PositionSide.LONG,
-                0.01,
-                50_000_000,
-                datetime(2024, 1, 1, tzinfo=UTC),
-            ),
             Position(
                 "ETH/KRW",
                 PositionSide.LONG,
@@ -74,14 +68,38 @@ class TestRiskManager:
                 3_000_000,
                 datetime(2024, 1, 1, tzinfo=UTC),
             ),
+            Position(
+                "XRP/KRW",
+                PositionSide.LONG,
+                100,
+                1_000,
+                datetime(2024, 1, 1, tzinfo=UTC),
+            ),
         ]
-        signal = self._make_signal(SignalType.LONG_ENTRY)
-        portfolio = self._make_portfolio(500_000, positions)
+        return self._make_portfolio(500_000, positions)
+
+    def test_max_positions(self):
+        signal = self._make_signal(SignalType.LONG_ENTRY)  # BTC/KRW — a new slot
         assert (
             self.rm.validate_signal(
-                signal, portfolio, {"BTC/KRW": 50_000_000, "ETH/KRW": 3_000_000}
+                signal, self._full_portfolio(), {"ETH/KRW": 3_000_000, "XRP/KRW": 1_000}
             )
             is False
+        )
+
+    def test_max_positions_does_not_block_add_to_held_symbol(self):
+        """A pyramiding add doesn't occupy a new slot, so the cap doesn't apply."""
+        signal = Signal(
+            timestamp=datetime(2024, 1, 1, tzinfo=UTC),
+            symbol="ETH/KRW",
+            signal_type=SignalType.LONG_ENTRY,
+            price=3_000_000,
+        )
+        assert (
+            self.rm.validate_signal(
+                signal, self._full_portfolio(), {"ETH/KRW": 3_000_000, "XRP/KRW": 1_000}
+            )
+            is True
         )
 
     def test_position_sizing_with_stop_loss(self):

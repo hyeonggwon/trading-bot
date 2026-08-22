@@ -20,9 +20,15 @@ trading:
 risk:
   max_position_size_pct: 1.0     # 포지션당 최대 100% (컨테이너=심볼 1개 구조 기준)
   max_open_positions: 5          # 8종목 중 최대 5개 동시 포지션
-  max_drawdown_pct: 0.20          # 20% 드로다운 서킷브레이커
+  max_drawdown_pct: 0.30          # 30% 드로다운 서킷브레이커 (전액 사이징 기준 — 과거 최악 21%보다 위)
   default_stop_loss_pct: 0.02     # 2% 손절
-  risk_per_trade_pct: 0.01        # 거래당 1% 리스크
+  risk_per_trade_pct: 0.02        # 거래당 2% 리스크 (손절 2% → 시그널당 전액 진입)
+
+pyramiding:
+  enabled: true                   # 보유 중 시그널 재발화 시 유휴현금으로 추가매수
+                                  # (전액 사이징이라 입금으로 유휴현금이 생겼을 때만 발동,
+                                  #  청산 후엔 평소처럼 전액 진입)
+  min_add_cash_pct: 0.05          # 추가매수 최소 유휴현금 (equity 대비 5%, 5만원과 큰 쪽)
 
 backtest:
   fee_rate: 0.0005                # Upbit 0.05%

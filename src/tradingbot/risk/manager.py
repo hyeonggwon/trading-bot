@@ -68,8 +68,12 @@ class RiskManager:
         if self.check_circuit_breaker(current_equity):
             return False
 
-        # Max open positions
-        if len(portfolio.positions) >= self.config.max_open_positions:
+        # Max open positions — a pyramiding add to a symbol we already hold
+        # doesn't occupy a new slot, so it isn't subject to the cap. (Only
+        # reachable when pyramiding is enabled: the engines don't evaluate
+        # entries for a held symbol otherwise.)
+        held = any(p.symbol == signal.symbol for p in portfolio.positions)
+        if not held and len(portfolio.positions) >= self.config.max_open_positions:
             logger.debug(
                 "max_positions_reached",
                 current=len(portfolio.positions),

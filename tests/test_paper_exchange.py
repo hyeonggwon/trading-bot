@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 
 import pandas as pd
@@ -189,6 +190,51 @@ class TestStateManager:
         assert loaded_pos.entry_price == 50_000_000
         assert loaded_pos.stop_loss == 49_000_000
         assert len(state2.equity_history) == 1
+
+    def test_adds_survive_roundtrip(self, tmp_path):
+        """Pyramiding tranche count must persist so a restart can't re-add past the cap."""
+        state_file = tmp_path / "state.json"
+        state = StateManager(state_file)
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=0.002,
+            entry_price=50_000_000,
+            entry_time=datetime(2024, 1, 1, tzinfo=UTC),
+            adds=2,
+        )
+        state.save()
+
+        state2 = StateManager(state_file)
+        state2.load()
+
+        assert state2.positions["BTC/KRW"].adds == 2
+
+    def test_state_without_adds_loads_as_zero(self, tmp_path):
+        """State written before pyramiding existed must still load."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text(
+            json.dumps(
+                {
+                    "positions": {
+                        "BTC/KRW": {
+                            "symbol": "BTC/KRW",
+                            "side": "long",
+                            "size": 0.001,
+                            "entry_price": 50_000_000,
+                            "entry_time": "2024-01-01T00:00:00+00:00",
+                            "stop_loss": 49_000_000,
+                            "take_profit": None,
+                        }
+                    }
+                }
+            )
+        )
+
+        state = StateManager(state_file)
+        state.load()
+
+        assert state.positions["BTC/KRW"].adds == 0
 
     def test_load_nonexistent(self, tmp_path):
         state = StateManager(tmp_path / "nope.json")

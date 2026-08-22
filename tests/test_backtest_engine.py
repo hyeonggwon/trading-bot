@@ -9,6 +9,7 @@ Uses synthetic data with known price patterns to verify:
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import numpy as np
@@ -16,9 +17,16 @@ import pandas as pd
 import pytest
 
 from tradingbot.backtest.engine import BacktestEngine
-from tradingbot.config import AppConfig, BacktestConfig, RiskConfig, TradingConfig
-from tradingbot.core.enums import OrderSide, SignalType
-from tradingbot.core.models import Signal
+from tradingbot.config import (
+    AppConfig,
+    BacktestConfig,
+    PyramidingConfig,
+    RiskConfig,
+    TradingConfig,
+)
+from tradingbot.core.enums import OrderSide, PositionSide, SignalType
+from tradingbot.core.models import Position, Signal
+from tradingbot.risk.pyramiding import can_add_tranche
 from tradingbot.strategy.base import Strategy
 from tradingbot.strategy.examples.sma_cross import SmaCrossStrategy
 
@@ -710,3 +718,207 @@ class TestBacktestTakeProfit:
         entry_fill = 100.0 * 1.001
         assert t.exit_order.filled_price == pytest.approx(entry_fill * 0.95 * (1 - 0.001))
         assert t.exit_order.filled_price < t.entry_order.filled_price
+
+
+# --- Signal-triggered pyramiding (adds to an already-open position) ---
+
+
+class _AlwaysEntryStrategy(Strategy):
+    """Fires a LONG_ENTRY on every candle and never exits by signal.
+
+    Mirrors CombinedStrategy's entry-anchor caches so the engine's anchor
+    preservation across an add is exercised, and snapshots the position on
+    every ``should_exit`` call so tranche merges can be inspected.
+    """
+
+    def __init__(self):
+        self._entry_indices: dict[str, int] = {}
+        self._entry_times: dict[str, pd.Timestamp] = {}
+        self.snapshots: list[Position] = []
+
+    @property
+    def symbols(self):
+        return ["BTC/KRW"]
+
+    @property
+    def timeframe(self):
+        return "1h"
+
+    def indicators(self, df):
+        return df
+
+    def should_entry(self, df, symbol):
+        self._entry_indices[symbol] = len(df) - 1
+        self._entry_times[symbol] = df.index[-1]
+        return Signal(
+            timestamp=df.index[-1],
+            symbol=symbol,
+            signal_type=SignalType.LONG_ENTRY,
+            price=float(df["close"].iloc[-1]),
+            strength=1.0,
+        )
+
+    def should_exit(self, df, symbol, position=None):
+        if position is not None:
+            self.snapshots.append(replace(position))
+        return None
+
+
+def _rising_df() -> pd.DataFrame:
+    """Entry at 100, then two higher candles the adds can fill on."""
+    return _ohlcv_df(
+        [
+            (100, 101, 99, 100),
+            (100, 101, 99, 100),  # first entry fills here at open=100
+            (120, 121, 119, 120),  # add #1 fills at open=120
+            (140, 141, 139, 140),  # add #2 fills at open=140
+            (160, 161, 159, 160),  # add #3 fills at open=160
+        ]
+    )
+
+
+def _pyramiding_config(enabled: bool, min_add_cash_pct: float = 0.05) -> AppConfig:
+    return AppConfig(
+        trading=TradingConfig(
+            symbols=["BTC/KRW"],
+            timeframe="1h",
+            initial_balance=1_000_000,
+        ),
+        risk=RiskConfig(
+            max_position_size_pct=0.3,  # each tranche ≈ 30% of equity
+            max_open_positions=1,
+            max_drawdown_pct=0.99,
+            default_stop_loss_pct=0.02,
+            risk_per_trade_pct=0.02,
+        ),
+        pyramiding=PyramidingConfig(enabled=enabled, min_add_cash_pct=min_add_cash_pct),
+        backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
+    )
+
+
+class TestBacktestPyramiding:
+    def test_disabled_by_default_never_re_enters(self):
+        """Disabled (the default) must reproduce the pre-pyramiding path."""
+        strategy = _AlwaysEntryStrategy()
+        engine = BacktestEngine(strategy=strategy, config=_pyramiding_config(False))
+        report = engine.run({"BTC/KRW": _rising_df()})
+
+        assert [s.adds for s in strategy.snapshots] == [0, 0, 0]
+        assert len({s.size for s in strategy.snapshots}) == 1  # position never grew
+        assert len(report.trades) == 1
+        assert report.trades[0].entry_order.filled_price == pytest.approx(100 * 1.001)
+
+    def test_adds_merge_into_open_position(self):
+        strategy = _AlwaysEntryStrategy()
+        engine = BacktestEngine(strategy=strategy, config=_pyramiding_config(True))
+        report = engine.run({"BTC/KRW": _rising_df()})
+
+        first, second, third = strategy.snapshots
+        assert [first.adds, second.adds, third.adds] == [0, 1, 2]
+
+        # Each merge blends at the size-weighted average of the tranches (each
+        # filled at its candle's open plus slippage) and re-derives the stop.
+        for before, after, fill in ((first, second, 120 * 1.001), (second, third, 140 * 1.001)):
+            added = after.size - before.size
+            assert added > 0
+            expected = (before.entry_price * before.size + fill * added) / after.size
+            assert after.entry_price == pytest.approx(expected)
+            assert after.stop_loss == pytest.approx(after.entry_price * 0.98)
+
+        # entry_time stays at the first entry — trailing exits anchor on it
+        assert second.entry_time == first.entry_time
+        assert third.entry_time == first.entry_time
+
+        # Adds fold into one round trip, recorded at the blended price for the
+        # merged size. The 4th signal stops on the free-cash floor (three
+        # tranches leave ~30k against a ~59k bar), not on any count cap.
+        assert len(report.trades) == 1
+        assert report.trades[0].entry_order.quantity == pytest.approx(third.size)
+        assert report.trades[0].entry_order.filled_price == pytest.approx(third.entry_price)
+
+    def test_add_keeps_strategy_entry_anchor(self):
+        strategy = _AlwaysEntryStrategy()
+        df = _rising_df()
+        engine = BacktestEngine(strategy=strategy, config=_pyramiding_config(True))
+        engine.run({"BTC/KRW": df})
+
+        # The first entry's signal candle (visible df[0:1]) stays pinned —
+        # re-anchoring on an add would reset "since entry" trailing exits.
+        assert strategy._entry_indices["BTC/KRW"] == 0
+        assert strategy._entry_times["BTC/KRW"] == df.index[0]
+
+    def test_stop_loss_candle_blocks_entry(self):
+        df = _ohlcv_df(
+            [
+                (100, 101, 99, 100),
+                (100, 101, 99, 100),  # entry fills at open=100, stop at 98.098
+                (100, 101, 90, 95),  # low pierces the stop; no entry this candle
+                (95, 96, 94, 95),  # re-entry fills here
+                (95, 96, 94, 95),
+            ]
+        )
+        strategy = _AlwaysEntryStrategy()
+        engine = BacktestEngine(strategy=strategy, config=_pyramiding_config(True))
+        report = engine.run({"BTC/KRW": df})
+
+        assert len(report.trades) == 2
+        entry_fill = 100 * 1.001
+        assert report.trades[0].exit_order.filled_price == pytest.approx(
+            entry_fill * 0.98 * (1 - 0.001)
+        )
+        # Re-entry happened on the candle AFTER the stop, not the stop's own.
+        assert report.trades[1].entry_order.filled_at == df.index[3]
+
+    def test_add_skipped_when_free_cash_below_minimum(self):
+        # Demanding 90% of equity in idle cash: one tranche (~30%) leaves ~70%,
+        # so no add ever clears the bar.
+        strategy = _AlwaysEntryStrategy()
+        engine = BacktestEngine(
+            strategy=strategy, config=_pyramiding_config(True, min_add_cash_pct=0.9)
+        )
+        report = engine.run({"BTC/KRW": _rising_df()})
+
+        assert [s.adds for s in strategy.snapshots] == [0, 0, 0]
+        assert len(report.trades) == 1
+
+
+class TestPyramidingGate:
+    def _position(self) -> Position:
+        return Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=100.0,
+            entry_time=datetime(2024, 1, 1, tzinfo=UTC),
+        )
+
+    def test_off_by_default(self):
+        assert not can_add_tranche(self._position(), 1_000_000, 1_000_000, PyramidingConfig())
+
+    def test_enabled_with_cash_allows_add(self):
+        config = PyramidingConfig(enabled=True)
+        assert can_add_tranche(self._position(), 1_000_000, 1_000_000, config)
+
+    def test_absolute_cash_floor_binds_on_small_accounts(self):
+        # 5% of 200k is below the 50k floor, so the floor is what applies
+        config = PyramidingConfig(enabled=True)
+        assert not can_add_tranche(self._position(), 49_000, 200_000, config)
+        assert can_add_tranche(self._position(), 50_000, 200_000, config)
+
+    def test_pct_floor_binds_on_large_accounts(self):
+        config = PyramidingConfig(enabled=True)
+        assert not can_add_tranche(self._position(), 90_000, 2_000_000, config)
+        assert can_add_tranche(self._position(), 100_000, 2_000_000, config)
+
+    def test_add_tranche_blends_price_and_keeps_entry_time(self):
+        entry_time = datetime(2024, 1, 1, tzinfo=UTC)
+        position = self._position()
+        position.size = 2.0
+        position.entry_time = entry_time
+
+        position.add_tranche(price=200.0, size=2.0)
+
+        assert position.entry_price == pytest.approx(150.0)
+        assert position.size == pytest.approx(4.0)
+        assert position.adds == 1
+        assert position.entry_time == entry_time

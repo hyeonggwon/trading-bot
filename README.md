@@ -311,6 +311,10 @@ tradingbot balance  # 잔고 확인
 tradingbot live --strategy sma_cross --symbol BTC/KRW \
   --max-order 100000 --daily-loss-limit 50000
 
+# 잔고 비례 동적 한도 — 입금 시 자동 조정 (절대값과 함께 주면 유효 한도 = min)
+tradingbot live --strategy sma_cross --symbol BTC/KRW \
+  --max-order-pct 1.2 --daily-loss-stops 3
+
 # WebSocket + Combined 템플릿
 tradingbot live --strategy ML+ADXTrend --symbol BTC/KRW \
   --max-order 100000 --daily-loss-limit 50000 --websocket
@@ -458,7 +462,8 @@ trading-bot/
 │   │
 │   ├── risk/                         # 리스크 관리
 │   │   ├── manager.py                #   포지션 사이징, 드로다운 서킷브레이커
-│   │   └── validators.py             #   최대 주문, 일일 손실 한도
+│   │   ├── pyramiding.py             #   시그널 기반 추가매수 게이트 (백테스트·라이브 공용)
+│   │   └── validators.py             #   최대 주문, 일일 손실 한도 (절대값 + 잔고 비례 동적)
 │   │
 │   ├── notifications/                # 알림
 │   │   └── telegram.py               #   텔레그램 봇

@@ -23,23 +23,39 @@ class TradeValidator:
         max_order_value_krw: float = 500_000,
         daily_loss_limit_krw: float = 200_000,
         order_cooldown_seconds: int = 10,
+        max_order_pct: float | None = None,
+        daily_loss_limit_pct: float | None = None,
     ):
         self.max_order_value_krw = max_order_value_krw
         self.daily_loss_limit_krw = daily_loss_limit_krw
         self.order_cooldown_seconds = order_cooldown_seconds
+        self.max_order_pct = max_order_pct
+        self.daily_loss_limit_pct = daily_loss_limit_pct
 
         self._last_order_time: datetime | None = None
         self._daily_pnl: float = 0.0
         self._daily_reset_date: date | None = None
 
-    def validate_order_size(self, quantity: float, price: float) -> bool:
-        """Check that order value doesn't exceed hard limit."""
+    def validate_order_size(
+        self, quantity: float, price: float, equity: float | None = None
+    ) -> bool:
+        """Check that order value doesn't exceed the effective size limit.
+
+        The effective limit is the min of the absolute ``max_order_value_krw``
+        and, when both ``equity`` and ``max_order_pct`` are given, ``equity *
+        max_order_pct``. This lets the limit scale automatically as equity
+        grows (e.g. after a deposit) without redeploying with a new absolute
+        value. Without equity or max_order_pct, behavior is unchanged.
+        """
         value = quantity * price
-        if value > self.max_order_value_krw:
+        limit = self.max_order_value_krw
+        if equity is not None and self.max_order_pct is not None:
+            limit = min(limit, equity * self.max_order_pct)
+        if value > limit:
             logger.warning(
                 "order_rejected_size_limit",
                 value=f"{value:,.0f}",
-                limit=f"{self.max_order_value_krw:,.0f}",
+                limit=f"{limit:,.0f}",
             )
             return False
         return True
@@ -59,15 +75,23 @@ class TradeValidator:
             return False
         return True
 
-    def validate_daily_loss(self) -> bool:
-        """Check that daily loss limit hasn't been breached."""
+    def validate_daily_loss(self, equity: float | None = None) -> bool:
+        """Check that daily loss limit hasn't been breached.
+
+        Effective limit follows the same min(absolute, equity * pct) pattern
+        as ``validate_order_size`` — see that docstring for rationale.
+        """
         self._reset_daily_if_needed()
 
-        if self._daily_pnl < -self.daily_loss_limit_krw:
+        limit = self.daily_loss_limit_krw
+        if equity is not None and self.daily_loss_limit_pct is not None:
+            limit = min(limit, equity * self.daily_loss_limit_pct)
+
+        if self._daily_pnl < -limit:
             logger.warning(
                 "order_rejected_daily_loss",
                 daily_pnl=f"{self._daily_pnl:,.0f}",
-                limit=f"{-self.daily_loss_limit_krw:,.0f}",
+                limit=f"{-limit:,.0f}",
             )
             return False
         return True
@@ -92,13 +116,13 @@ class TradeValidator:
             return True
         return False
 
-    def validate_all(self, quantity: float, price: float) -> bool:
+    def validate_all(self, quantity: float, price: float, equity: float | None = None) -> bool:
         """Run all validations. Returns True if order is safe to execute."""
-        if not self.validate_order_size(quantity, price):
+        if not self.validate_order_size(quantity, price, equity):
             return False
         if not self.validate_cooldown():
             return False
-        if not self.validate_daily_loss():
+        if not self.validate_daily_loss(equity):
             return False
         return True
 

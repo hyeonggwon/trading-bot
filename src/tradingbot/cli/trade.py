@@ -17,6 +17,13 @@ if TYPE_CHECKING:
     from tradingbot.strategy.base import Strategy
 
 
+def _daily_loss_limit_pct(
+    daily_loss_stops: float | None, risk_per_trade_pct: float
+) -> float | None:
+    """Convert an allowed stop-loss count into an equity-relative daily loss pct."""
+    return daily_loss_stops * risk_per_trade_pct if daily_loss_stops is not None else None
+
+
 @app.command()
 def paper(
     strategy_name: str = typer.Option("sma_cross", "--strategy", "-S", help="Strategy name"),
@@ -165,6 +172,12 @@ def live(
     daily_loss_krw: float = typer.Option(
         200_000, "--daily-loss-limit", help="Daily loss limit (KRW)"
     ),
+    max_order_pct: float | None = typer.Option(
+        None, "--max-order-pct", help="Max order value as a multiple of equity (e.g. 1.2)"
+    ),
+    daily_loss_stops: float | None = typer.Option(
+        None, "--daily-loss-stops", help="Daily loss limit as N stop-losses worth of equity"
+    ),
     use_websocket: bool = typer.Option(
         False, "--websocket/--no-websocket", help="Use WebSocket for real-time prices"
     ),
@@ -218,9 +231,12 @@ def live(
 
     real_exchange = CcxtExchange(ExchangeConfig(name=exchange_name), env)
     order_mgr = OrderManager(exchange=real_exchange)
+    daily_loss_limit_pct = _daily_loss_limit_pct(daily_loss_stops, config.risk.risk_per_trade_pct)
     validator = TradeValidator(
         max_order_value_krw=max_order_krw,
         daily_loss_limit_krw=daily_loss_krw,
+        max_order_pct=max_order_pct,
+        daily_loss_limit_pct=daily_loss_limit_pct,
     )
     state = StateManager(Path(state_file))
     notifier = TelegramNotifier(env)

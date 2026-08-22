@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pandas as pd
 import pytest
 
-from tradingbot.config import AppConfig, RiskConfig
+from tradingbot.config import AppConfig, PyramidingConfig, RiskConfig
 from tradingbot.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, SignalType
 from tradingbot.core.models import Order, Position, Signal
 from tradingbot.exchange.base import BaseExchange
@@ -1905,3 +1906,82 @@ class TestEntryPauseControl:
         await engine2._tick_all(["BTC/KRW"], "1h")
         assert engine2._entries_paused is False
         assert "BTC/KRW" in engine2.state.positions  # same setup enters when live
+
+
+# --- Signal-triggered pyramiding (live path) ---
+
+
+class TestLivePyramiding:
+    def _engine(self, tmp_path, enabled: bool):
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(
+            data_feed=feed,
+            initial_balance=10_000_000,
+            fee_rate=0.0005,
+            slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 50_000_000})
+        config = AppConfig(
+            risk=RiskConfig(
+                max_drawdown_pct=0.99,
+                default_stop_loss_pct=0.02,
+                risk_per_trade_pct=0.01,
+                max_position_size_pct=0.1,
+            ),
+            pyramiding=PyramidingConfig(enabled=enabled),
+        )
+        engine = LiveEngine(
+            strategy=StubStrategy(),
+            exchange=paper,
+            config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+        return engine, feed
+
+    @staticmethod
+    def _entry_signal(price: float) -> Signal:
+        return Signal(
+            timestamp=datetime.now(UTC),
+            symbol="BTC/KRW",
+            signal_type=SignalType.LONG_ENTRY,
+            price=price,
+            strength=1.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_second_entry_merges_into_open_position(self, tmp_path):
+        engine, feed = self._engine(tmp_path, enabled=True)
+
+        await engine._handle_entry(self._entry_signal(50_000_000), "BTC/KRW", 50_000_000)
+        first = replace(engine.state.positions["BTC/KRW"])
+        first_fee = engine.state.entry_fees["BTC/KRW"]
+
+        feed._price = 60_000_000  # the add fills higher, so the average moves
+        await engine._handle_entry(self._entry_signal(60_000_000), "BTC/KRW", 60_000_000)
+
+        position = engine.state.positions["BTC/KRW"]
+        assert position.adds == 1
+        assert position.size > first.size
+        # Blended average sits between the two fills, and the stop follows it
+        assert first.entry_price < position.entry_price < 60_000_000 * 1.001
+        assert position.stop_loss == pytest.approx(position.entry_price * 0.98)
+        # entry_time pins the first entry — trailing exits anchor on it
+        assert position.entry_time == first.entry_time
+        # Entry fees accumulate, else exit PnL would drop the first tranche's
+        assert engine.state.entry_fees["BTC/KRW"] > first_fee
+
+    @pytest.mark.asyncio
+    async def test_entry_gate_respects_config(self, tmp_path):
+        engine, _feed = self._engine(tmp_path, enabled=False)
+        assert await engine._entry_allowed("BTC/KRW") is True  # flat
+
+        await engine._handle_entry(self._entry_signal(50_000_000), "BTC/KRW", 50_000_000)
+        assert await engine._entry_allowed("BTC/KRW") is False  # held, pyramiding off
+
+        engine.config = engine.config.model_copy(
+            update={"pyramiding": PyramidingConfig(enabled=True)}
+        )
+        assert await engine._entry_allowed("BTC/KRW") is True  # held, cash available
+
+        engine.config.pyramiding.min_add_cash_pct = 0.99  # more idle cash than we hold
+        assert await engine._entry_allowed("BTC/KRW") is False
