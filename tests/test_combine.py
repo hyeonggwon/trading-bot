@@ -613,6 +613,47 @@ class TestTrailingExitTimestampAnchor:
         exit_sig = strategy.should_exit(df_exit, "BTC/KRW", position)
         assert exit_sig is not None
 
+    def test_add_after_restart_keeps_original_entry_anchor(self):
+        """Right after a restart the strategy cache is empty while the position
+        lives on in state.json. A pyramiding add's should_entry re-pins the
+        anchor on the add's candle, so restore must remove what it pinned —
+        restoring only the keys the snapshot held would leave the trailing exit
+        anchored on the add and blind to the pre-add high."""
+        from tradingbot.core.enums import PositionSide
+        from tradingbot.core.models import Position
+        from tradingbot.risk.pyramiding import restore_entry_anchor, snapshot_entry_anchor
+
+        levels = [100.0] * 11 + [130.0] * 29  # peak wick at index 11
+        series = _wick_ohlcv(levels, peaks={11: 160.0})
+        strategy = CombinedStrategy(
+            entry_filters=[_AlwaysEnter()],
+            exit_filters=[AtrTrailingExitFilter(period=3, multiplier=1.0)],
+        )
+        df = strategy.indicators(series.copy())
+        position = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=100.0,
+            entry_time=series.index[10].to_pydatetime(),
+            stop_loss=None,
+        )
+
+        anchor = snapshot_entry_anchor(strategy, "BTC/KRW")
+        assert anchor == {}  # held, but nothing cached after the restart
+
+        assert strategy.should_entry(df, "BTC/KRW") is not None  # the add re-pins
+        assert "BTC/KRW" in strategy._entry_times
+
+        restore_entry_anchor(strategy, "BTC/KRW", anchor)
+        assert "BTC/KRW" not in strategy._entry_times
+        assert "BTC/KRW" not in strategy._entry_indices
+
+        # Back to the persisted first entry, so the 160 peak is inside the
+        # "since entry" window and the trailing exit still fires.
+        assert strategy._resolve_entry_index(df, "BTC/KRW", position) == 10
+        assert strategy.should_exit(df, "BTC/KRW", position) is not None
+
     def test_scrolled_out_entry_falls_back_to_none(self):
         """When the entry candle has aged out of the rolling window, the entry
         timestamp predates every bar. The anchor must fall back to None (the

@@ -1152,6 +1152,9 @@ class TestSafetyRailEnforcement:
             stop_loss=40_000_000,  # far below price: no stop-out
         )
         # Unrealized = (45M - 50M) * 0.01 = -50,000 < -40,000 limit.
+        # The day started flat, so all of it is today's loss (the first reading
+        # of the day is what the validator baselines against).
+        validator.daily_loss_breached(0.0)
 
         await engine._monitor_prices(["BTC/KRW"])
 
@@ -1368,7 +1371,7 @@ class TestTransferImmuneBreaker:
         await engine._handle_exit(sig, "BTC/KRW", state.positions["BTC/KRW"])
 
         assert "BTC/KRW" not in state.positions
-        daily_pnl, _ = validator.daily_state()
+        daily_pnl = validator.daily_state()[0]
         assert state.cum_realized_pnl == pytest.approx(daily_pnl)
         assert state.cum_realized_pnl > 0  # profitable close actually booked
 
@@ -1925,7 +1928,9 @@ class TestLivePyramiding:
             risk=RiskConfig(
                 max_drawdown_pct=0.99,
                 default_stop_loss_pct=0.02,
-                risk_per_trade_pct=0.01,
+                # The cap bounds the whole position, not one tranche: risk
+                # sizing yields ≈5% of equity, leaving room under the 10% cap.
+                risk_per_trade_pct=0.001,
                 max_position_size_pct=0.1,
             ),
             pyramiding=PyramidingConfig(enabled=enabled),
@@ -2201,3 +2206,223 @@ class TestReconcileBooksRealizedPnl:
 
         assert "BTC/KRW" not in state.positions
         assert state.cum_realized_pnl == pytest.approx(-1_000)
+
+
+# --- Bug: a stopped-out candle must not re-enter (backtest already blocks it) ---
+
+
+class TestStopCandleBlocksEntry:
+    @pytest.mark.asyncio
+    async def test_stop_out_candle_skips_entry(self, tmp_path):
+        """The candle that fired a stop must not open a new position on the
+        same tick. The backtest blocks this (stop_loss_fired_symbols), so live
+        allowing it would trade a setup the walk-forward never vetted."""
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(
+            data_feed=feed,
+            initial_balance=10_000_000,
+            fee_rate=0.0005,
+            slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 50_000_000})
+        paper._holdings["BTC"] = 0.01
+
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=EnterAlwaysStrategy(),
+            exchange=paper,
+            config=AppConfig(risk=RiskConfig(max_drawdown_pct=0.99)),
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=0.01,
+            entry_price=52_000_000,
+            entry_time=datetime.now(UTC),
+            stop_loss=51_000_000,  # price 50M is below the stop → it fires
+        )
+
+        await engine._tick_all(["BTC/KRW"], "1h")
+
+        # Stopped out, and the always-entering strategy did NOT get back in.
+        assert "BTC/KRW" not in state.positions
+
+
+# --- Bug: balance locked in an open order read as "not held" ---
+
+
+class TestReconcileLockedBalance:
+    @pytest.mark.asyncio
+    async def test_locked_holding_is_not_a_phantom(self, tmp_path):
+        """Quantity reserved by a resting order is absent from the free
+        balance. Reconciling on free alone drops the position as a phantom,
+        after which the engine believes it is flat and can buy the same coin
+        again — so reconciliation must read the total balance."""
+
+        class LockedFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000}  # all BTC locked in an open order
+
+            async def get_total_balance(self):
+                return {"KRW": 5_000_000, "BTC": 0.1}
+
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(),
+            exchange=LockedFeed(price=50_000_000),
+            config=AppConfig(risk=RiskConfig()),
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=0.1,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+
+        await engine._reconcile_with_exchange()
+
+        pos = state.positions.get("BTC/KRW")
+        assert pos is not None and pos.size == pytest.approx(0.1)
+        assert state.cum_realized_pnl == 0.0  # nothing booked as a phantom exit
+
+
+# --- Bug: orders below the exchange minimum loop through reject + reconcile ---
+
+
+class TestMinOrderValue:
+    def _engine(self, tmp_path, max_position_size_pct: float):
+        feed = MockDataFeed(price=50_000_000)
+        paper = PaperExchange(
+            data_feed=feed,
+            initial_balance=100_000,
+            fee_rate=0.0005,
+            slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 50_000_000})
+        config = AppConfig(
+            risk=RiskConfig(
+                max_drawdown_pct=0.99,
+                default_stop_loss_pct=0.02,
+                risk_per_trade_pct=0.5,  # so the position cap is what binds
+                max_position_size_pct=max_position_size_pct,
+            )
+        )
+        return LiveEngine(
+            strategy=StubStrategy(),
+            exchange=paper,
+            config=config,
+            state_manager=StateManager(tmp_path / "state.json"),
+        )
+
+    @staticmethod
+    def _signal() -> Signal:
+        return Signal(
+            timestamp=datetime.now(UTC),
+            symbol="BTC/KRW",
+            signal_type=SignalType.LONG_ENTRY,
+            price=50_000_000,
+            strength=1.0,
+        )
+
+    @pytest.mark.asyncio
+    async def test_order_below_minimum_is_skipped(self, tmp_path):
+        # 5% of 100,000 = 5,000 KRW, under Upbit's minimum once fees are on top.
+        engine = self._engine(tmp_path, max_position_size_pct=0.05)
+        await engine._handle_entry(self._signal(), "BTC/KRW", 50_000_000)
+        assert engine.state.positions == {}
+
+    @pytest.mark.asyncio
+    async def test_order_above_minimum_still_placed(self, tmp_path):
+        engine = self._engine(tmp_path, max_position_size_pct=0.2)  # 20,000 KRW
+        await engine._handle_entry(self._signal(), "BTC/KRW", 50_000_000)
+        assert "BTC/KRW" in engine.state.positions
+
+
+# --- Bug: a failing exit retried on every 10s monitor tick ---
+
+
+class FailingExitFeed(MockDataFeed):
+    """Sells always raise; the holding stays on the exchange."""
+
+    def __init__(self, price: float):
+        super().__init__(price)
+        self.attempts = 0
+
+    async def get_balance(self):
+        return {"KRW": 1_000_000, "BTC": 0.01}
+
+    async def create_order(self, symbol, side, order_type, quantity, price=None):
+        self.attempts += 1
+        raise RuntimeError("exchange rejected the sell")
+
+
+class TestExitRetryBackoff:
+    def _engine(self, tmp_path, exchange):
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(),
+            exchange=exchange,
+            config=AppConfig(risk=RiskConfig(max_drawdown_pct=0.99)),
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=0.01,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+        return engine, state
+
+    @pytest.mark.asyncio
+    async def test_failed_exit_is_not_retried_immediately(self, tmp_path):
+        import time
+
+        feed = FailingExitFeed(price=48_000_000)  # below the stop
+        engine, state = self._engine(tmp_path, feed)
+        position = state.positions["BTC/KRW"]
+
+        await engine._maybe_stop_out("BTC/KRW", position, 48_000_000)
+        assert feed.attempts == 1
+
+        # The monitor runs again 10s later: still backing off, no second order.
+        await engine._maybe_stop_out("BTC/KRW", position, 48_000_000)
+        assert feed.attempts == 1
+
+        # Once the window expires the stop is retried.
+        engine._exit_retry_after["BTC/KRW"] = time.monotonic() - 1
+        await engine._maybe_stop_out("BTC/KRW", position, 48_000_000)
+        assert feed.attempts == 2
+
+    @pytest.mark.asyncio
+    async def test_successful_exit_clears_backoff(self, tmp_path):
+        import time
+
+        feed = MockDataFeed(price=48_000_000)
+        paper = PaperExchange(
+            data_feed=feed,
+            initial_balance=1_000_000,
+            fee_rate=0.0005,
+            slippage_pct=0.001,
+        )
+        paper.update_prices({"BTC/KRW": 48_000_000})
+        paper._holdings["BTC"] = 0.01
+        engine, state = self._engine(tmp_path, paper)
+        engine._exit_retry_after["BTC/KRW"] = time.monotonic() + 60
+
+        sig = Signal(
+            timestamp=datetime.now(UTC),
+            symbol="BTC/KRW",
+            signal_type=SignalType.LONG_EXIT,
+            price=48_000_000,
+            strength=1.0,
+        )
+        await engine._handle_exit(sig, "BTC/KRW", state.positions["BTC/KRW"])
+
+        assert "BTC/KRW" not in state.positions
+        assert "BTC/KRW" not in engine._exit_retry_after

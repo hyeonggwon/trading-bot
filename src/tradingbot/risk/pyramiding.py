@@ -53,6 +53,35 @@ def snapshot_entry_anchor(strategy: Any, symbol: str) -> dict[str, Any]:
 
 
 def restore_entry_anchor(strategy: Any, symbol: str, saved: dict[str, Any]) -> None:
-    """Re-pin the anchors captured by ``snapshot_entry_anchor``."""
-    for attr, value in saved.items():
-        getattr(strategy, attr)[symbol] = value
+    """Restore the caches to their snapshot state — absence included.
+
+    An anchor the snapshot did not capture must be *removed* again, not left at
+    whatever the add's ``should_entry`` just pinned. That is the state right
+    after a restart: the position survives in state.json but the strategy cache
+    is empty, so re-pinning would anchor trailing exits on the add's candle
+    instead of falling back to ``position.entry_time`` (the first entry).
+    """
+    for attr in _ENTRY_ANCHOR_ATTRS:
+        cache = getattr(strategy, attr, None)
+        if not isinstance(cache, dict):
+            continue
+        if attr in saved:
+            cache[symbol] = saved[attr]
+        else:
+            cache.pop(symbol, None)
+
+
+def clear_entry_anchor(strategy: Any, symbol: str | None = None) -> None:
+    """Drop cached anchors for ``symbol``, or for every symbol when None.
+
+    Shares ``_ENTRY_ANCHOR_ATTRS`` with snapshot/restore so a new cache can't
+    be added to one and forgotten in the others.
+    """
+    for attr in _ENTRY_ANCHOR_ATTRS:
+        cache = getattr(strategy, attr, None)
+        if not isinstance(cache, dict):
+            continue
+        if symbol is None:
+            cache.clear()
+        else:
+            cache.pop(symbol, None)

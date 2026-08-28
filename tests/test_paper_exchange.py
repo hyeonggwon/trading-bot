@@ -266,6 +266,55 @@ class TestStateManager:
         assert state.positions == {}
         assert not state_file.exists()
 
+    def test_corrupt_state_sets_load_failed(self, tmp_path):
+        """A corrupt state file resets every safety baseline. The engine alerts
+        on this flag instead of trading on the reset numbers silently."""
+        state_file = tmp_path / "state.json"
+        state_file.write_text("{not json")
+
+        state = StateManager(state_file)
+        state.load()
+        assert state.load_failed is True
+
+        state.peak_equity = 5_000_000
+        state.save()
+        healthy = StateManager(state_file)
+        healthy.load()
+        assert healthy.load_failed is False
+        assert healthy.peak_equity == 5_000_000
+
+    def test_clear_resets_ledger_fields(self, tmp_path):
+        """clear() must reset the same fields the corrupt-load path does, or a
+        cleared state keeps a stale ledger the drawdown breaker reads."""
+        state = StateManager(tmp_path / "state.json")
+        state.ledger_baseline = 10_000_000.0
+        state.cum_realized_pnl = -250_000.0
+        state.daily_unrealized_baseline = -50_000.0
+
+        state.clear()
+
+        assert state.ledger_baseline is None
+        assert state.cum_realized_pnl == 0.0
+        assert state.daily_unrealized_baseline is None
+
+    def test_daily_unrealized_baseline_roundtrip(self, tmp_path):
+        """The daily-loss limit's unrealized baseline must survive a restart,
+        else the restart re-charges an open position's carried loss."""
+        state_file = tmp_path / "state.json"
+        state = StateManager(state_file)
+        state.daily_unrealized_baseline = -180_000.0
+        state.save()
+
+        state2 = StateManager(state_file)
+        state2.load()
+        assert state2.daily_unrealized_baseline == pytest.approx(-180_000.0)
+
+        # A state written before the field existed loads as None (no baseline).
+        state_file.write_text(json.dumps({"positions": {}, "peak_equity": 1_000.0}))
+        legacy = StateManager(state_file)
+        legacy.load()
+        assert legacy.daily_unrealized_baseline is None
+
     def test_annotate_last_equity_ledger(self, tmp_path):
         state_file = tmp_path / "state.json"
         state = StateManager(state_file)

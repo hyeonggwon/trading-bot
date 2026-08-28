@@ -14,8 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import signal as signal_module
+import time
 from datetime import UTC, date, datetime
-from typing import Any, cast
+from typing import Any
 
 import pandas as pd
 import structlog
@@ -46,6 +47,15 @@ WS_PRICE_MAX_AGE_SECONDS = 60.0
 # Between candle polls, monitor prices / stop losses at this cadence (seconds)
 # so stops are enforced in real time instead of only at candle close.
 MONITOR_INTERVAL_SECONDS = 10.0
+# The monitor records equity far less often than it runs: the 1000-snapshot cap
+# would otherwise hold barely 3 hours of history at the 10s stop cadence.
+EQUITY_RECORD_INTERVAL_SECONDS = 60.0
+# Upbit rejects KRW orders below 5,000; leave headroom for fees and slippage so
+# a rejected order doesn't loop through reconcile + notification every tick.
+MIN_ORDER_VALUE_KRW = 5_500
+# After a failed exit, suppress retries for this long per symbol.
+# ponytail: fixed 60s backoff, make it exponential if one interval isn't enough.
+EXIT_RETRY_BACKOFF_SECONDS = 60.0
 
 # Timeframe to seconds for polling interval
 TIMEFRAME_SECONDS: dict[str, int] = {
@@ -113,6 +123,11 @@ class LiveEngine:
         # tick — warmup marks the last closed candle as seen, which would
         # otherwise strand a strategy exit until the next candle closes.
         self._pending_restart_exit: set[str] = set()
+        # Per-symbol monotonic deadline suppressing exit retries after a failure
+        # (see _handle_exit) so a broken sell isn't re-sent every monitor tick.
+        self._exit_retry_after: dict[str, float] = {}
+        # Monotonic timestamp of the last monitor-path equity snapshot.
+        self._last_equity_record: float | None = None
 
     async def run(self) -> None:
         """Start the trading loop. Supports multiple symbols."""
@@ -138,6 +153,13 @@ class LiveEngine:
 
         # Load persisted state + restore real-money safety rails
         self._restore_state()
+        if self.state.load_failed:
+            # Trading continues on fresh baselines, but never silently: peak
+            # equity and the daily counter just re-anchored at today's numbers.
+            logger.warning("state_corrupted_baselines_reset", path=str(self.state.state_path))
+            await self._notify_alert(
+                "STATE CORRUPTED: safety baselines reset — ledger/peak re-anchor at current equity"
+            )
         # Reconcile against the exchange's real holdings so a fill whose
         # response was lost before the Position was recorded is adopted (with a
         # protective stop) instead of running unmanaged, and a position the
@@ -256,16 +278,14 @@ class LiveEngine:
 
         # Process each symbol
         for sym, result in zip(symbols, ohlcv_results):
-            if isinstance(result, Exception):
+            if isinstance(result, BaseException):
                 logger.warning("fetch_error", symbol=sym, error=str(result))
                 continue
             # Isolate each symbol: one symbol raising must not abort the rest
             # of the batch nor skip the _persist_state below (which would drop
             # equity history and any state already mutated this tick).
             try:
-                # cast: fetch_ohlcv raises Exception subclasses only, so anything
-                # surviving the isinstance guard above is a DataFrame
-                await self._tick_symbol(sym, cast(pd.DataFrame, result), tickers.get(sym))
+                await self._tick_symbol(sym, result, tickers.get(sym))
             except Exception as e:
                 logger.error(
                     "symbol_tick_error",
@@ -321,7 +341,15 @@ class LiveEngine:
         """
         tickers = await self._resolve_tickers(symbols)
         equity = await self._calculate_equity(tickers)
-        self.state.record_equity(equity)
+        # Stops are checked every monitor tick; equity is only sampled once a
+        # minute so the capped history spans hours rather than minutes.
+        now = time.monotonic()
+        if (
+            self._last_equity_record is None
+            or now - self._last_equity_record >= EQUITY_RECORD_INTERVAL_SECONDS
+        ):
+            self.state.record_equity(equity)
+            self._last_equity_record = now
         # Enforce safety rails between candles too — a 4h timeframe would
         # otherwise leave a drawdown/daily-loss breach unaddressed for hours.
         if await self._enforce_safety_rails(equity, tickers):
@@ -366,7 +394,9 @@ class LiveEngine:
                 # daily-loss counter re-baselines to today.
                 logger.error("bad_daily_reset_date", value=self.state.daily_reset_date)
                 reset_date = None
-            self.trade_validator.restore_daily_state(self.state.daily_pnl, reset_date)
+            self.trade_validator.restore_daily_state(
+                self.state.daily_pnl, reset_date, self.state.daily_unrealized_baseline
+            )
 
     def _persist_state(self) -> None:
         """Snapshot in-memory risk state into the state manager and persist.
@@ -376,9 +406,10 @@ class LiveEngine:
         """
         self.state.peak_equity = self.risk_manager.peak_equity
         if self.trade_validator is not None and hasattr(self.trade_validator, "daily_state"):
-            daily_pnl, reset_date = self.trade_validator.daily_state()
+            daily_pnl, reset_date, unrealized_baseline = self.trade_validator.daily_state()
             self.state.daily_pnl = daily_pnl
             self.state.daily_reset_date = reset_date.isoformat() if reset_date else None
+            self.state.daily_unrealized_baseline = unrealized_baseline
         self.state.save()
 
     async def _notify_alert(self, message: str) -> None:
@@ -523,7 +554,10 @@ class LiveEngine:
         Each adjustment emits a warning notification so the operator is alerted.
         """
         try:
-            balance = await self.exchange.get_balance()
+            # Total, not free: a quantity locked in a resting order is still
+            # held, and reading it as unheld would drop a live position as a
+            # phantom and let the engine buy the same coin again.
+            balance = await self.exchange.get_total_balance()
         except Exception as e:
             logger.error("reconcile_balance_failed", error=str(e))
             return
@@ -678,6 +712,7 @@ class LiveEngine:
 
         # Check stop loss first, then strategy exit signals
         position = self.state.positions.get(symbol)
+        stopped = False
         if position is not None:
             stopped = await self._maybe_stop_out(symbol, position, current_price)
             if not stopped:
@@ -690,9 +725,16 @@ class LiveEngine:
         # Check entry signals (a held symbol only re-enters when pyramiding
         # allows another tranche). Entries are gated to genuinely new candles
         # so a restart exit re-eval never opens a position on a candle that
-        # closed before the bot came back up, and to the operator kill-switch
-        # (control file, refreshed in _tick_all).
-        if is_new_candle and not self._entries_paused and await self._entry_allowed(symbol):
+        # closed before the bot came back up, to the operator kill-switch
+        # (control file, refreshed in _tick_all), and to the candle not having
+        # just stopped out — the backtest blocks that re-entry too, so allowing
+        # it here would trade a setup the walk-forward never vetted.
+        if (
+            is_new_candle
+            and not self._entries_paused
+            and not stopped
+            and await self._entry_allowed(symbol)
+        ):
             # An add must not re-pin the strategy's entry anchor, or trailing
             # exits would restart from the add's candle.
             anchor = (
@@ -703,7 +745,10 @@ class LiveEngine:
             entry_signal = self.strategy.should_entry(confirmed_df, symbol)
             if entry_signal:
                 await self._handle_entry(entry_signal, symbol, current_price)
-            if anchor:
+            # `is not None`, not truthiness: an empty snapshot means "held but
+            # nothing cached" (the state right after a restart), which restore
+            # must honour by dropping what should_entry just pinned.
+            if anchor is not None:
                 restore_entry_anchor(self.strategy, symbol, anchor)
 
     async def _entry_allowed(self, symbol: str) -> bool:
@@ -724,6 +769,22 @@ class LiveEngine:
             position, float(balance.get("KRW", 0.0)), equity, self.config.pyramiding
         )
 
+    def _exit_backoff_active(self, symbol: str) -> bool:
+        """True while a failed exit for ``symbol`` is still backing off.
+
+        The monitor re-checks stops every 10s, so without this a sell the
+        exchange keeps rejecting would re-order, reconcile and notify on every
+        tick. Expired windows are dropped as they are read.
+        """
+        until = self._exit_retry_after.get(symbol)
+        if until is None:
+            return False
+        if time.monotonic() >= until:
+            del self._exit_retry_after[symbol]
+            return False
+        logger.debug("exit_retry_backoff", symbol=symbol)
+        return True
+
     async def _maybe_stop_out(self, symbol: str, position: Position, current_price: float) -> bool:
         """Close the position if ``current_price`` breached its stop loss.
 
@@ -732,6 +793,8 @@ class LiveEngine:
         stops are enforced in real time, not only at candle close.
         """
         if not position.stop_loss or current_price > position.stop_loss:
+            return False
+        if self._exit_backoff_active(symbol):
             return False
 
         logger.info(
@@ -769,6 +832,8 @@ class LiveEngine:
         target is honored in real time, not only at candle close.
         """
         if not position.take_profit or current_price < position.take_profit:
+            return False
+        if self._exit_backoff_active(symbol):
             return False
 
         logger.info(
@@ -844,9 +909,15 @@ class LiveEngine:
         slippage_pct = getattr(self.exchange, "_slippage_pct", 0.001)
         expected_price = current_price * (1 + slippage_pct)
 
-        # Calculate position size using expected fill price
+        # Calculate position size using expected fill price. A pyramiding add
+        # tops the position up to the cap, so the value already held counts
+        # against it (see calculate_position_size).
         stop_loss = self.risk_manager.calculate_stop_loss(expected_price)
-        quantity = self.risk_manager.calculate_position_size(expected_price, stop_loss, equity)
+        held = self.state.positions.get(symbol)
+        existing_value = held.size * expected_price if held is not None else 0.0
+        quantity = self.risk_manager.calculate_position_size(
+            expected_price, stop_loss, equity, existing_value
+        )
         # ML sizing; the [0,1] clamp keeps strength from breaching the cap
         quantity = quantity * max(0.0, min(1.0, signal_obj.strength))
 
@@ -867,6 +938,18 @@ class LiveEngine:
                 )
                 quantity = max_affordable
         if quantity <= 0:
+            return
+
+        # Below the exchange minimum the order is rejected, and the rejection
+        # path (reconcile + operator alert) would repeat on every signal.
+        order_value = quantity * expected_price
+        if order_value < MIN_ORDER_VALUE_KRW:
+            logger.info(
+                "entry_skipped_below_min_order",
+                symbol=symbol,
+                value=f"{order_value:,.0f}",
+                minimum=f"{MIN_ORDER_VALUE_KRW:,.0f}",
+            )
             return
 
         # Pre-trade validation with expected fill price
@@ -978,11 +1061,13 @@ class LiveEngine:
                 )
         except Exception as e:
             logger.error("exit_order_failed", symbol=symbol, error=str(e))
+            self._exit_retry_after[symbol] = time.monotonic() + EXIT_RETRY_BACKOFF_SECONDS
             await self._reconcile_with_exchange()
             await self._notify_alert(f"Exit order failed {symbol}: {e}")
             return
 
         if _order_has_fill(order):
+            self._exit_retry_after.pop(symbol, None)
             if self.trade_validator is not None:
                 self.trade_validator.record_order()
 
@@ -1035,6 +1120,7 @@ class LiveEngine:
             # is dropped/shrunk to the real held amount; if it didn't, the
             # position is kept and retried next tick.
             logger.warning("exit_order_unconfirmed", symbol=symbol, status=order.status.value)
+            self._exit_retry_after[symbol] = time.monotonic() + EXIT_RETRY_BACKOFF_SECONDS
             await self._reconcile_with_exchange()
             await self._notify_alert(
                 f"Exit order unconfirmed {symbol} (status={order.status.value}) — reconciled"

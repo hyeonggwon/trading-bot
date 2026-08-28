@@ -66,6 +66,15 @@ class BaseExchange(ABC):
         """
         ...
 
+    async def get_total_balance(self) -> dict[str, float]:
+        """Balances including amounts locked in open orders.
+
+        Defaults to ``get_balance`` (free == total on a simulated exchange).
+        Reconciliation uses this: a quantity reserved by a resting order is
+        still held, and reading it as "not held" looks like a phantom position.
+        """
+        return await self.get_balance()
+
     @abstractmethod
     async def fetch_order(self, order_id: str, symbol: str) -> Order:
         """Fetch the current state of an order by ID."""

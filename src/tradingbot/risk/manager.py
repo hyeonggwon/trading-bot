@@ -88,6 +88,7 @@ class RiskManager:
         price: float,
         stop_loss_price: float | None,
         portfolio_equity: float,
+        existing_position_value: float = 0.0,
     ) -> float:
         """Calculate position size based on risk management rules.
 
@@ -96,6 +97,11 @@ class RiskManager:
         exactly that amount.
 
         If no stop loss is provided, uses max_position_size_pct as a fallback.
+
+        ``existing_position_value`` is the marked value already held in this
+        symbol (pyramiding add). The cap is on the *position*, not the tranche,
+        so an add may only top the holding up to the cap — otherwise each add
+        grants another full-size allowance and stacks past it.
 
         Returns the quantity of the asset to buy.
         """
@@ -114,9 +120,9 @@ class RiskManager:
             max_value = portfolio_equity * self.config.max_position_size_pct
             quantity = max_value / price
 
-        # Cap at max position size
+        # Cap at max position size, net of what this symbol already holds
         max_value = portfolio_equity * self.config.max_position_size_pct
-        max_quantity = max_value / price
+        max_quantity = max(0.0, max_value - existing_position_value) / price
         quantity = min(quantity, max_quantity)
 
         return quantity

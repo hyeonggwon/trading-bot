@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC
 
+import pytest
+
 from tradingbot.exchange.ws_client import (
     _symbol_to_upbit_code,
     _upbit_code_to_symbol,
@@ -156,3 +158,69 @@ class TestFreshPrices:
         )
         # A just-received price is fresh under any sane age bound.
         assert client.fresh_prices(max_age_seconds=60) == {"BTC/KRW": 50_000_000}
+
+
+class _FakeWs:
+    """Minimal websockets-style connection yielding a fixed message list."""
+
+    def __init__(self, messages: list[str]):
+        self._messages = messages
+        self.sent: list[str] = []
+
+    async def send(self, msg: str) -> None:
+        self.sent.append(msg)
+
+    async def __aiter__(self):
+        for msg in self._messages:
+            yield msg
+
+
+class _FakeConnect:
+    def __init__(self, ws: _FakeWs):
+        self._ws = ws
+
+    async def __aenter__(self) -> _FakeWs:
+        return self._ws
+
+    async def __aexit__(self, *exc: object) -> bool:
+        return False
+
+
+class TestReconnectBackoffReset:
+    """The backoff must reset only once data actually flows. Resetting at
+    subscribe time lets a connection that drops right after subscribing
+    reconnect at the base delay forever."""
+
+    def _client(self, monkeypatch, messages: list[str]):
+        from tradingbot.exchange import ws_client as module
+
+        client = module.UpbitWebSocketClient(["BTC/KRW"])
+        client._running = True
+        client._reconnect_attempts = 3
+        client._reconnect_delay = 16.0
+        monkeypatch.setattr(module, "ws_connect", lambda *a, **k: _FakeConnect(_FakeWs(messages)))
+        return client
+
+    @pytest.mark.asyncio
+    async def test_drop_before_any_message_keeps_backoff(self, monkeypatch):
+        client = self._client(monkeypatch, [])
+
+        await client._connect_and_stream()
+
+        assert client._reconnect_attempts == 3
+        assert client._reconnect_delay == 16.0
+
+    @pytest.mark.asyncio
+    async def test_first_message_resets_backoff(self, monkeypatch):
+        import json
+
+        from tradingbot.exchange.ws_client import RECONNECT_BASE_DELAY
+
+        msg = json.dumps({"type": "ticker", "code": "KRW-BTC", "trade_price": 50_000_000})
+        client = self._client(monkeypatch, [msg])
+
+        await client._connect_and_stream()
+
+        assert client._reconnect_attempts == 0
+        assert client._reconnect_delay == RECONNECT_BASE_DELAY
+        assert client.last_prices["BTC/KRW"] == 50_000_000

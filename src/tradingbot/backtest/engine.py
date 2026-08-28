@@ -30,6 +30,7 @@ from tradingbot.core.models import Candle, Order, PortfolioState, Position, Sign
 from tradingbot.risk.manager import RiskManager
 from tradingbot.risk.pyramiding import (
     can_add_tranche,
+    clear_entry_anchor,
     restore_entry_anchor,
     snapshot_entry_anchor,
 )
@@ -89,8 +90,7 @@ class BacktestEngine:
         self._last_known_prices.clear()
         self.risk_manager.peak_equity = initial_balance
         # Clear strategy-side caches (e.g., CombinedStrategy._entry_indices)
-        if hasattr(self.strategy, "_entry_indices"):
-            self.strategy._entry_indices.clear()
+        clear_entry_anchor(self.strategy)
 
         symbols = self.strategy.symbols
         available_symbols = [s for s in symbols if s in data]
@@ -225,9 +225,8 @@ class BacktestEngine:
                     sym, fill_candle
                 ):
                     stop_loss_fired_symbols.add(sym)
-                    # Clear strategy's entry_index cache for the closed position
-                    if hasattr(self.strategy, "_entry_indices"):
-                        self.strategy._entry_indices.pop(sym, None)
+                    # Clear the strategy's entry anchors for the closed position
+                    clear_entry_anchor(self.strategy, sym)
 
                 # Pending orders — only process orders for this symbol's candle
                 self._process_pending_orders(fill_candle, sym)
@@ -271,7 +270,10 @@ class BacktestEngine:
                     entry_signal = self.strategy.should_entry(visible_df, sym)
                     if entry_signal:
                         self._handle_signal(entry_signal, fill_candle)
-                    if anchor:
+                    # `is not None`, not truthiness: an empty snapshot means
+                    # "held but nothing cached", which restore must honour by
+                    # dropping what should_entry just pinned.
+                    if anchor is not None:
                         restore_entry_anchor(self.strategy, sym, anchor)
 
             # Phase 3: Update last known prices and record portfolio equity
@@ -361,7 +363,13 @@ class BacktestEngine:
             equity = self._calculate_equity(prices)
             stop_loss = self.risk_manager.calculate_stop_loss(fill.fill_price)
             take_profit = self.risk_manager.calculate_take_profit(fill.fill_price)
-            quantity = self.risk_manager.calculate_position_size(fill.fill_price, stop_loss, equity)
+            # A pyramiding add tops the position up to the cap, so the value
+            # already held counts against it (see calculate_position_size).
+            existing = self.positions.get(signal.symbol)
+            existing_value = existing.size * fill.fill_price if existing is not None else 0.0
+            quantity = self.risk_manager.calculate_position_size(
+                fill.fill_price, stop_loss, equity, existing_value
+            )
             # ML sizing; the [0,1] clamp keeps strength from breaching the cap
             quantity = quantity * max(0.0, min(1.0, signal.strength))
             if quantity <= 0:

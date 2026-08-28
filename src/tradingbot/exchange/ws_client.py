@@ -157,14 +157,19 @@ class UpbitWebSocketClient:
             await ws.send(subscribe_msg)
             logger.info("ws_subscribed", codes=self._codes)
 
-            # Reset reconnect state on successful connection
-            self._reconnect_delay = RECONNECT_BASE_DELAY
-            self._reconnect_attempts = 0
-
             # Receive loop
+            received_any = False
             async for raw_msg in ws:
                 if not self._running:
                     break
+
+                if not received_any:
+                    # Reset the backoff only once data actually flows. Resetting
+                    # at subscribe time would keep a connection that drops right
+                    # after subscribing reconnecting at the base delay forever.
+                    self._reconnect_delay = RECONNECT_BASE_DELAY
+                    self._reconnect_attempts = 0
+                    received_any = True
 
                 try:
                     if isinstance(raw_msg, bytes):

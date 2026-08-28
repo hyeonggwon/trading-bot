@@ -117,6 +117,32 @@ class TestRiskManager:
         max_qty = (1_000_000 * 0.1) / 50_000_000  # 0.002
         assert abs(qty - max_qty) < 0.0001
 
+    def test_add_tops_up_to_position_cap(self):
+        """The cap bounds the position, not the tranche: an add may only fill
+        the room left under it, or repeated adds would stack past the cap."""
+        # Cap = 10% of 1M = 100,000 KRW; 60,000 of it is already held.
+        qty = self.rm.calculate_position_size(
+            50_000_000, None, 1_000_000, existing_position_value=60_000
+        )
+        assert qty == pytest.approx(40_000 / 50_000_000)
+
+        # Already at (or over) the cap: no room left.
+        qty = self.rm.calculate_position_size(
+            50_000_000, None, 1_000_000, existing_position_value=120_000
+        )
+        assert qty == 0.0
+
+    def test_full_allocation_cap_unchanged_by_existing_position(self):
+        """Regression for the deployed config (cap 1.0): with no cap headroom
+        to give away, the risk-based size is what binds, held value or not."""
+        rm = RiskManager(RiskConfig(max_position_size_pct=1.0, risk_per_trade_pct=0.01))
+        flat = rm.calculate_position_size(50_000_000, 49_000_000, 1_000_000)
+        held = rm.calculate_position_size(
+            50_000_000, 49_000_000, 1_000_000, existing_position_value=300_000
+        )
+        assert flat == pytest.approx(0.01)  # risk-based, well under the cap
+        assert held == pytest.approx(flat)
+
     def test_stop_loss_calculation(self):
         stop = self.rm.calculate_stop_loss(50_000_000)
         assert stop == 50_000_000 * 0.98

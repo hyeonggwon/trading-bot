@@ -145,3 +145,30 @@ class TestCreateOrderNoRetry:
             assert calls["n"] == 1
         finally:
             await ex.close()
+
+
+class TestTotalBalance:
+    """Sizing spends free cash, but reconciliation must see locked amounts too:
+    a coin reserved by a resting order is still held, and reading it as unheld
+    drops the position as a phantom."""
+
+    @pytest.mark.asyncio
+    async def test_total_includes_locked_free_does_not(self):
+        ex = CcxtExchange()
+
+        async def _stub():
+            return {
+                "free": {"KRW": 1_000_000.0, "BTC": 0.0},
+                "total": {"KRW": 1_000_000.0, "BTC": 0.05},
+            }
+
+        ex._exchange.fetch_balance = _stub
+        try:
+            free = await ex.get_balance()
+            total = await ex.get_total_balance()
+        finally:
+            await ex.close()
+
+        assert "BTC" not in free  # every unit is locked in an open order
+        assert total["BTC"] == pytest.approx(0.05)
+        assert total["KRW"] == pytest.approx(1_000_000.0)

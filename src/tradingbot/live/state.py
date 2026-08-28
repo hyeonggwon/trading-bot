@@ -37,6 +37,12 @@ class StateManager:
         self.peak_equity: float = 0.0
         self.daily_pnl: float = 0.0
         self.daily_reset_date: str | None = None
+        # First unrealized reading of the current day, so the daily-loss limit
+        # charges only today's share of an open position's PnL.
+        self.daily_unrealized_baseline: float | None = None
+        # Set when load() hits a corrupt file and falls back to fresh state —
+        # the engine alerts instead of silently trading on reset baselines.
+        self.load_failed: bool = False
         # Drawdown-breaker ledger (live/engine._ledger_equity): baseline
         # latches once to cost-basis equity; cum_realized_pnl books every
         # closed trade. Keeps the breaker blind to external deposits and
@@ -53,6 +59,7 @@ class StateManager:
             "peak_equity": self.peak_equity,
             "daily_pnl": self.daily_pnl,
             "daily_reset_date": self.daily_reset_date,
+            "daily_unrealized_baseline": self.daily_unrealized_baseline,
             "ledger_baseline": self.ledger_baseline,
             "cum_realized_pnl": self.cum_realized_pnl,
             "saved_at": datetime.now(UTC).isoformat(),
@@ -80,6 +87,7 @@ class StateManager:
             self.peak_equity = data.get("peak_equity", 0.0)
             self.daily_pnl = data.get("daily_pnl", 0.0)
             self.daily_reset_date = data.get("daily_reset_date")
+            self.daily_unrealized_baseline = data.get("daily_unrealized_baseline")
             self.ledger_baseline = data.get("ledger_baseline")
             self.cum_realized_pnl = data.get("cum_realized_pnl", 0.0)
 
@@ -98,8 +106,10 @@ class StateManager:
             self.peak_equity = 0.0
             self.daily_pnl = 0.0
             self.daily_reset_date = None
+            self.daily_unrealized_baseline = None
             self.ledger_baseline = None
             self.cum_realized_pnl = 0.0
+            self.load_failed = True
 
     def record_equity(self, equity: float) -> None:
         """Record an equity snapshot.
@@ -136,6 +146,9 @@ class StateManager:
         self.peak_equity = 0.0
         self.daily_pnl = 0.0
         self.daily_reset_date = None
+        self.daily_unrealized_baseline = None
+        self.ledger_baseline = None
+        self.cum_realized_pnl = 0.0
         if self.state_path.exists():
             self.state_path.unlink()
 

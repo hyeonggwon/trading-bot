@@ -785,11 +785,14 @@ def _pyramiding_config(enabled: bool, min_add_cash_pct: float = 0.05) -> AppConf
             initial_balance=1_000_000,
         ),
         risk=RiskConfig(
-            max_position_size_pct=0.3,  # each tranche ≈ 30% of equity
+            # The cap bounds the whole position, not one tranche, so risk
+            # sizing is set to ≈10% of equity per tranche to leave room for
+            # several adds under the 30% cap.
+            max_position_size_pct=0.3,
             max_open_positions=1,
             max_drawdown_pct=0.99,
             default_stop_loss_pct=0.02,
-            risk_per_trade_pct=0.02,
+            risk_per_trade_pct=0.002,
         ),
         pyramiding=PyramidingConfig(enabled=enabled, min_add_cash_pct=min_add_cash_pct),
         backtest=BacktestConfig(fee_rate=0.0005, slippage_pct=0.001),
@@ -870,11 +873,11 @@ class TestBacktestPyramiding:
         assert report.trades[1].entry_order.filled_at == df.index[3]
 
     def test_add_skipped_when_free_cash_below_minimum(self):
-        # Demanding 90% of equity in idle cash: one tranche (~30%) leaves ~70%,
+        # Demanding 95% of equity in idle cash: one tranche (~10%) leaves ~90%,
         # so no add ever clears the bar.
         strategy = _AlwaysEntryStrategy()
         engine = BacktestEngine(
-            strategy=strategy, config=_pyramiding_config(True, min_add_cash_pct=0.9)
+            strategy=strategy, config=_pyramiding_config(True, min_add_cash_pct=0.95)
         )
         report = engine.run({"BTC/KRW": _rising_df()})
 

@@ -215,6 +215,21 @@ class CcxtExchange(BaseExchange):
                 result[currency] = float(info)
         return result
 
+    async def get_total_balance(self) -> dict[str, float]:
+        """Balances including quantities locked in open orders (free + used).
+
+        ``get_balance`` (free only) stays the sizing budget — locked funds
+        aren't spendable — but reconciliation must see them, or a coin reserved
+        by a resting sell order reads as unheld and the position is dropped as
+        a phantom, freeing the engine to buy it again.
+        """
+        balance = await self._retry(self._exchange.fetch_balance)
+        result = {}
+        for currency, info in balance.get("total", {}).items():
+            if info and float(info) > 0:
+                result[currency] = float(info)
+        return result
+
     async def get_open_orders(self, symbol: str | None = None) -> list[Order]:
         raw_orders = await self._retry(self._exchange.fetch_open_orders, symbol)
         orders = []

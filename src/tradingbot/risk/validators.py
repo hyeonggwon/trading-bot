@@ -8,11 +8,15 @@ Provides guards against:
 
 from __future__ import annotations
 
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta, timezone
 
 import structlog
 
 logger = structlog.get_logger()
+
+# The bot trades Upbit KRW markets, so "today" is the operator's day: the daily
+# loss limit resets at KST midnight, not at UTC midnight (KST 09:00).
+KST = timezone(timedelta(hours=9))
 
 
 class TradeValidator:
@@ -35,6 +39,8 @@ class TradeValidator:
         self._last_order_time: datetime | None = None
         self._daily_pnl: float = 0.0
         self._daily_reset_date: date | None = None
+        # First unrealized reading of the current day — see daily_loss_breached.
+        self._daily_unrealized_baseline: float | None = None
 
     def validate_order_size(
         self, quantity: float, price: float, equity: float | None = None
@@ -109,15 +115,27 @@ class TradeValidator:
         trading while a position is still bleeding, before the loss is locked
         in by an exit. Uses the same effective (dynamic) limit as the entry
         gate so both halt at the same threshold.
+
+        Only *today's* share of the unrealized PnL counts. Unrealized is
+        measured from entry, so a position carried across midnight would drag
+        its whole open loss into every new day and re-charge it against a
+        counter that resets daily. Baselining the first reading of the day
+        leaves the change since then — and when the position is finally closed,
+        the full PnL lands in the realized counter while unrealized snaps back
+        to 0, whose delta against the (negative) baseline cancels the part that
+        belongs to previous days.
         """
         self._reset_daily_if_needed()
-        total = self._daily_pnl + unrealized_pnl
+        if self._daily_unrealized_baseline is None:
+            self._daily_unrealized_baseline = unrealized_pnl
+        today_unrealized = unrealized_pnl - self._daily_unrealized_baseline
+        total = self._daily_pnl + today_unrealized
         limit = self._effective_daily_limit(equity)
         if total < -limit:
             logger.warning(
                 "daily_loss_breached",
                 realized=f"{self._daily_pnl:,.0f}",
-                unrealized=f"{unrealized_pnl:,.0f}",
+                unrealized=f"{today_unrealized:,.0f}",
                 limit=f"{-limit:,.0f}",
             )
             return True
@@ -143,24 +161,37 @@ class TradeValidator:
         self._daily_pnl += pnl
         logger.debug("daily_pnl_updated", daily_pnl=f"{self._daily_pnl:,.0f}")
 
-    def daily_state(self) -> tuple[float, date | None]:
-        """Return (daily_pnl, daily_reset_date) for persistence across restarts."""
-        return self._daily_pnl, self._daily_reset_date
+    def daily_state(self) -> tuple[float, date | None, float | None]:
+        """Return (daily_pnl, daily_reset_date, unrealized_baseline) to persist."""
+        return self._daily_pnl, self._daily_reset_date, self._daily_unrealized_baseline
 
-    def restore_daily_state(self, daily_pnl: float, reset_date: date | None) -> None:
+    def restore_daily_state(
+        self,
+        daily_pnl: float,
+        reset_date: date | None,
+        unrealized_baseline: float | None = None,
+    ) -> None:
         """Restore persisted daily PnL tracking after a restart.
 
         Without this a restart would zero the daily-loss counter, letting the
-        bot keep trading past a daily loss limit it had already breached.
+        bot keep trading past a daily loss limit it had already breached. The
+        baseline defaults to None (states written before it existed), which
+        just re-baselines on the next check.
         """
         self._daily_pnl = daily_pnl
         self._daily_reset_date = reset_date
+        self._daily_unrealized_baseline = unrealized_baseline
 
     def _reset_daily_if_needed(self) -> None:
-        """Reset daily PnL at midnight UTC."""
-        today = datetime.now(UTC).date()
+        """Reset daily PnL at midnight KST.
+
+        Deploying this change once resets the counter mid-day, since the stored
+        date was computed in UTC.
+        """
+        today = datetime.now(KST).date()
         if self._daily_reset_date != today:
             if self._daily_reset_date is not None:
                 logger.info("daily_pnl_reset", previous=f"{self._daily_pnl:,.0f}")
             self._daily_pnl = 0.0
             self._daily_reset_date = today
+            self._daily_unrealized_baseline = None

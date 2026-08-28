@@ -356,14 +356,14 @@ class TestTradeValidator:
         v.record_trade_pnl(-250_000)
         assert v.validate_daily_loss() is False  # breached
 
-        daily_pnl, reset_date = v.daily_state()
+        daily_pnl, reset_date, baseline = v.daily_state()
         assert daily_pnl == -250_000
         assert reset_date is not None
 
         # Fresh validator (simulating a restart) restores the persisted state.
         restored = TradeValidator(daily_loss_limit_krw=200_000)
-        restored.restore_daily_state(daily_pnl, reset_date)
-        assert restored.daily_state() == (-250_000, reset_date)
+        restored.restore_daily_state(daily_pnl, reset_date, baseline)
+        assert restored.daily_state() == (-250_000, reset_date, baseline)
         # The breach is still in force after the "restart".
         assert restored.validate_daily_loss() is False
 
@@ -404,6 +404,9 @@ class TestTradeValidator:
         """The between-candle rail halts at the same threshold as the entry gate."""
         v = TradeValidator(daily_loss_limit_krw=10_000_000, daily_loss_limit_pct=0.06)
         v.record_trade_pnl(-200_000)
+        # The day started flat, so the whole open loss is today's (the first
+        # reading of the day sets the unrealized baseline).
+        assert v.daily_loss_breached(0.0, equity=5_000_000) is False
         # realized -200K + unrealized -110K = -310K vs dynamic limit 300K
         assert v.daily_loss_breached(-110_000, equity=5_000_000) is True
         assert v.daily_loss_breached(-90_000, equity=5_000_000) is False
@@ -428,3 +431,74 @@ class TestTradeValidator:
         v.record_trade_pnl(-250_000)
         assert v.validate_daily_loss() is False
         assert v.validate_all(0.001, 50_000_000) is False  # daily loss now breached
+
+
+def _freeze_now(monkeypatch, moment: datetime) -> None:
+    """Pin ``datetime.now`` inside the validators module to ``moment``."""
+    from tradingbot.risk import validators
+
+    class _Frozen(datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return moment.astimezone(tz) if tz is not None else moment.replace(tzinfo=None)
+
+    monkeypatch.setattr(validators, "datetime", _Frozen)
+
+
+class TestDailyUnrealizedBaseline:
+    """Unrealized PnL is measured from entry, so a position held across
+    midnight would drag its whole open loss into every new day and re-charge it
+    against a counter that resets daily. Only today's change may count."""
+
+    def test_carried_loss_is_baselined_out(self):
+        v = TradeValidator(daily_loss_limit_krw=200_000)
+
+        # New day, first reading: the position already carries -180K.
+        assert v.daily_loss_breached(-180_000) is False
+        # -30K more today: -30K counts, not -210K (which the old code breached on).
+        assert v.daily_loss_breached(-210_000) is False
+        # -220K lost today does breach.
+        assert v.daily_loss_breached(-400_000) is True
+
+    def test_close_books_only_todays_share(self):
+        v = TradeValidator(daily_loss_limit_krw=100_000)
+        assert v.daily_loss_breached(-180_000) is False  # baseline for the day
+
+        # The position is closed for -190K: it all lands in the realized
+        # counter, while unrealized snapping to 0 cancels the carried share.
+        v.record_trade_pnl(-190_000)
+        assert v.daily_loss_breached(0.0) is False  # today's share is -10K
+
+    def test_baseline_survives_a_restart(self):
+        v = TradeValidator(daily_loss_limit_krw=100_000)
+        v.daily_loss_breached(-180_000)
+        daily_pnl, reset_date, baseline = v.daily_state()
+        assert baseline == pytest.approx(-180_000)
+
+        restored = TradeValidator(daily_loss_limit_krw=100_000)
+        restored.restore_daily_state(daily_pnl, reset_date, baseline)
+        # Without the persisted baseline the restart would re-charge the -180K.
+        assert restored.daily_loss_breached(-180_000) is False
+
+
+class TestDailyResetTimezone:
+    """The bot trades Upbit KRW markets, so the daily loss counter rolls over
+    at KST midnight — under UTC it would reset at 09:00 KST instead."""
+
+    def test_resets_at_kst_midnight(self, monkeypatch):
+        from datetime import date
+
+        v = TradeValidator(daily_loss_limit_krw=200_000)
+        v.restore_daily_state(-250_000, date(2026, 8, 28), -50_000)
+
+        # 14:59 UTC is 23:59 KST on the same day — the breach still stands.
+        _freeze_now(monkeypatch, datetime(2026, 8, 28, 14, 59, tzinfo=UTC))
+        assert v.validate_daily_loss() is False
+        assert v._daily_pnl == -250_000
+
+        # 15:00 UTC is 00:00 KST the next day — everything rolls over.
+        _freeze_now(monkeypatch, datetime(2026, 8, 28, 15, 0, tzinfo=UTC))
+        assert v.validate_daily_loss() is True
+        assert v._daily_pnl == 0.0
+        assert v._daily_unrealized_baseline is None
+        assert v._daily_reset_date == date(2026, 8, 29)
