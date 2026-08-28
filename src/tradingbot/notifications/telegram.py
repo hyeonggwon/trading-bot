@@ -8,6 +8,7 @@ avoid heavy dependencies.
 from __future__ import annotations
 
 import asyncio
+import html
 from urllib.parse import urlencode
 
 import structlog
@@ -61,10 +62,13 @@ class TelegramNotifier:
 
     async def send_signal(self, message: str) -> bool:
         """Send a trading signal notification."""
-        text = f"📊 <b>Signal</b>\n{message}"
+        text = f"📊 <b>Signal</b>\n{html.escape(message)}"
         return await self._send(text)
 
     async def send_error(self, message: str) -> bool:
         """Send an error alert."""
-        text = f"🚨 <b>Error</b>\n{message}"
+        # Exception strings routinely contain angle brackets (e.g. "<Response
+        # [429]>"), which Telegram rejects as bad HTML — silently losing the
+        # very alert that matters most.
+        text = f"🚨 <b>Error</b>\n{html.escape(message)}"
         return await self._send(text)

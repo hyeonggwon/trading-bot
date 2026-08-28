@@ -22,7 +22,7 @@ import structlog
 
 from tradingbot.config import AppConfig
 from tradingbot.core.enums import OrderSide, OrderStatus, OrderType, PositionSide, SignalType
-from tradingbot.core.models import Position, Signal
+from tradingbot.core.models import Order, Position, Signal
 from tradingbot.exchange.base import BaseExchange
 from tradingbot.exchange.ws_client import UpbitWebSocketClient
 from tradingbot.live.control import control_path_for, read_pause
@@ -58,6 +58,21 @@ TIMEFRAME_SECONDS: dict[str, int] = {
     "4h": 14400,
     "1d": 86400,
 }
+
+
+def _order_has_fill(order: Order) -> bool:
+    """True when the order carries real execution details, whatever its status.
+
+    An Upbit market buy (ord_type='price') can settle as CANCELLED once the
+    leftover KRW is returned, and a partial fill followed by a cancel looks the
+    same. Both report the executed quantity and average price, so treating only
+    FILLED as executed loses real fills. An unexecuted market order has no
+    average price, so filled_price stays None — as does a freshly submitted
+    order, which carries the requested quantity but no fill yet.
+    """
+    return order.status == OrderStatus.FILLED or (
+        order.quantity > 0 and order.filled_price is not None
+    )
 
 
 class LiveEngine:
@@ -478,6 +493,16 @@ class LiveEngine:
             await self._handle_exit(flat_signal, sym, position)
         return True
 
+    def _book_realized_pnl(self, pnl: float) -> None:
+        """Book realized PnL into the daily loss counter and the ledger.
+
+        The two must always move together: the daily limit reads the counter,
+        the drawdown breaker reads the transfer-immune ledger.
+        """
+        if self.trade_validator is not None:
+            self.trade_validator.record_trade_pnl(pnl)
+        self.state.cum_realized_pnl += pnl
+
     async def _reconcile_with_exchange(self) -> None:
         """Reconcile local position state against the exchange's real holdings.
 
@@ -552,8 +577,27 @@ class LiveEngine:
             position = self.state.positions[symbol]
             if held >= position.size * 0.99:
                 continue  # exchange backs the tracked size (dust tolerance)
+
+            # The missing size left out-of-band, so its PnL was never booked.
+            # Estimate it at the current market price — leaving it unbooked
+            # permanently skews the ledger the drawdown breaker reads. If the
+            # price is unreachable, fall back to the entry price so at least
+            # the entry fee is settled.
+            try:
+                ticker = await self.exchange.fetch_ticker(symbol)
+                mark = float(ticker["last"])
+                mark_note = "market-price estimate"
+            except Exception as e:
+                logger.error("reconcile_price_failed", symbol=symbol, error=str(e))
+                mark = position.entry_price
+                mark_note = "price unavailable, fee only"
+
             if held <= position.size * 0.01:
                 # Exchange holds essentially nothing — phantom position.
+                est_pnl = (mark - position.entry_price) * position.size - self.state.entry_fees.get(
+                    symbol, 0.0
+                )
+                self._book_realized_pnl(est_pnl)
                 del self.state.positions[symbol]
                 self.state.entry_fees.pop(symbol, None)
                 logger.warning(
@@ -561,22 +605,37 @@ class LiveEngine:
                     symbol=symbol,
                     local_size=f"{position.size:.8f}",
                     held=f"{held:.8f}",
+                    est_pnl=f"{est_pnl:,.0f}",
+                    basis=mark_note,
                 )
                 await self._notify_alert(
                     f"RECONCILE: dropped phantom {symbol} "
-                    f"(local={position.size:.8f}, exchange={held:.8f})"
+                    f"(local={position.size:.8f}, exchange={held:.8f}), "
+                    f"est_pnl={est_pnl:,.0f} KRW ({mark_note})"
                 )
             else:
                 # Exchange holds less than tracked — shrink to avoid over-sell.
                 old_size = position.size
+                sold = old_size - held
+                # Entry fee is charged pro rata, mirroring a partial exit.
+                entry_fee_total = self.state.entry_fees.get(symbol, 0.0)
+                entry_fee = entry_fee_total * (sold / old_size)
+                est_pnl = (mark - position.entry_price) * sold - entry_fee
+                self._book_realized_pnl(est_pnl)
+                self.state.entry_fees[symbol] = entry_fee_total - entry_fee
                 position.size = held
                 logger.warning(
                     "reconcile_shrank_position",
                     symbol=symbol,
                     local_size=f"{old_size:.8f}",
                     held=f"{held:.8f}",
+                    est_pnl=f"{est_pnl:,.0f}",
+                    basis=mark_note,
                 )
-                await self._notify_alert(f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}")
+                await self._notify_alert(
+                    f"RECONCILE: shrank {symbol} {old_size:.8f}->{held:.8f}, "
+                    f"est_pnl={est_pnl:,.0f} KRW ({mark_note})"
+                )
 
     async def _tick_symbol(
         self, symbol: str, df: pd.DataFrame, ticker: dict[str, Any] | None = None
@@ -844,7 +903,7 @@ class LiveEngine:
             await self._notify_alert(f"Entry order failed {symbol}: {e}")
             return
 
-        if order.status == OrderStatus.FILLED:
+        if _order_has_fill(order):
             if self.trade_validator is not None:
                 self.trade_validator.record_order()
 
@@ -923,11 +982,13 @@ class LiveEngine:
             await self._notify_alert(f"Exit order failed {symbol}: {e}")
             return
 
-        if order.status == OrderStatus.FILLED:
+        if _order_has_fill(order):
             if self.trade_validator is not None:
                 self.trade_validator.record_order()
 
-            fill_price = order.filled_price or 0
+            # Signal.price is the price the exit was decided at — a far better
+            # fallback than 0, which would book the position as a total loss.
+            fill_price = order.filled_price or signal_obj.price
             exit_fee = order.fee or 0
             # A market sell can fill less than requested on thin liquidity.
             # Settle PnL on the quantity actually sold and keep any unsold
@@ -942,11 +1003,7 @@ class LiveEngine:
             )
             pnl = (fill_price - position.entry_price) * sold_qty - entry_fee - exit_fee
 
-            # Track PnL for daily loss limit
-            if self.trade_validator is not None:
-                self.trade_validator.record_trade_pnl(pnl)
-            # ...and cumulatively for the breaker's transfer-immune ledger
-            self.state.cum_realized_pnl += pnl
+            self._book_realized_pnl(pnl)
 
             if fully_closed:
                 self.state.entry_fees.pop(symbol, None)

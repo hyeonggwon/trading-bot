@@ -83,6 +83,43 @@ class TestUpbitMarketBuyCost:
         assert "cost" not in captured["params"]
 
 
+class TestFetchOrderFillQuantity:
+    """The reported quantity must be what actually executed.
+
+    A cancelled order that filled nothing carries filled=0.0. Treating that
+    falsy value as "unknown" and falling back to the requested amount reports a
+    zero-fill cancel as a full execution — which the live engine would then book
+    as an open position and the order manager would skip re-ordering.
+    """
+
+    async def _fetch_with(self, raw: dict):
+        ex = CcxtExchange()
+
+        async def _stub(order_id, symbol):
+            return {"id": order_id, "status": "canceled", **raw}
+
+        ex._exchange.fetch_order = _stub
+        try:
+            return await ex.fetch_order("o1", "BTC/KRW")
+        finally:
+            await ex.close()
+
+    @pytest.mark.asyncio
+    async def test_zero_fill_reports_zero(self):
+        order = await self._fetch_with({"filled": 0.0, "amount": 2.0})
+        assert order.quantity == 0.0
+
+    @pytest.mark.asyncio
+    async def test_partial_fill_reports_filled_amount(self):
+        order = await self._fetch_with({"filled": 1.5, "amount": 2.0})
+        assert order.quantity == pytest.approx(1.5)
+
+    @pytest.mark.asyncio
+    async def test_missing_filled_falls_back_to_amount(self):
+        order = await self._fetch_with({"filled": None, "amount": 2.0})
+        assert order.quantity == pytest.approx(2.0)
+
+
 class TestCreateOrderNoRetry:
     @pytest.mark.asyncio
     async def test_create_order_not_retried_on_network_error(self):

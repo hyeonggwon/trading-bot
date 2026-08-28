@@ -180,12 +180,17 @@ class CcxtExchange(BaseExchange):
         raw_fee = raw.get("fee")
         fee_cost = float(raw_fee.get("cost") or 0) if raw_fee else 0.0
 
+        # "filled" is authoritative even at 0.0 — falling back to the requested
+        # "amount" there would report a zero-fill cancel as fully executed.
+        raw_filled = raw.get("filled")
+        filled_qty = float(raw_filled if raw_filled is not None else (raw.get("amount") or 0))
+
         return Order(
             id=raw["id"],
             symbol=raw.get("symbol", symbol),
             side=side,
             order_type=OrderType.MARKET if raw.get("type") == "market" else OrderType.LIMIT,
-            quantity=float(raw.get("filled") or raw.get("amount") or 0),
+            quantity=filled_qty,
             price=raw.get("price"),
             status=status_map.get(raw.get("status", ""), OrderStatus.PENDING),
             created_at=datetime.now(UTC),

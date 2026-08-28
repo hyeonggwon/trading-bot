@@ -13,7 +13,7 @@ from tradingbot.core.enums import OrderSide, OrderStatus, OrderType, PositionSid
 from tradingbot.core.models import Order, Position, Signal
 from tradingbot.exchange.base import BaseExchange
 from tradingbot.exchange.paper import PaperExchange
-from tradingbot.live.engine import LiveEngine
+from tradingbot.live.engine import LiveEngine, _order_has_fill
 from tradingbot.live.state import StateManager
 from tradingbot.strategy.base import Strategy
 
@@ -1985,3 +1985,219 @@ class TestLivePyramiding:
 
         engine.config.pyramiding.min_add_cash_pct = 0.99  # more idle cash than we hold
         assert await engine._entry_allowed("BTC/KRW") is False
+
+
+# --- Bug: fills reported on a CANCELLED order were discarded ---
+
+
+class TestOrderHasFill:
+    """Upbit market buys (ord_type='price') settle as CANCELLED once the unused
+    KRW is returned, and a partial fill followed by a cancel looks identical.
+    Gating on FILLED alone loses those real fills, leaving the engine believing
+    it is flat while holding coin."""
+
+    def _order(self, status, quantity, filled_price):
+        return Order(
+            id="o1",
+            symbol="BTC/KRW",
+            side=OrderSide.BUY,
+            order_type=OrderType.MARKET,
+            quantity=quantity,
+            status=status,
+            filled_price=filled_price,
+        )
+
+    def test_filled_status_counts(self):
+        assert _order_has_fill(self._order(OrderStatus.FILLED, 1.0, 50_000_000))
+
+    def test_cancelled_with_execution_counts(self):
+        assert _order_has_fill(self._order(OrderStatus.CANCELLED, 0.4, 50_000_000))
+
+    def test_cancelled_without_fill_price_does_not_count(self):
+        assert not _order_has_fill(self._order(OrderStatus.CANCELLED, 0.4, None))
+
+    def test_freshly_submitted_order_does_not_count(self):
+        # Carries the requested quantity but no fill price yet.
+        assert not _order_has_fill(self._order(OrderStatus.PENDING, 1.0, None))
+
+
+class TestCancelledPartialExit:
+    @pytest.mark.asyncio
+    async def test_cancelled_partial_sell_books_pnl_and_shrinks(self, tmp_path):
+        """A sell cancelled after a partial fill must settle the sold portion
+        and keep the remainder as a managed position — not fall through to the
+        unconfirmed branch, which books nothing."""
+
+        class CancelledPartialSellFeed(MockDataFeed):
+            SOLD = 0.6  # of the requested 1.0
+
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                return Order(
+                    id="sell-cancelled",
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    quantity=self.SOLD,
+                    status=OrderStatus.CANCELLED,  # real fill, cancelled remainder
+                    filled_price=55_000_000,
+                    fee=1_000.0,
+                    filled_at=datetime.now(UTC),
+                )
+
+            async def get_balance(self):
+                return {"KRW": 5_000_000, "BTC": 0.4}
+
+        feed = CancelledPartialSellFeed(price=50_000_000)
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(),
+            exchange=feed,
+            config=AppConfig(risk=RiskConfig(default_stop_loss_pct=0.02)),
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+            stop_loss=49_000_000,
+        )
+        state.entry_fees["BTC/KRW"] = 1_000.0
+
+        sig = Signal(
+            timestamp=datetime.now(UTC),
+            symbol="BTC/KRW",
+            signal_type=SignalType.LONG_EXIT,
+            price=55_000_000,
+        )
+        await engine._handle_exit(sig, "BTC/KRW", state.positions["BTC/KRW"])
+
+        assert state.positions["BTC/KRW"].size == pytest.approx(0.4)
+        # 5,000,000 x 0.6 gain, less the pro-rata entry fee and the exit fee
+        assert state.cum_realized_pnl == pytest.approx(3_000_000 - 600 - 1_000)
+
+
+class TestExitFillPriceFallback:
+    @pytest.mark.asyncio
+    async def test_missing_fill_price_falls_back_to_signal_price(self, tmp_path):
+        """An exchange response without a fill price must not book the exit at
+        0 — that reads as a total loss and can trip the breaker and the daily
+        loss limit on a trade that was actually flat."""
+
+        class NoFillPriceFeed(MockDataFeed):
+            async def create_order(self, symbol, side, order_type, quantity, price=None):
+                return Order(
+                    id="sell-nofillprice",
+                    symbol=symbol,
+                    side=side,
+                    order_type=order_type,
+                    quantity=quantity,
+                    status=OrderStatus.FILLED,
+                    filled_price=None,
+                    filled_at=datetime.now(UTC),
+                )
+
+        state = StateManager(tmp_path / "state.json")
+        engine = LiveEngine(
+            strategy=StubStrategy(),
+            exchange=NoFillPriceFeed(price=50_000_000),
+            config=AppConfig(risk=RiskConfig()),
+            state_manager=state,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+        )
+
+        sig = Signal(
+            timestamp=datetime.now(UTC),
+            symbol="BTC/KRW",
+            signal_type=SignalType.LONG_EXIT,
+            price=50_000_000,
+        )
+        await engine._handle_exit(sig, "BTC/KRW", state.positions["BTC/KRW"])
+
+        assert state.cum_realized_pnl == pytest.approx(0.0)
+
+
+# --- Bug: reconciliation adjusted sizes without booking the realized PnL ---
+
+
+class TestReconcileBooksRealizedPnl:
+    def _engine(self, feed, tmp_path):
+        from tradingbot.risk.validators import TradeValidator
+
+        state = StateManager(tmp_path / "state.json")
+        validator = TradeValidator(daily_loss_limit_krw=10_000_000)
+        engine = LiveEngine(
+            strategy=StubStrategy(),
+            exchange=feed,
+            config=AppConfig(risk=RiskConfig()),
+            state_manager=state,
+            trade_validator=validator,
+        )
+        state.positions["BTC/KRW"] = Position(
+            symbol="BTC/KRW",
+            side=PositionSide.LONG,
+            size=1.0,
+            entry_price=50_000_000,
+            entry_time=datetime.now(UTC),
+        )
+        state.entry_fees["BTC/KRW"] = 1_000.0
+        return engine, state, validator
+
+    @pytest.mark.asyncio
+    async def test_phantom_drop_books_estimated_pnl(self, tmp_path):
+        """A position sold out-of-band still moved real money. Dropping it
+        without booking the PnL leaves the ledger the drawdown breaker reads
+        permanently wrong."""
+
+        class FlatFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000}
+
+        engine, state, validator = self._engine(FlatFeed(price=55_000_000), tmp_path)
+        await engine._reconcile_with_exchange()
+
+        assert "BTC/KRW" not in state.positions
+        expected = 5_000_000 - 1_000  # mark-to-market gain less the entry fee
+        assert state.cum_realized_pnl == pytest.approx(expected)
+        assert validator.daily_state()[0] == pytest.approx(expected)
+
+    @pytest.mark.asyncio
+    async def test_shrink_books_pro_rata_pnl_and_fee(self, tmp_path):
+        class PartialFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000, "BTC": 0.4}
+
+        engine, state, validator = self._engine(PartialFeed(price=55_000_000), tmp_path)
+        await engine._reconcile_with_exchange()
+
+        assert state.positions["BTC/KRW"].size == pytest.approx(0.4)
+        expected = 5_000_000 * 0.6 - 600  # 0.6 sold, entry fee charged pro rata
+        assert state.cum_realized_pnl == pytest.approx(expected)
+        assert validator.daily_state()[0] == pytest.approx(expected)
+        # The unsold remainder keeps its share of the entry fee for its own exit
+        assert state.entry_fees["BTC/KRW"] == pytest.approx(400)
+
+    @pytest.mark.asyncio
+    async def test_unreachable_price_books_fee_only(self, tmp_path):
+        """Without a mark price we can't estimate the move, but the entry fee
+        was certainly paid — book that rather than nothing."""
+
+        class NoTickerFeed(MockDataFeed):
+            async def get_balance(self):
+                return {"KRW": 5_000_000}
+
+            async def fetch_ticker(self, symbol):
+                raise RuntimeError("ticker unavailable")
+
+        engine, state, _validator = self._engine(NoTickerFeed(price=55_000_000), tmp_path)
+        await engine._reconcile_with_exchange()
+
+        assert "BTC/KRW" not in state.positions
+        assert state.cum_realized_pnl == pytest.approx(-1_000)
