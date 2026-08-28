@@ -75,18 +75,23 @@ class TradeValidator:
             return False
         return True
 
-    def validate_daily_loss(self, equity: float | None = None) -> bool:
-        """Check that daily loss limit hasn't been breached.
+    def _effective_daily_limit(self, equity: float | None) -> float:
+        """Daily-loss limit in KRW: min(absolute, equity * pct) of those set.
 
-        Effective limit follows the same min(absolute, equity * pct) pattern
-        as ``validate_order_size`` — see that docstring for rationale.
+        Same pattern as ``validate_order_size`` — see that docstring for
+        rationale. Shared by the entry gate and the between-candle rail so
+        both halt at the same threshold.
         """
-        self._reset_daily_if_needed()
-
         limit = self.daily_loss_limit_krw
         if equity is not None and self.daily_loss_limit_pct is not None:
             limit = min(limit, equity * self.daily_loss_limit_pct)
+        return limit
 
+    def validate_daily_loss(self, equity: float | None = None) -> bool:
+        """Check that daily loss limit hasn't been breached."""
+        self._reset_daily_if_needed()
+
+        limit = self._effective_daily_limit(equity)
         if self._daily_pnl < -limit:
             logger.warning(
                 "order_rejected_daily_loss",
@@ -96,22 +101,24 @@ class TradeValidator:
             return False
         return True
 
-    def daily_loss_breached(self, unrealized_pnl: float = 0.0) -> bool:
+    def daily_loss_breached(self, unrealized_pnl: float = 0.0, equity: float | None = None) -> bool:
         """Return True if realized + unrealized daily PnL breaches the limit.
 
         The realized-only ``validate_daily_loss`` gate fires only after a loss
         is booked. Folding in open-position unrealized PnL lets the limit halt
         trading while a position is still bleeding, before the loss is locked
-        in by an exit.
+        in by an exit. Uses the same effective (dynamic) limit as the entry
+        gate so both halt at the same threshold.
         """
         self._reset_daily_if_needed()
         total = self._daily_pnl + unrealized_pnl
-        if total < -self.daily_loss_limit_krw:
+        limit = self._effective_daily_limit(equity)
+        if total < -limit:
             logger.warning(
                 "daily_loss_breached",
                 realized=f"{self._daily_pnl:,.0f}",
                 unrealized=f"{unrealized_pnl:,.0f}",
-                limit=f"{-self.daily_loss_limit_krw:,.0f}",
+                limit=f"{-limit:,.0f}",
             )
             return True
         return False

@@ -400,6 +400,16 @@ class TestTradeValidator:
         v.record_trade_pnl(-310_000)
         assert v.validate_daily_loss(equity=5_000_000) is False  # limit = 300K
 
+    def test_daily_loss_breached_uses_same_dynamic_limit(self):
+        """The between-candle rail halts at the same threshold as the entry gate."""
+        v = TradeValidator(daily_loss_limit_krw=10_000_000, daily_loss_limit_pct=0.06)
+        v.record_trade_pnl(-200_000)
+        # realized -200K + unrealized -110K = -310K vs dynamic limit 300K
+        assert v.daily_loss_breached(-110_000, equity=5_000_000) is True
+        assert v.daily_loss_breached(-90_000, equity=5_000_000) is False
+        # Without equity the absolute limit alone applies (backward compat)
+        assert v.daily_loss_breached(-110_000) is False  # -310K vs 10M
+
     def test_validate_all_with_equity(self):
         v = TradeValidator(
             max_order_value_krw=10_000_000,

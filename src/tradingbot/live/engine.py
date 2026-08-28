@@ -440,7 +440,7 @@ class LiveEngine:
         self.risk_manager.update_peak_equity(ledger_equity)
         breaker = self.risk_manager.check_circuit_breaker(ledger_equity)
         daily_loss = (
-            self.trade_validator.daily_loss_breached(unrealized)
+            self.trade_validator.daily_loss_breached(unrealized, equity)
             if self.trade_validator is not None
             and hasattr(self.trade_validator, "daily_loss_breached")
             else False
